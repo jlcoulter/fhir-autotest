@@ -56,11 +56,12 @@ base_url = "http://localhost:8091/fhir"
 # Internal FHIR repository for creating and deleting test setup resources.
 # When configured, POST/PUT/DELETE go here instead of the public server.
 # This is useful when the public API only allows search/read.
+# Uncomment and configure as needed.
 #
-[repository]
-base_url = "http://repo.internal:8080/fhir"
-username = "admin"
-password = "admin123"
+# [repository]
+# base_url = "http://repo.internal:8080/fhir"
+# username = "admin"
+# password = "admin123"
 
 # ── Overrides ────────────────────────────────────────────────────────────────
 

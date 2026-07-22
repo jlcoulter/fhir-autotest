@@ -260,10 +260,7 @@ fn resolve_json_path(value: &Value, path: &str) -> Option<Value> {
             current = &arr[0];
         }
 
-        match current.get(part) {
-            Some(v) => current = v,
-            None => return None,
-        }
+        current = current.get(part)?;
     }
 
     Some(current.clone())

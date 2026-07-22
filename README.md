@@ -19,8 +19,6 @@ cargo build --release
 
 ## Usage
 
-### Config-driven workflow (recommended)
-
 Create a `config.toml` (see [`config.toml`](config.toml) for a full example):
 
 ```toml
@@ -48,87 +46,15 @@ fhir-ig-testgen --mock
 fhir-ig-testgen --mock --mock-port 8091
 
 # Preview without executing
-fhir-ig-testgen --config config.toml --dry-run
+fhir-ig-testgen --dry-run
+
+# Override specific fields from the CLI
+fhir-ig-testgen --config other.toml
+fhir-ig-testgen --package path/to/other.tgz
+fhir-ig-testgen --output ./other-output
 ```
 
-CLI flags override config values: `--package`, `--output`, `--results`.
-
-### Generate a test plan and resources
-
-```bash
-fhir-ig-testgen generate --package path/to/ig-package.tgz --output ./output
-```
-
-This creates:
-
-- `output/test_plan.json` — the full test plan with all test cases
-- `output/resources/TestPatient.json` — generated Patient resource (named by profile)
-- `output/resources/TestObservation.json` — generated Observation resource (named by profile)
-- etc.
-
-Each generated resource includes `meta.profile` with the profile's canonical URL, so FHIR servers can validate which profile it conforms to.
-
-### Run tests against a FHIR server
-
-Create a `config.toml` (see [config.example.toml](config.example.toml)):
-
-```toml
-[server]
-base_url = "http://localhost:8080/fhir"
-
-# Optional auth headers:
-# [server.headers]
-# Authorization = "Bearer your-token"
-```
-
-Then run:
-
-```bash
-fhir-ig-testgen run --package path/to/ig-package.tgz --config config.toml
-```
-
-This generates the test plan, creates setup resources on the server, runs all test cases, validates responses, and cleans up. Each request is printed as it executes:
-
-```
-── Setup: creating resources ──
-  POST http://localhost:8080/fhir/Patient ... → Patient/abc-123
-  POST http://localhost:8080/fhir/Observation ... → Observation/def-456
-
-── Running 339 test cases ──
-
-── Patient ──
-  → GET /Patient/abc-123 [200]
-  → GET /Patient?name=GeneratedFamily [200]
-  ✗ GET /Patient/nonexistent-id-99999 [404]
-
-── Cleanup: deleting resources ──
-  DELETE Observation/def-456 ... → deleted
-  DELETE Patient/abc-123 ... → deleted
-```
-
-#### Save results to JSON
-
-Use `--output` to write detailed results (full URLs, request bodies, response bodies, validation errors) to a file:
-
-```bash
-fhir-ig-testgen run --package pkg.tgz --config config.toml -o results.json
-```
-
-Each entry in the JSON includes:
-- `request_method`, `request_url` — the full HTTP request
-- `request_body` — POST/PUT body (if any)
-- `status_code` — HTTP response status
-- `response_body` — full response JSON
-- `passed` — whether the test passed
-- `validation_errors` — list of assertion failures
-
-#### Preview without executing
-
-```bash
-fhir-ig-testgen run --package pkg.tgz --config config.toml --dry-run
-```
-
-Shows all test URLs and setup/cleanup operations without hitting a server.
+CLI flags override config values: `--package`, `--output`, `--results`, `--dry-run`, `--generate`, `--mock`, `--mock-port`.
 
 ### Validate a resource against a profile
 
@@ -148,9 +74,9 @@ For each resource type declared in a server-mode CapabilityStatement, `fhir-ig-t
 | **CRUD interactions** | One test per supported interaction | `read`, `create`, `update`, `delete`, `search-type` |
 | **Single search params** | One test per declared search parameter | `?name=Smith`, `?birthdate=2024-01-01` |
 | **Search modifiers** | Type-appropriate modifiers | `:exact`, `:contains` on strings; `:missing` on all; `:not` on tokens |
-|| **Search prefixes** | All 9 FHIR prefixes on date/number/quantity params | `?birthdate=gt2024-01-01`, `?birthdate=lt2024-01-01` |
-|| **Near searches** | Coordinate/distance searches for `special`-type params | `?near=-33.86:151.21:10:km` |
-|| **Combinatorial searches** | All 2-parameter combinations within a resource type | `?name=Smith&birthdate=2024-01-01` |
+| **Search prefixes** | All 9 FHIR prefixes on date/number/quantity params | `?birthdate=gt2024-01-01`, `?birthdate=lt2024-01-01` |
+| **Near searches** | Coordinate/distance searches for `special`-type params | `?near=-33.86:151.21:10:km` |
+| **Combinatorial searches** | All 2-parameter combinations within a resource type | `?name=Smith&birthdate=2024-01-01` |
 | **`_include` / `_revinclude`** | From the CS's declared `searchInclude` and `searchRevInclude` | `?_include=Patient:organization` |
 | **Result parameters** | `_summary`, `_count`, `_sort` on every searchable resource | `?_summary=true`, `?_count=1`, `?_sort=name` |
 | **`$operation`** | From both resource-level and system-level `rest.operation` | `$everything`, `$export` |
@@ -243,7 +169,7 @@ Responses are validated against the IG's StructureDefinitions:
 
 ## Configuration
 
-See [`config.example.toml`](config.example.toml) for a complete example with comments.
+See [`config.toml`](config.toml) for a complete example with comments.
 
 Key settings:
 
@@ -253,6 +179,8 @@ Key settings:
 | `output` | Directory for generated test plan and resources | `./output` |
 | `results` | Path to write detailed JSON test results | None |
 | `dry_run` | Print all test URLs without executing | `false` |
+| `mock` | Use built-in mock FHIR server | `false` |
+| `mock_port` | Port for mock server (0 = random) | `0` |
 | `server.base_url` | Public FHIR server URL (for GET/search queries) | Required |
 | `server.headers` | HTTP headers for the public server (auth tokens) | None |
 | `repository.base_url` | Internal repository URL (for POST/DELETE) | None |
@@ -262,8 +190,6 @@ Key settings:
 | `overrides.fixtures_dir` | Directory for fixture JSON files | None |
 | `overrides.fixture_map` | Map resource type → fixture filename | None |
 | `data_generation.counts` | Bulk data counts per resource type (e.g. Organization = 20000) | None |
-| `--mock` | Use built-in mock FHIR server instead of configured server | off |
-| `--mock-port` | Port for mock server (0 = random) | 0 |
 
 ### Repository vs Server
 
@@ -299,20 +225,33 @@ Key features:
 
 When `data_generation.counts` is set, the single-resource setup phase is skipped — only bulk data is used.
 
+### Mock Server
+
+The built-in mock FHIR server handles CRUD operations and basic search filtering (string contains, token/code match, `_count`). It's useful for development, CI, and quick smoke tests where no real FHIR server is available.
+
+Enable it via config or CLI:
+
+```toml
+# In config.toml (top-level, before [server])
+mock = true
+mock_port = 8091
+```
+
+```bash
+# Or via CLI flags
+fhir-ig-testgen --mock
+fhir-ig-testgen --mock --mock-port 8091
+```
+
+When `mock` is enabled, the `[server]` and `[repository]` sections are ignored — all requests go to the mock server.
+
 ## Real-World Example
 
 Testing against the HCPD (Health Connect Provider Directory) IG:
 
 ```bash
-# Generate from a real IG package
-fhir-ig-testgen generate --package hcpd-package.tgz --output ./hcpd-tests
-
-# Output:
-# Generated test plan: 10 test groups, 339 total tests
-# Generated 11 resource files
-
-# Run against a FHIR server
-fhir-ig-testgen run --package hcpd-package.tgz --config config.toml
+# Run against a real FHIR server
+fhir-ig-testgen --config config.toml
 
 # Example output:
 # === FHIR IG Test Results ===
