@@ -190,6 +190,7 @@ Key settings:
 | `overrides.fixtures_dir` | Directory for fixture JSON files | None |
 | `overrides.fixture_map` | Map resource type → fixture filename | None |
 | `data_generation.counts` | Bulk data counts per resource type (e.g. Organization = 20000) | None |
+| `data_generation.generate_only` | Generate NDJSON files but skip upload/delete | `false` |
 
 ### Repository vs Server
 
@@ -224,6 +225,16 @@ Key features:
 - **Concurrent uploads**: 20 parallel requests during upload and deletion for throughput.
 
 When `data_generation.counts` is set, the single-resource setup phase is skipped — only bulk data is used.
+
+To generate NDJSON files without uploading (e.g. for manual upload or sending to a separate system):
+
+```toml
+[data_generation]
+generate_only = true
+counts.Organization = 20_000
+```
+
+The files are written to `{output}/data/{ResourceType}.ndjson` and left in place. No upload or deletion is performed.
 
 ### Mock Server
 

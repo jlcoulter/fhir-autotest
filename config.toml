@@ -98,6 +98,12 @@ base_url = "http://localhost:8091/fhir"
 #
 [data_generation]
 
+# When true, generate NDJSON files but skip uploading to the repository
+# and skip bulk deletion after tests. The files remain in {output}/data/
+# for manual upload. Useful when you want to control the upload process
+# yourself or send data to a separate system.
+# generate_only = true
+
 # Number of resources to generate per type.
 # Comment out or remove types you don't need.
 counts.Organization = 20
