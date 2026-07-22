@@ -1,5 +1,5 @@
-use crate::model::*;
 use crate::generate::model::*;
+use crate::model::*;
 use std::collections::HashMap;
 
 /// Build a ResponseAssertion appropriate for the test case kind.
@@ -154,16 +154,14 @@ pub fn generate_test_plan(
 
         // System-level operations (e.g., $export at the rest level)
         for op in &rest.operation {
-            let op_def = operations
-                .and_then(|ops| ops.iter().find(|o| o.code == op.name));
+            let op_def = operations.and_then(|ops| ops.iter().find(|o| o.code == op.name));
 
             let mut test = build_operation_test(
                 "", // system-level, no resource type prefix
-                &op.name,
-                op_def,
-                &None,
+                &op.name, op_def, &None,
             );
-            test.validation.response_assertion = assertion_for_kind(&test.kind, &test.resource_type);
+            test.validation.response_assertion =
+                assertion_for_kind(&test.kind, &test.resource_type);
 
             test_groups.push(TestGroup {
                 resource_type: format!("$${}", op.name),
@@ -173,10 +171,7 @@ pub fn generate_test_plan(
         }
     }
 
-    let name = cs
-        .name
-        .clone()
-        .unwrap_or_else(|| "Unnamed IG".to_string());
+    let name = cs.name.clone().unwrap_or_else(|| "Unnamed IG".to_string());
 
     TestPlan {
         name,
@@ -205,7 +200,8 @@ fn build_test_group(
         if matches!(interaction_type, Interaction::SearchType) {
             continue;
         }
-        let test_case = build_interaction_test(&resource.resource_type, &interaction_type, profile_url);
+        let test_case =
+            build_interaction_test(&resource.resource_type, &interaction_type, profile_url);
         tests.push(test_case);
     }
 
@@ -394,8 +390,7 @@ fn build_test_group(
 
     // --- $operation tests from CS rest.operation ---
     for op in &resource.operation {
-        let op_def = operations
-            .and_then(|ops| ops.iter().find(|o| o.code == op.name));
+        let op_def = operations.and_then(|ops| ops.iter().find(|o| o.code == op.name));
 
         tests.push(build_operation_test(
             &resource.resource_type,
@@ -471,11 +466,7 @@ fn build_interaction_test(
     );
 
     TestCase {
-        name: format!(
-            "{}_{}",
-            resource_type.to_lowercase(),
-            interaction.label()
-        ),
+        name: format!("{}_{}", resource_type.to_lowercase(), interaction.label()),
         kind: TestCaseKind::Interaction,
         interaction: interaction.clone(),
         resource_type: resource_type.to_string(),
@@ -513,7 +504,7 @@ fn sample_value(param_type: &str) -> &'static str {
         "quantity" => "5.0||http://unitsofmeasure.org|kg",
         "uri" => "http://example.org",
         "composite" => "test-value",
-        "special" => "-33.86:151.21:10:km",  // FHIR near format: lat:lon:distance:units
+        "special" => "-33.86:151.21:10:km", // FHIR near format: lat:lon:distance:units
         _ => "test-value",
     }
 }
@@ -617,7 +608,10 @@ fn build_search_prefix_test(
     profile_url: &Option<String>,
 ) -> TestCase {
     let value = sample_value(param_type);
-    let url = format!("/{resource_type}?{param_name}={prefix}{value}", prefix = prefix.prefix_str());
+    let url = format!(
+        "/{resource_type}?{param_name}={prefix}{value}",
+        prefix = prefix.prefix_str()
+    );
 
     TestCase {
         name: format!(
@@ -774,7 +768,11 @@ fn build_include_test(
     revinclude: bool,
     profile_url: &Option<String>,
 ) -> TestCase {
-    let param = if revinclude { "_revinclude" } else { "_include" };
+    let param = if revinclude {
+        "_revinclude"
+    } else {
+        "_include"
+    };
     let target = if revinclude {
         format!("Patient:{}", param_name)
     } else {
@@ -904,7 +902,10 @@ fn build_operation_test(
         for p in &def.parameter {
             if p.use_.as_deref() == Some("in") && p.min.unwrap_or(0) > 0 {
                 let mut param_obj = serde_json::Map::new();
-                param_obj.insert("name".to_string(), serde_json::Value::String(p.name.clone()));
+                param_obj.insert(
+                    "name".to_string(),
+                    serde_json::Value::String(p.name.clone()),
+                );
                 if let Some(ptype) = &p.param_type {
                     param_obj.insert(
                         "value".to_string(),
@@ -914,7 +915,10 @@ fn build_operation_test(
                 param_array.push(serde_json::Value::Object(param_obj));
             }
         }
-        params.insert("parameter".to_string(), serde_json::Value::Array(param_array));
+        params.insert(
+            "parameter".to_string(),
+            serde_json::Value::Array(param_array),
+        );
         serde_json::Value::Object(params)
     });
 
@@ -1026,10 +1030,18 @@ mod tests {
                             .to_string(),
                     ],
                     interaction: vec![
-                        RestInteraction { code: "read".to_string() },
-                        RestInteraction { code: "search-type".to_string() },
-                        RestInteraction { code: "create".to_string() },
-                        RestInteraction { code: "update".to_string() },
+                        RestInteraction {
+                            code: "read".to_string(),
+                        },
+                        RestInteraction {
+                            code: "search-type".to_string(),
+                        },
+                        RestInteraction {
+                            code: "create".to_string(),
+                        },
+                        RestInteraction {
+                            code: "update".to_string(),
+                        },
                     ],
                     search_param: vec![
                         RestSearchParam {
@@ -1047,7 +1059,10 @@ mod tests {
                     ],
                     operation: vec![RestOperation {
                         name: "everything".to_string(),
-                        definition: Some("http://hl7.org/fhir/OperationDefinition/Patient-everything".to_string()),
+                        definition: Some(
+                            "http://hl7.org/fhir/OperationDefinition/Patient-everything"
+                                .to_string(),
+                        ),
                     }],
                     read_history: None,
                     update_create: None,
@@ -1061,7 +1076,9 @@ mod tests {
                 interaction: vec![],
                 operation: vec![RestOperation {
                     name: "export".to_string(),
-                    definition: Some("http://hl7.org/fhir/uv/bulkdata/OperationDefinition/export".to_string()),
+                    definition: Some(
+                        "http://hl7.org/fhir/uv/bulkdata/OperationDefinition/export".to_string(),
+                    ),
                 }],
             }],
         }
@@ -1106,34 +1123,62 @@ mod tests {
         let plan = generate_test_plan(&cs, &[], &sample_search_params(), Some(&ops), None);
 
         assert_eq!(plan.test_groups.len(), 2); // Patient group + system $export group
-        let patient_group = plan.test_groups.iter().find(|g| g.resource_type == "Patient").expect("Should have Patient group");
+        let patient_group = plan
+            .test_groups
+            .iter()
+            .find(|g| g.resource_type == "Patient")
+            .expect("Should have Patient group");
         assert_eq!(patient_group.resource_type, "Patient");
 
         let group = patient_group;
 
         // Should have interaction tests
-        assert!(group.tests.iter().any(|t| matches!(t.kind, TestCaseKind::Interaction)));
+        assert!(group
+            .tests
+            .iter()
+            .any(|t| matches!(t.kind, TestCaseKind::Interaction)));
 
         // Should have single search param tests
-        assert!(group.tests.iter().any(|t| matches!(t.kind, TestCaseKind::SearchSingle { .. })));
+        assert!(group
+            .tests
+            .iter()
+            .any(|t| matches!(t.kind, TestCaseKind::SearchSingle { .. })));
 
         // Should have modifier tests (string params get :exact and :contains)
-        assert!(group.tests.iter().any(|t| matches!(t.kind, TestCaseKind::SearchModifier { .. })));
+        assert!(group
+            .tests
+            .iter()
+            .any(|t| matches!(t.kind, TestCaseKind::SearchModifier { .. })));
 
         // Should have prefix tests (date params get eq, ne, gt, etc.)
-        assert!(group.tests.iter().any(|t| matches!(t.kind, TestCaseKind::SearchPrefix { .. })));
+        assert!(group
+            .tests
+            .iter()
+            .any(|t| matches!(t.kind, TestCaseKind::SearchPrefix { .. })));
 
         // Should have combo tests (name + birthdate)
-        assert!(group.tests.iter().any(|t| matches!(t.kind, TestCaseKind::SearchCombo { .. })));
+        assert!(group
+            .tests
+            .iter()
+            .any(|t| matches!(t.kind, TestCaseKind::SearchCombo { .. })));
 
         // Should have operation tests ($everything)
-        assert!(group.tests.iter().any(|t| matches!(t.kind, TestCaseKind::Operation { .. })));
+        assert!(group
+            .tests
+            .iter()
+            .any(|t| matches!(t.kind, TestCaseKind::Operation { .. })));
 
         // Should have negative tests
-        assert!(group.tests.iter().any(|t| matches!(t.kind, TestCaseKind::Negative { .. })));
+        assert!(group
+            .tests
+            .iter()
+            .any(|t| matches!(t.kind, TestCaseKind::Negative { .. })));
 
         // Should have result param tests
-        assert!(group.tests.iter().any(|t| matches!(t.kind, TestCaseKind::ResultParam { .. })));
+        assert!(group
+            .tests
+            .iter()
+            .any(|t| matches!(t.kind, TestCaseKind::ResultParam { .. })));
     }
 
     #[test]
@@ -1145,14 +1190,46 @@ mod tests {
         let group = &plan.test_groups[0];
 
         // Count by kind
-        let interactions = group.tests.iter().filter(|t| matches!(t.kind, TestCaseKind::Interaction)).count();
-        let single_search = group.tests.iter().filter(|t| matches!(t.kind, TestCaseKind::SearchSingle { .. })).count();
-        let modifiers = group.tests.iter().filter(|t| matches!(t.kind, TestCaseKind::SearchModifier { .. })).count();
-        let prefixes = group.tests.iter().filter(|t| matches!(t.kind, TestCaseKind::SearchPrefix { .. })).count();
-        let combos = group.tests.iter().filter(|t| matches!(t.kind, TestCaseKind::SearchCombo { .. })).count();
-        let operations = group.tests.iter().filter(|t| matches!(t.kind, TestCaseKind::Operation { .. })).count();
-        let negatives = group.tests.iter().filter(|t| matches!(t.kind, TestCaseKind::Negative { .. })).count();
-        let result_params = group.tests.iter().filter(|t| matches!(t.kind, TestCaseKind::ResultParam { .. })).count();
+        let interactions = group
+            .tests
+            .iter()
+            .filter(|t| matches!(t.kind, TestCaseKind::Interaction))
+            .count();
+        let single_search = group
+            .tests
+            .iter()
+            .filter(|t| matches!(t.kind, TestCaseKind::SearchSingle { .. }))
+            .count();
+        let modifiers = group
+            .tests
+            .iter()
+            .filter(|t| matches!(t.kind, TestCaseKind::SearchModifier { .. }))
+            .count();
+        let prefixes = group
+            .tests
+            .iter()
+            .filter(|t| matches!(t.kind, TestCaseKind::SearchPrefix { .. }))
+            .count();
+        let combos = group
+            .tests
+            .iter()
+            .filter(|t| matches!(t.kind, TestCaseKind::SearchCombo { .. }))
+            .count();
+        let operations = group
+            .tests
+            .iter()
+            .filter(|t| matches!(t.kind, TestCaseKind::Operation { .. }))
+            .count();
+        let negatives = group
+            .tests
+            .iter()
+            .filter(|t| matches!(t.kind, TestCaseKind::Negative { .. }))
+            .count();
+        let result_params = group
+            .tests
+            .iter()
+            .filter(|t| matches!(t.kind, TestCaseKind::ResultParam { .. }))
+            .count();
 
         // Patient: read, create, update = 3 interactions (search-type handled separately)
         assert_eq!(interactions, 3);
@@ -1160,9 +1237,17 @@ mod tests {
         assert_eq!(single_search, 2);
         // name is string → :exact, :contains (2); birthdate is date → :missing (1)
         // But birthdate also appears as a standalone SearchParameter, so we get its modifiers too
-        assert!(modifiers >= 3, "Expected at least 3 modifier tests, got {}", modifiers);
+        assert!(
+            modifiers >= 3,
+            "Expected at least 3 modifier tests, got {}",
+            modifiers
+        );
         // birthdate is date → 9 prefixes
-        assert!(prefixes >= 9, "Expected at least 9 prefix tests, got {}", prefixes);
+        assert!(
+            prefixes >= 9,
+            "Expected at least 9 prefix tests, got {}",
+            prefixes
+        );
         // 2 params → 1 combo (name+birthdate)
         assert_eq!(combos, 1);
         // 1 operation ($everything)
@@ -1173,7 +1258,11 @@ mod tests {
         assert_eq!(result_params, 3);
 
         // Total should be substantially more than the old 4 interaction + 2 search
-        assert!(group.tests.len() > 20, "Expected 20+ tests, got {}", group.tests.len());
+        assert!(
+            group.tests.len() > 20,
+            "Expected 20+ tests, got {}",
+            group.tests.len()
+        );
     }
 
     #[test]
@@ -1187,18 +1276,32 @@ mod tests {
             matches!(t.kind, TestCaseKind::SearchModifier { ref modifier, .. } if modifier == &SearchModifier::Exact)
                 && matches!(t.kind, TestCaseKind::SearchModifier { ref param_name, .. } if param_name == "name")
         });
-        assert!(exact_test.is_some(), "Should have :exact modifier test for name");
+        assert!(
+            exact_test.is_some(),
+            "Should have :exact modifier test for name"
+        );
         let exact_test = exact_test.unwrap();
-        assert!(exact_test.request.url.contains("name:exact="), "URL should contain name:exact=, got {}", exact_test.request.url);
+        assert!(
+            exact_test.request.url.contains("name:exact="),
+            "URL should contain name:exact=, got {}",
+            exact_test.request.url
+        );
 
         // Find the :missing modifier test for birthdate
         let missing_test = group.tests.iter().find(|t| {
             matches!(t.kind, TestCaseKind::SearchModifier { ref modifier, .. } if modifier == &SearchModifier::Missing)
                 && matches!(t.kind, TestCaseKind::SearchModifier { ref param_name, .. } if param_name == "birthdate")
         });
-        assert!(missing_test.is_some(), "Should have :missing modifier test for birthdate");
+        assert!(
+            missing_test.is_some(),
+            "Should have :missing modifier test for birthdate"
+        );
         let missing_test = missing_test.unwrap();
-        assert!(missing_test.request.url.contains("birthdate:missing="), "URL should contain birthdate:missing=, got {}", missing_test.request.url);
+        assert!(
+            missing_test.request.url.contains("birthdate:missing="),
+            "URL should contain birthdate:missing=, got {}",
+            missing_test.request.url
+        );
     }
 
     #[test]
@@ -1212,15 +1315,22 @@ mod tests {
             matches!(t.kind, TestCaseKind::SearchPrefix { ref prefix, .. } if prefix == &SearchPrefix::Gt)
                 && matches!(t.kind, TestCaseKind::SearchPrefix { ref param_name, .. } if param_name == "birthdate")
         });
-        assert!(gt_test.is_some(), "Should have gt prefix test for birthdate");
+        assert!(
+            gt_test.is_some(),
+            "Should have gt prefix test for birthdate"
+        );
         let gt_test = gt_test.unwrap();
-        assert!(gt_test.request.url.contains("birthdate=gt"), "URL should contain birthdate=gt, got {}", gt_test.request.url);
+        assert!(
+            gt_test.request.url.contains("birthdate=gt"),
+            "URL should contain birthdate=gt, got {}",
+            gt_test.request.url
+        );
     }
 
     #[test]
     fn near_search_generates_coordinate_tests() {
-        use crate::model::*;
         use crate::generate::model::TestCaseKind;
+        use crate::model::*;
 
         // Build a CapabilityStatement with a Location resource that has a "near" search param
         let cs = CapabilityStatement {
@@ -1235,8 +1345,12 @@ mod tests {
                     profile: None,
                     supported_profile: vec![],
                     interaction: vec![
-                        RestInteraction { code: "read".to_string() },
-                        RestInteraction { code: "search-type".to_string() },
+                        RestInteraction {
+                            code: "read".to_string(),
+                        },
+                        RestInteraction {
+                            code: "search-type".to_string(),
+                        },
                     ],
                     search_param: vec![RestSearchParam {
                         name: "near".to_string(),
@@ -1260,38 +1374,67 @@ mod tests {
         };
 
         let plan = generate_test_plan(&cs, &[], &[], None, None);
-        let group = plan.test_groups.iter().find(|g| g.resource_type == "Location").expect("Should have Location group");
+        let group = plan
+            .test_groups
+            .iter()
+            .find(|g| g.resource_type == "Location")
+            .expect("Should have Location group");
 
         // Should have a SearchSingle test for "near"
         assert!(group.tests.iter().any(|t| matches!(t.kind, TestCaseKind::SearchSingle { ref param_name, .. } if param_name == "near")),
             "Should have SearchSingle test for near param");
 
         // Should have a SearchNear test with coordinate format
-        let near_test = group.tests.iter().find(|t| matches!(t.kind, TestCaseKind::SearchNear { .. }));
-        assert!(near_test.is_some(), "Should have SearchNear test for special-type param");
+        let near_test = group
+            .tests
+            .iter()
+            .find(|t| matches!(t.kind, TestCaseKind::SearchNear { .. }));
+        assert!(
+            near_test.is_some(),
+            "Should have SearchNear test for special-type param"
+        );
         let near_test = near_test.unwrap();
-        assert!(near_test.request.url.contains("near=-33.86:151.21:10:km"),
-            "Near test URL should contain coordinate format, got {}", near_test.request.url);
-        assert!(near_test.request.url.starts_with("/Location?"),
-            "Near test URL should start with /Location?, got {}", near_test.request.url);
+        assert!(
+            near_test.request.url.contains("near=-33.86:151.21:10:km"),
+            "Near test URL should contain coordinate format, got {}",
+            near_test.request.url
+        );
+        assert!(
+            near_test.request.url.starts_with("/Location?"),
+            "Near test URL should start with /Location?, got {}",
+            near_test.request.url
+        );
     }
 }
 
 #[cfg(test)]
 mod debug_tests {
-    use crate::parse::parse_package;
     use crate::generate::planner::generate_test_plan;
+    use crate::parse::parse_package;
 
     #[test]
     fn debug_real_package_cs_parsing() {
         let pkg = parse_package("package/package.tgz").unwrap();
         for cs in &pkg.capability_statements {
-            eprintln!("CS: {:?} | rest: {}", cs.name.as_deref().unwrap_or("unknown"), cs.rest.len());
+            eprintln!(
+                "CS: {:?} | rest: {}",
+                cs.name.as_deref().unwrap_or("unknown"),
+                cs.rest.len()
+            );
             for rest in &cs.rest {
-                eprintln!("  rest mode: {} | resources: {}", rest.mode, rest.resource.len());
+                eprintln!(
+                    "  rest mode: {} | resources: {}",
+                    rest.mode,
+                    rest.resource.len()
+                );
                 for res in &rest.resource {
-                    eprintln!("    resource: {} | interactions: {} | searchParams: {} | operations: {}",
-                        res.resource_type, res.interaction.len(), res.search_param.len(), res.operation.len());
+                    eprintln!(
+                        "    resource: {} | interactions: {} | searchParams: {} | operations: {}",
+                        res.resource_type,
+                        res.interaction.len(),
+                        res.search_param.len(),
+                        res.operation.len()
+                    );
                     for sp in &res.search_param {
                         eprintln!("      searchParam: {} type={}", sp.name, sp.param_type);
                     }
@@ -1302,14 +1445,36 @@ mod debug_tests {
             }
         }
         // Generate test plan from the responder CS (should have resources)
-        let responder_cs = pkg.capability_statements.iter()
+        let responder_cs = pkg
+            .capability_statements
+            .iter()
             .find(|cs| cs.name.as_deref() == Some("HealthConnectProviderDirectoryResponder"))
             .expect("Should find responder CS");
-        let plan = generate_test_plan(responder_cs, &pkg.structure_definitions, &pkg.search_parameters, Some(&pkg.operation_definitions), None);
-        eprintln!("Test plan: {} groups, {} total tests", plan.test_groups.len(), plan.test_groups.iter().map(|g| g.tests.len()).sum::<usize>());
+        let plan = generate_test_plan(
+            responder_cs,
+            &pkg.structure_definitions,
+            &pkg.search_parameters,
+            Some(&pkg.operation_definitions),
+            None,
+        );
+        eprintln!(
+            "Test plan: {} groups, {} total tests",
+            plan.test_groups.len(),
+            plan.test_groups
+                .iter()
+                .map(|g| g.tests.len())
+                .sum::<usize>()
+        );
         for group in &plan.test_groups {
-            eprintln!("  Group: {} | tests: {}", group.resource_type, group.tests.len());
+            eprintln!(
+                "  Group: {} | tests: {}",
+                group.resource_type,
+                group.tests.len()
+            );
         }
-        assert!(!plan.test_groups.is_empty(), "Should have test groups from real CS");
+        assert!(
+            !plan.test_groups.is_empty(),
+            "Should have test groups from real CS"
+        );
     }
 }

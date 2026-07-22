@@ -19,7 +19,11 @@ pub fn generate_resource(profile: &StructureDefinition) -> Result<serde_json::Va
     let empty = vec![];
     let elements = match &profile.snapshot {
         Some(snapshot) => &snapshot.element,
-        None => profile.differential.as_ref().map(|d| &d.element).unwrap_or(&empty),
+        None => profile
+            .differential
+            .as_ref()
+            .map(|d| &d.element)
+            .unwrap_or(&empty),
     };
 
     populate_required_fields(&mut resource, elements, &profile.base_type)?;
@@ -143,10 +147,7 @@ fn get_field_name(path: &str, resource_type: &str) -> Option<String> {
 }
 
 /// Generate a minimal valid value for a given FHIR type code.
-fn generate_typed_value(
-    type_code: &str,
-    target_profiles: &[String],
-) -> serde_json::Value {
+fn generate_typed_value(type_code: &str, target_profiles: &[String]) -> serde_json::Value {
     match type_code {
         // Primitive types
         "string" => serde_json::json!("generated-string"),
@@ -208,10 +209,7 @@ fn generate_typed_value(
         "Reference" => {
             if let Some(profile) = target_profiles.first() {
                 // Extract resource type from profile URL
-                let ref_type = profile
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or("Resource");
+                let ref_type = profile.rsplit('/').next().unwrap_or("Resource");
                 serde_json::json!({
                     "reference": format!("placeholder:{}", ref_type)
                 })
@@ -418,10 +416,7 @@ mod tests {
         let resource = generate_resource(&profile).unwrap();
 
         assert_eq!(resource["resourceType"], "Patient");
-        assert!(
-            resource.get("name").is_some(),
-            "name is required (min=1)"
-        );
+        assert!(resource.get("name").is_some(), "name is required (min=1)");
         assert!(
             resource.get("identifier").is_some(),
             "identifier is required (min=1)"
@@ -530,7 +525,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "Reference".to_string(),
                             target_profile: vec![
-                                "http://hl7.org/fhir/StructureDefinition/Patient".to_string(),
+                                "http://hl7.org/fhir/StructureDefinition/Patient".to_string()
                             ],
                             versioning: None,
                         }],

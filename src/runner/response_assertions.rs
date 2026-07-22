@@ -26,10 +26,7 @@ pub fn assert_response(
                         errors.push("Bundle has no 'type' field".to_string());
                     }
                 } else if rt != "OperationOutcome" {
-                    errors.push(format!(
-                        "Expected Bundle, got resourceType '{}'",
-                        rt
-                    ));
+                    errors.push(format!("Expected Bundle, got resourceType '{}'", rt));
                 }
             } else {
                 errors.push("Response has no resourceType".to_string());
@@ -144,10 +141,8 @@ pub fn assert_response(
 
             // --- Sort assertion ---
             if let Some(sort) = &assertion.sort_by {
-                let resources: Vec<&Value> = entries
-                    .iter()
-                    .filter_map(|e| e.get("resource"))
-                    .collect();
+                let resources: Vec<&Value> =
+                    entries.iter().filter_map(|e| e.get("resource")).collect();
 
                 if resources.len() >= 2 {
                     let values: Vec<Option<Value>> = resources
@@ -156,12 +151,8 @@ pub fn assert_response(
                         .collect();
 
                     let sorted = match sort.direction.as_str() {
-                        "asc" => values.windows(2).all(|w| {
-                            compare_values(&w[0], &w[1]) <= 0
-                        }),
-                        "desc" => values.windows(2).all(|w| {
-                            compare_values(&w[0], &w[1]) >= 0
-                        }),
+                        "asc" => values.windows(2).all(|w| compare_values(&w[0], &w[1]) <= 0),
+                        "desc" => values.windows(2).all(|w| compare_values(&w[0], &w[1]) >= 0),
                         _ => true,
                     };
 
@@ -289,7 +280,9 @@ fn compare_values(a: &Option<Value>, b: &Option<Value>) -> i32 {
             if let (Some(a_str), Some(b_str)) = (a_val.as_str(), b_val.as_str()) {
                 a_str.cmp(b_str) as i32
             } else if let (Some(a_num), Some(b_num)) = (a_val.as_f64(), b_val.as_f64()) {
-                a_num.partial_cmp(&b_num).unwrap_or(std::cmp::Ordering::Equal) as i32
+                a_num
+                    .partial_cmp(&b_num)
+                    .unwrap_or(std::cmp::Ordering::Equal) as i32
             } else {
                 0
             }
@@ -330,7 +323,9 @@ mod tests {
             "entry": []
         });
         let errors = assert_response(&assertion, 200, &Some(body));
-        assert!(errors.iter().any(|e| e.contains("batch") && e.contains("searchset")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("batch") && e.contains("searchset")));
     }
 
     #[test]
@@ -430,7 +425,9 @@ mod tests {
             }]
         });
         let errors = assert_response(&assertion, 200, &Some(body));
-        assert!(errors.iter().any(|e| e.contains("family") && e.contains("Smith")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("family") && e.contains("Smith")));
     }
 
     #[test]
@@ -508,7 +505,11 @@ mod tests {
             }]
         });
         let errors = assert_response(&assertion, 200, &Some(body));
-        assert!(errors.is_empty(), "Expected no errors for absent 'text', got: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for absent 'text', got: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -523,10 +524,7 @@ mod tests {
     #[test]
     fn resolve_json_path_nested() {
         let v = json!({"name": [{"family": "Smith"}]});
-        assert_eq!(
-            resolve_json_path(&v, "name.family"),
-            Some(json!("Smith"))
-        );
+        assert_eq!(resolve_json_path(&v, "name.family"), Some(json!("Smith")));
     }
 
     #[test]

@@ -1,8 +1,8 @@
-use anyhow::Result;
-use petgraph::graph::DiGraph;
-use petgraph::algo::kosaraju_scc;
-use std::collections::{HashMap, HashSet};
 use crate::model::*;
+use anyhow::Result;
+use petgraph::algo::kosaraju_scc;
+use petgraph::graph::DiGraph;
+use std::collections::{HashMap, HashSet};
 
 /// Dependency entry: a resource type and the resource types it references.
 pub type DependencyMap = Vec<(String, Vec<String>)>;
@@ -36,7 +36,9 @@ pub fn extract_dependencies(profiles: &[StructureDefinition]) -> DependencyMap {
                             let ref_type = ref_type.split('|').next().unwrap_or(ref_type);
                             // Skip non-resource profile names (e.g. "hcpd-practitioner" is a profile, not a resource type)
                             // FHIR resource types start with uppercase and contain no hyphens
-                            if ref_type.chars().next().map_or(true, |c| c.is_lowercase()) || ref_type.contains('-') {
+                            if ref_type.chars().next().map_or(true, |c| c.is_lowercase())
+                                || ref_type.contains('-')
+                            {
                                 continue;
                             }
                             if ref_type != "Resource" && ref_type != resource_type {
@@ -108,7 +110,11 @@ pub fn resolve_creation_order(deps: &DependencyMap) -> Result<Vec<String>> {
     // Kahn's algorithm on SCC DAG: process SCCs with no remaining dependencies first.
     // Edge A → B means "A depends on B", so B should come first.
     // dep_count[i] = number of SCCs that i depends on (out-degree in SCC DAG).
-    let mut dep_count: Vec<usize> = sccs.iter().enumerate().map(|(i, _)| scc_deps[i].len()).collect();
+    let mut dep_count: Vec<usize> = sccs
+        .iter()
+        .enumerate()
+        .map(|(i, _)| scc_deps[i].len())
+        .collect();
     let mut order = Vec::new();
 
     // Start with SCCs that have no dependencies
@@ -161,10 +167,7 @@ pub fn resolve_creation_order(deps: &DependencyMap) -> Result<Vec<String>> {
 /// User overrides take precedence: if the user specifies an order, resources
 /// appear in that order. Resources not in the user list are appended in
 /// auto-resolved order.
-pub fn merge_creation_order(
-    auto_order: &[String],
-    user_order: &[String],
-) -> Vec<String> {
+pub fn merge_creation_order(auto_order: &[String], user_order: &[String]) -> Vec<String> {
     if user_order.is_empty() {
         return auto_order.to_vec();
     }
@@ -188,7 +191,10 @@ mod tests {
     #[test]
     fn resolve_simple_dependency() {
         let deps = vec![
-            ("Observation".to_string(), vec!["Patient".to_string(), "Encounter".to_string()]),
+            (
+                "Observation".to_string(),
+                vec!["Patient".to_string(), "Encounter".to_string()],
+            ),
             ("Encounter".to_string(), vec!["Patient".to_string()]),
             ("Patient".to_string(), vec![]),
         ];
@@ -198,9 +204,18 @@ mod tests {
         let encounter_idx = order.iter().position(|r| r == "Encounter").unwrap();
         let observation_idx = order.iter().position(|r| r == "Observation").unwrap();
 
-        assert!(patient_idx < encounter_idx, "Patient should come before Encounter");
-        assert!(patient_idx < observation_idx, "Patient should come before Observation");
-        assert!(encounter_idx < observation_idx, "Encounter should come before Observation");
+        assert!(
+            patient_idx < encounter_idx,
+            "Patient should come before Encounter"
+        );
+        assert!(
+            patient_idx < observation_idx,
+            "Patient should come before Observation"
+        );
+        assert!(
+            encounter_idx < observation_idx,
+            "Encounter should come before Observation"
+        );
     }
 
     #[test]
@@ -232,7 +247,11 @@ mod tests {
 
     #[test]
     fn merge_creation_order_with_override() {
-        let auto = vec!["Patient".to_string(), "Encounter".to_string(), "Observation".to_string()];
+        let auto = vec![
+            "Patient".to_string(),
+            "Encounter".to_string(),
+            "Observation".to_string(),
+        ];
         let user = vec!["Encounter".to_string(), "Patient".to_string()];
         let merged = merge_creation_order(&auto, &user);
 
@@ -300,7 +319,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "Reference".to_string(),
                             target_profile: vec![
-                                "http://hl7.org/fhir/StructureDefinition/Patient".to_string(),
+                                "http://hl7.org/fhir/StructureDefinition/Patient".to_string()
                             ],
                             versioning: None,
                         }],

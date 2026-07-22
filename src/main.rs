@@ -2,7 +2,9 @@ use clap::Parser;
 
 #[derive(Parser)]
 #[command(name = "fhir-ig-testgen")]
-#[command(about = "FHIR R4 IG test generator — parse Implementation Guide packages and generate/run conformance tests")]
+#[command(
+    about = "FHIR R4 IG test generator — parse Implementation Guide packages and generate/run conformance tests"
+)]
 #[command(version)]
 struct Cli {
     /// Path to config file (TOML).
@@ -84,7 +86,9 @@ async fn main() -> anyhow::Result<()> {
         // Load config just to get the package path
         let config = fhir_ig_testgen::TestConfig::load(&cli.config)?;
         let package = cli.package.or(config.package).ok_or_else(|| {
-            anyhow::anyhow!("No IG package path specified. Set 'package' in the config file or use --package.")
+            anyhow::anyhow!(
+                "No IG package path specified. Set 'package' in the config file or use --package."
+            )
         })?;
         fhir_ig_testgen::run_validate(&package, &resource, profile.as_deref())?;
         return Ok(());
@@ -95,7 +99,11 @@ async fn main() -> anyhow::Result<()> {
 
     // If --mock is set or config.mock is true, start the mock server and redirect
     let use_mock = cli.mock || config.mock;
-    let mock_port = if cli.mock_port != 0 { cli.mock_port } else { config.mock_port };
+    let mock_port = if cli.mock_port != 0 {
+        cli.mock_port
+    } else {
+        config.mock_port
+    };
     if use_mock {
         let addr = fhir_ig_testgen::mock_server::start_mock_server(mock_port).await?;
         let mock_url = format!("http://{}", addr);

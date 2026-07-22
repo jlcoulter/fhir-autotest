@@ -147,8 +147,8 @@ pub enum SearchModifier {
     Text,
     In,
     NotIn,
-    BelowType,  // below for type-hierarchical params
-    AboveType,  // above for type-hierarchical params
+    BelowType, // below for type-hierarchical params
+    AboveType, // above for type-hierarchical params
 }
 
 impl SearchModifier {
@@ -156,7 +156,11 @@ impl SearchModifier {
     pub fn applicable_to(param_type: &str) -> Vec<SearchModifier> {
         match param_type {
             "string" => vec![SearchModifier::Exact, SearchModifier::Contains],
-            "token" => vec![SearchModifier::Not, SearchModifier::Text, SearchModifier::Missing],
+            "token" => vec![
+                SearchModifier::Not,
+                SearchModifier::Text,
+                SearchModifier::Missing,
+            ],
             "reference" => vec![SearchModifier::Missing],
             "quantity" | "number" => vec![SearchModifier::Missing],
             "date" | "dateTime" => vec![SearchModifier::Missing],
@@ -202,15 +206,22 @@ impl SearchPrefix {
     pub fn applicable_to(param_type: &str) -> Vec<SearchPrefix> {
         match param_type {
             "number" | "quantity" => vec![
-                SearchPrefix::Eq, SearchPrefix::Ne,
-                SearchPrefix::Gt, SearchPrefix::Lt,
-                SearchPrefix::Ge, SearchPrefix::Le,
+                SearchPrefix::Eq,
+                SearchPrefix::Ne,
+                SearchPrefix::Gt,
+                SearchPrefix::Lt,
+                SearchPrefix::Ge,
+                SearchPrefix::Le,
             ],
             "date" | "dateTime" => vec![
-                SearchPrefix::Eq, SearchPrefix::Ne,
-                SearchPrefix::Gt, SearchPrefix::Lt,
-                SearchPrefix::Ge, SearchPrefix::Le,
-                SearchPrefix::Sa, SearchPrefix::Eb,
+                SearchPrefix::Eq,
+                SearchPrefix::Ne,
+                SearchPrefix::Gt,
+                SearchPrefix::Lt,
+                SearchPrefix::Ge,
+                SearchPrefix::Le,
+                SearchPrefix::Sa,
+                SearchPrefix::Eb,
                 SearchPrefix::Ap,
             ],
             _ => vec![],
@@ -238,17 +249,29 @@ pub enum TestCaseKind {
     /// Basic CRUD / interaction test (read, create, etc.)
     Interaction,
     /// Single search param test
-    SearchSingle { param_name: String, param_type: String },
+    SearchSingle {
+        param_name: String,
+        param_type: String,
+    },
     /// Search param with modifier test
-    SearchModifier { param_name: String, modifier: SearchModifier },
+    SearchModifier {
+        param_name: String,
+        modifier: SearchModifier,
+    },
     /// Search param with prefix test (for number/date/quantity)
-    SearchPrefix { param_name: String, prefix: SearchPrefix },
+    SearchPrefix {
+        param_name: String,
+        prefix: SearchPrefix,
+    },
     /// Proximity/near search test (FHIR special type: lat:lon[:distance[:units]])
     SearchNear { param_name: String },
     /// Combinatorial search: multiple params combined
     SearchCombo { params: Vec<String> },
     /// Chained search: reference param chained into target param
-    SearchChained { chain_param: String, target_param: String },
+    SearchChained {
+        chain_param: String,
+        target_param: String,
+    },
     /// _include / _revinclude test
     Include { param: String, revinclude: bool },
     /// Result parameter test (_summary, _elements, _count, _sort, _has, etc.)

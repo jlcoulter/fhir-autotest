@@ -131,7 +131,9 @@ fn match_field(resource: &serde_json::Value, param: &str, value: &str) -> bool {
                 c.get("code")
                     .or_else(|| c.get("display"))
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_lowercase() == value_lower || s.to_lowercase().contains(&value_lower))
+                    .map(|s| {
+                        s.to_lowercase() == value_lower || s.to_lowercase().contains(&value_lower)
+                    })
                     .unwrap_or(false)
             });
         }
@@ -148,7 +150,10 @@ fn match_field(resource: &serde_json::Value, param: &str, value: &str) -> bool {
                 }
                 if let Some(given) = name.get("given").and_then(|g| g.as_array()) {
                     for g in given {
-                        if g.as_str().map(|s| s.to_lowercase().contains(&value_lower)).unwrap_or(false) {
+                        if g.as_str()
+                            .map(|s| s.to_lowercase().contains(&value_lower))
+                            .unwrap_or(false)
+                        {
                             return true;
                         }
                     }

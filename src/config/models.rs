@@ -158,10 +158,22 @@ impl TestConfig {
         if let Some(dir) = &self.overrides.fixtures_dir {
             for (resource_type, filename) in &self.overrides.fixture_map {
                 let path = dir.join(filename);
-                let content = std::fs::read_to_string(&path)
-                    .map_err(|e| anyhow::anyhow!("Failed to load fixture '{}' for {}: {}", filename, resource_type, e))?;
-                let value: serde_json::Value = serde_json::from_str(&content)
-                    .map_err(|e| anyhow::anyhow!("Failed to parse fixture JSON '{}' for {}: {}", filename, resource_type, e))?;
+                let content = std::fs::read_to_string(&path).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to load fixture '{}' for {}: {}",
+                        filename,
+                        resource_type,
+                        e
+                    )
+                })?;
+                let value: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to parse fixture JSON '{}' for {}: {}",
+                        filename,
+                        resource_type,
+                        e
+                    )
+                })?;
                 fixtures.insert(resource_type.clone(), value);
             }
         }
@@ -234,10 +246,19 @@ Patient = "us-core-patient.json"
         assert_eq!(config.output, "./test-output");
         assert!(config.dry_run);
         assert_eq!(config.server.base_url, "http://localhost:8080/fhir");
-        assert_eq!(config.server.headers.get("Authorization").unwrap(), "Bearer test-token");
-        assert_eq!(config.overrides.creation_order, vec!["Patient", "Encounter", "Observation"]);
+        assert_eq!(
+            config.server.headers.get("Authorization").unwrap(),
+            "Bearer test-token"
+        );
+        assert_eq!(
+            config.overrides.creation_order,
+            vec!["Patient", "Encounter", "Observation"]
+        );
         assert!(config.overrides.fixtures_dir.is_some());
-        assert_eq!(config.overrides.fixture_map.get("Patient").unwrap(), "us-core-patient.json");
+        assert_eq!(
+            config.overrides.fixture_map.get("Patient").unwrap(),
+            "us-core-patient.json"
+        );
         assert!(config.repository.is_none());
     }
 
@@ -325,7 +346,11 @@ password = "s3cret"
 "#;
         let config: TestConfig = toml::from_str(toml).unwrap();
         match config.write_endpoint() {
-            WriteEndpoint::Repository { base_url, username, password } => {
+            WriteEndpoint::Repository {
+                base_url,
+                username,
+                password,
+            } => {
                 assert_eq!(base_url, "http://repo.internal:8080/fhir");
                 assert_eq!(username, "admin");
                 assert_eq!(password, "s3cret");

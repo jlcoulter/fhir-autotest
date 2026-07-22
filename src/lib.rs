@@ -1,15 +1,15 @@
+pub mod config;
+pub mod generate;
+pub mod mock_server;
 pub mod model;
 pub mod parse;
-pub mod generate;
 pub mod runner;
-pub mod config;
-pub mod mock_server;
 
 // Re-export key types
+pub use config::models::*;
+pub use generate::*;
 pub use model::*;
 pub use parse::*;
-pub use generate::*;
-pub use config::models::*;
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -27,8 +27,16 @@ pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
     let cs = pkg
         .capability_statements
         .iter()
-        .find(|cs| cs.rest.iter().any(|r| r.mode == "server" && !r.resource.is_empty()))
-        .or_else(|| pkg.capability_statements.iter().find(|cs| cs.rest.iter().any(|r| !r.resource.is_empty())))
+        .find(|cs| {
+            cs.rest
+                .iter()
+                .any(|r| r.mode == "server" && !r.resource.is_empty())
+        })
+        .or_else(|| {
+            pkg.capability_statements
+                .iter()
+                .find(|cs| cs.rest.iter().any(|r| !r.resource.is_empty()))
+        })
         .or(pkg.capability_statements.first())
         .context("No CapabilityStatement found in IG package")?;
 
@@ -123,7 +131,11 @@ pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
     );
     tracing::info!("Output written to: {}", config.output);
 
-    println!("Generated test plan: {} test groups, {} total tests", plan.test_groups.len(), plan.total_tests());
+    println!(
+        "Generated test plan: {} test groups, {} total tests",
+        plan.test_groups.len(),
+        plan.total_tests()
+    );
     println!("Generated {} resource files", profile_resources.len());
     println!("Output directory: {}", config.output);
 
@@ -159,8 +171,16 @@ pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
     let cs = pkg
         .capability_statements
         .iter()
-        .find(|cs| cs.rest.iter().any(|r| r.mode == "server" && !r.resource.is_empty()))
-        .or_else(|| pkg.capability_statements.iter().find(|cs| cs.rest.iter().any(|r| !r.resource.is_empty())))
+        .find(|cs| {
+            cs.rest
+                .iter()
+                .any(|r| r.mode == "server" && !r.resource.is_empty())
+        })
+        .or_else(|| {
+            pkg.capability_statements
+                .iter()
+                .find(|cs| cs.rest.iter().any(|r| !r.resource.is_empty()))
+        })
         .or(pkg.capability_statements.first())
         .context("No CapabilityStatement found in IG package")?;
 
@@ -198,12 +218,22 @@ pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
     plan.creation_order = creation_order.clone();
 
     println!();
-    println!("=== Dry Run: {} test groups, {} total tests ===", plan.test_groups.len(), plan.total_tests());
+    println!(
+        "=== Dry Run: {} test groups, {} total tests ===",
+        plan.test_groups.len(),
+        plan.total_tests()
+    );
     println!();
     println!("Read endpoint (GET/search):  {}", config.server.base_url);
     match &config.repository {
-        Some(repo) => println!("Write endpoint (POST/DELETE): {} (user: {})", repo.base_url, repo.username),
-        None => println!("Write endpoint (POST/DELETE): {} (same as read)", config.server.base_url),
+        Some(repo) => println!(
+            "Write endpoint (POST/DELETE): {} (user: {})",
+            repo.base_url, repo.username
+        ),
+        None => println!(
+            "Write endpoint (POST/DELETE): {} (same as read)",
+            config.server.base_url
+        ),
     }
     println!();
 
@@ -231,18 +261,29 @@ pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
                 println!("── {} ──", group.resource_type);
                 last_group = group.resource_type.clone();
             }
-            println!("  {} {}{}", test.request.method, config.server.base_url, test.request.url);
+            println!(
+                "  {} {}{}",
+                test.request.method, config.server.base_url, test.request.url
+            );
         }
     }
     println!();
-    println!("Cleanup: DELETE {} resources from {}", creation_order.len(), write_url);
+    println!(
+        "Cleanup: DELETE {} resources from {}",
+        creation_order.len(),
+        write_url
+    );
     println!();
 
     Ok(())
 }
 
 /// Validate a JSON resource against a profile from the IG package.
-pub fn run_validate(package_path: &str, resource_path: &str, profile_url: Option<&str>) -> Result<()> {
+pub fn run_validate(
+    package_path: &str,
+    resource_path: &str,
+    profile_url: Option<&str>,
+) -> Result<()> {
     let pkg = parse_package(package_path)?;
     let resource_content = std::fs::read_to_string(resource_path)?;
     let resource: serde_json::Value = serde_json::from_str(&resource_content)?;
@@ -274,9 +315,15 @@ pub fn run_validate(package_path: &str, resource_path: &str, profile_url: Option
     let errors = runner::validate_against_profile(&resource, profile);
 
     if errors.is_empty() {
-        println!("Validation passed for {} against {}", resource_type, profile.url);
+        println!(
+            "Validation passed for {} against {}",
+            resource_type, profile.url
+        );
     } else {
-        println!("Validation failed for {} against {}:", resource_type, profile.url);
+        println!(
+            "Validation failed for {} against {}:",
+            resource_type, profile.url
+        );
         for err in &errors {
             println!("  - {}", err);
         }

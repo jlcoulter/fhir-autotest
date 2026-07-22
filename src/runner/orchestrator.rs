@@ -1,11 +1,11 @@
-use crate::parse::*;
-use crate::generate::*;
-use crate::runner::executor::*;
-use crate::runner::bulk_loader::*;
-use crate::runner::validator::*;
-use crate::runner::response_assertions::assert_response;
-use crate::runner::value_resolver::extract_field_values;
 use crate::config::models::*;
+use crate::generate::*;
+use crate::parse::*;
+use crate::runner::bulk_loader::*;
+use crate::runner::executor::*;
+use crate::runner::response_assertions::assert_response;
+use crate::runner::validator::*;
+use crate::runner::value_resolver::extract_field_values;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
@@ -69,18 +69,24 @@ impl Orchestrator {
         let cs = pkg
             .capability_statements
             .iter()
-            .find(|cs| cs.rest.iter().any(|r| r.mode == "server" && !r.resource.is_empty()))
-            .or_else(|| pkg.capability_statements.iter().find(|cs| cs.rest.iter().any(|r| !r.resource.is_empty())))
+            .find(|cs| {
+                cs.rest
+                    .iter()
+                    .any(|r| r.mode == "server" && !r.resource.is_empty())
+            })
+            .or_else(|| {
+                pkg.capability_statements
+                    .iter()
+                    .find(|cs| cs.rest.iter().any(|r| !r.resource.is_empty()))
+            })
             .or(pkg.capability_statements.first())
             .context("No CapabilityStatement found in IG package")?;
 
         // 2. Extract dependencies and determine creation order
         let auto_deps = extract_dependencies(&pkg.structure_definitions);
         let auto_order = resolve_creation_order(&auto_deps)?;
-        let creation_order = merge_creation_order(
-            &auto_order,
-            &self.config.overrides.creation_order,
-        );
+        let creation_order =
+            merge_creation_order(&auto_order, &self.config.overrides.creation_order);
 
         tracing::info!("Resource creation order: {:?}", creation_order);
 
@@ -105,14 +111,21 @@ impl Orchestrator {
             // Ensure creation order includes all types from counts
             for rt in counts.keys() {
                 if !creation_order.contains(rt) {
-                    tracing::warn!("Data generation type '{}' not in creation order, appending", rt);
+                    tracing::warn!(
+                        "Data generation type '{}' not in creation order, appending",
+                        rt
+                    );
                 }
             }
 
             let generated_ids = generate_bulk_data(&counts, output_path)?;
             let data_creation_order = bulk_data_creation_order(&counts);
             let total_resources: u64 = counts.values().sum();
-            println!("  Generated {} total resources across {} types", total_resources, counts.len());
+            println!(
+                "  Generated {} total resources across {} types",
+                total_resources,
+                counts.len()
+            );
             for (rt, ids) in &generated_ids {
                 println!("    {}: {} resources", rt, ids.len());
             }
@@ -124,7 +137,8 @@ impl Orchestrator {
                 &data_creation_order,
                 &write_endpoint,
                 20, // concurrency
-            ).await?;
+            )
+            .await?;
 
             bulk_ids = uploaded_ids;
             println!("  Bulk data upload complete");
@@ -210,7 +224,11 @@ impl Orchestrator {
         }
 
         // 8. Run test cases (GET/search goes to the public FHIR server)
-        println!("\n── Running {} test cases against {} ──", plan.total_tests(), self.config.server.base_url);
+        println!(
+            "\n── Running {} test cases against {} ──",
+            plan.total_tests(),
+            self.config.server.base_url
+        );
         let mut results = Vec::new();
 
         for group in &plan.test_groups {
@@ -240,17 +258,27 @@ impl Orchestrator {
                         let mut type_fields: HashMap<String, serde_json::Value> = HashMap::new();
                         for (path, value) in fields.iter() {
                             if path.matches('.').count() <= 2 {
-                                type_fields.insert(path.clone(), serde_json::Value::String(value.clone()));
+                                type_fields
+                                    .insert(path.clone(), serde_json::Value::String(value.clone()));
                             }
                         }
-                        assertion.field_values.insert(test.resource_type.clone(), type_fields);
+                        assertion
+                            .field_values
+                            .insert(test.resource_type.clone(), type_fields);
                     }
                 }
 
                 match executor.execute_test(&test).await {
                     Ok(mut result) => {
-                        let status_icon = if result.status_code >= 200 && result.status_code < 300 { "→" } else { "✗" };
-                        println!("  {} {} {} [{}]", status_icon, test.request.method, test.request.url, result.status_code);
+                        let status_icon = if result.status_code >= 200 && result.status_code < 300 {
+                            "→"
+                        } else {
+                            "✗"
+                        };
+                        println!(
+                            "  {} {} {} [{}]",
+                            status_icon, test.request.method, test.request.url, result.status_code
+                        );
                         // Profile validation
                         if let Some(profile_url) = &test.validation.profile_url {
                             if let Some(response_body) = &result.response_body {
@@ -259,8 +287,7 @@ impl Orchestrator {
                                     .iter()
                                     .find(|sd| &sd.url == profile_url)
                                 {
-                                    let errors =
-                                        validate_against_profile(response_body, profile);
+                                    let errors = validate_against_profile(response_body, profile);
                                     result.validation_errors.extend(errors);
                                 }
                             }
@@ -287,7 +314,10 @@ impl Orchestrator {
                             status_code: 0,
                             response_body: None,
                             validation_errors: vec![format!("Request failed: {}", e)],
-                            request_url: format!("{}{}", self.config.server.base_url, test.request.url),
+                            request_url: format!(
+                                "{}{}",
+                                self.config.server.base_url, test.request.url
+                            ),
                             request_method: test.request.method.clone(),
                             request_body: test.request.body.clone(),
                         });
@@ -300,7 +330,10 @@ impl Orchestrator {
         if has_bulk_data {
             // Bulk delete all uploaded resources
             let data_creation_order = bulk_data_creation_order(&self.config.data_generation.counts);
-            println!("\n── Cleanup: bulk-deleting resources from {} ──", write_url);
+            println!(
+                "\n── Cleanup: bulk-deleting resources from {} ──",
+                write_url
+            );
             delete_all_resources(&bulk_ids, &data_creation_order, &write_endpoint, 20).await?;
             println!("  Bulk deletion complete");
         } else {

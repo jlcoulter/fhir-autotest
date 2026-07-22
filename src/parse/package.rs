@@ -1,10 +1,10 @@
+use crate::model::*;
 use anyhow::{Context, Result};
+use flate2::read::GzDecoder;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Read;
-use flate2::read::GzDecoder;
 use tar::Archive;
-use serde_json::Value;
-use crate::model::*;
 
 /// Parsed contents of a FHIR IG package (.tgz).
 #[derive(Debug)]
@@ -19,8 +19,8 @@ pub struct IgPackage {
 /// Parse a FHIR IG package (.tgz) file.
 /// Extracts all JSON resources and categorizes them by resourceType.
 pub fn parse_package(path: &str) -> Result<IgPackage> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("Failed to open IG package: {path}"))?;
+    let file =
+        std::fs::File::open(path).with_context(|| format!("Failed to open IG package: {path}"))?;
     let gz = GzDecoder::new(file);
     let mut archive = Archive::new(gz);
 
@@ -60,25 +60,29 @@ pub fn parse_package(path: &str) -> Result<IgPackage> {
             "CapabilityStatement" => {
                 match serde_json::from_value::<CapabilityStatement>(json.clone()) {
                     Ok(cs) => capability_statements.push(cs),
-                    Err(e) => tracing::warn!("Failed to parse CapabilityStatement in {}: {e}", path_str),
+                    Err(e) => {
+                        tracing::warn!("Failed to parse CapabilityStatement in {}: {e}", path_str)
+                    }
                 }
             }
             "StructureDefinition" => {
                 match serde_json::from_value::<StructureDefinition>(json.clone()) {
                     Ok(sd) => structure_definitions.push(sd),
-                    Err(e) => tracing::warn!("Failed to parse StructureDefinition in {}: {e}", path_str),
+                    Err(e) => {
+                        tracing::warn!("Failed to parse StructureDefinition in {}: {e}", path_str)
+                    }
                 }
             }
-            "SearchParameter" => {
-                match serde_json::from_value::<SearchParameter>(json.clone()) {
-                    Ok(sp) => search_parameters.push(sp),
-                    Err(e) => tracing::warn!("Failed to parse SearchParameter in {}: {e}", path_str),
-                }
-            }
+            "SearchParameter" => match serde_json::from_value::<SearchParameter>(json.clone()) {
+                Ok(sp) => search_parameters.push(sp),
+                Err(e) => tracing::warn!("Failed to parse SearchParameter in {}: {e}", path_str),
+            },
             "OperationDefinition" => {
                 match serde_json::from_value::<OperationDefinition>(json.clone()) {
                     Ok(od) => operation_definitions.push(od),
-                    Err(e) => tracing::warn!("Failed to parse OperationDefinition in {}: {e}", path_str),
+                    Err(e) => {
+                        tracing::warn!("Failed to parse OperationDefinition in {}: {e}", path_str)
+                    }
                 }
             }
             _ => {}
@@ -131,10 +135,17 @@ mod tests {
             }"#;
 
             let mut header = tar::Header::new_gnu();
-            header.set_path("package/CapabilityStatement-test.json").unwrap();
+            header
+                .set_path("package/CapabilityStatement-test.json")
+                .unwrap();
             header.set_size(cs_json.len() as u64);
             header.set_cksum();
-            tar.append_data(&mut header, "package/CapabilityStatement-test.json", cs_json.as_bytes()).unwrap();
+            tar.append_data(
+                &mut header,
+                "package/CapabilityStatement-test.json",
+                cs_json.as_bytes(),
+            )
+            .unwrap();
 
             let sd_json = r#"{
                 "resourceType": "StructureDefinition",
@@ -160,17 +171,25 @@ mod tests {
             }"#;
 
             let mut header2 = tar::Header::new_gnu();
-            header2.set_path("package/StructureDefinition-TestPatient.json").unwrap();
+            header2
+                .set_path("package/StructureDefinition-TestPatient.json")
+                .unwrap();
             header2.set_size(sd_json.len() as u64);
             header2.set_cksum();
-            tar.append_data(&mut header2, "package/StructureDefinition-TestPatient.json", sd_json.as_bytes()).unwrap();
+            tar.append_data(
+                &mut header2,
+                "package/StructureDefinition-TestPatient.json",
+                sd_json.as_bytes(),
+            )
+            .unwrap();
 
             tar.finish().unwrap();
         }
 
         let mut gz_data = Vec::new();
         {
-            let mut gz = flate2::write::GzEncoder::new(&mut gz_data, flate2::Compression::default());
+            let mut gz =
+                flate2::write::GzEncoder::new(&mut gz_data, flate2::Compression::default());
             gz.write_all(&tar_data).unwrap();
             gz.finish().unwrap();
         }

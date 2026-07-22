@@ -15,10 +15,7 @@ pub type IdStore = HashMap<String, Vec<String>>;
 /// Writes one `.ndjson` file per resource type under `output_dir/data/`.
 /// Returns an `IdStore` mapping each resource type to its generated IDs,
 /// which is used to resolve cross-references during generation.
-pub fn generate_bulk_data(
-    counts: &HashMap<String, u64>,
-    output_dir: &Path,
-) -> Result<IdStore> {
+pub fn generate_bulk_data(counts: &HashMap<String, u64>, output_dir: &Path) -> Result<IdStore> {
     use std::io::BufWriter;
 
     let data_dir = output_dir.join("data");
@@ -69,12 +66,8 @@ pub fn generate_bulk_data(
                     gen_practitioner_role(id, &org_ids, &prac_ids, &loc_ids, &mut rng)
                 }
                 "Location" => gen_location(id, &mut rng),
-                "HealthcareService" => {
-                    gen_healthcare_service(id, &org_ids, &loc_ids, &mut rng)
-                }
-                "Endpoint" => {
-                    gen_endpoint(id, &org_ids, &mut rng)
-                }
+                "HealthcareService" => gen_healthcare_service(id, &org_ids, &loc_ids, &mut rng),
+                "Endpoint" => gen_endpoint(id, &org_ids, &mut rng),
                 // Generic fallback for any resource type not explicitly handled
                 _ => gen_generic(resource_type, id, &mut rng),
             };
@@ -85,11 +78,21 @@ pub fn generate_bulk_data(
             if written % 10_000 == 0 {
                 // Flush progress to disk so external observers see the file growing.
                 writer.flush()?;
-                tracing::info!("Generated {}/{} {} resources", written, count, resource_type);
+                tracing::info!(
+                    "Generated {}/{} {} resources",
+                    written,
+                    count,
+                    resource_type
+                );
             }
         }
         writer.flush()?;
-        tracing::info!("Wrote {} {} resources to {}", written, resource_type, path.display());
+        tracing::info!(
+            "Wrote {} {} resources to {}",
+            written,
+            resource_type,
+            path.display()
+        );
     }
 
     Ok(ids)
@@ -236,7 +239,10 @@ struct FhirLocation {
     position: Position,
     #[serde(skip_serializing_if = "Option::is_none")]
     address: Option<Address>,
-    #[serde(rename = "managingOrganization", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "managingOrganization",
+        skip_serializing_if = "Option::is_none"
+    )]
     managing_organization: Option<Reference>,
 }
 
@@ -275,7 +281,10 @@ struct FhirEndpoint {
     #[serde(rename = "payloadType")]
     payload_type: Vec<CodeableConcept>,
     address: String,
-    #[serde(rename = "managingOrganization", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "managingOrganization",
+        skip_serializing_if = "Option::is_none"
+    )]
     managing_organization: Option<Reference>,
 }
 
@@ -361,8 +370,14 @@ struct AvailableTime {
 
 fn gen_organization(id: &str, rng: &mut impl Rng) -> serde_json::Value {
     let name: String = fake::faker::company::en::CompanyName().fake();
-    let npi = format!("{}{}", rng.random_range(100..999), rng.random_range(1000000..9999999));
-    let org_types = ["prov", "dept", "team", "govt", "ins", "pay", "edu", "reli", "crs"];
+    let npi = format!(
+        "{}{}",
+        rng.random_range(100..999),
+        rng.random_range(1000000..9999999)
+    );
+    let org_types = [
+        "prov", "dept", "team", "govt", "ins", "pay", "edu", "reli", "crs",
+    ];
     let org_type = org_types[rng.random_range(0..org_types.len())];
     let city: String = fake::faker::address::en::CityName().fake();
     let state: String = fake::faker::address::en::StateAbbr().fake();
@@ -413,7 +428,11 @@ fn gen_organization(id: &str, rng: &mut impl Rng) -> serde_json::Value {
 fn gen_practitioner(id: &str, rng: &mut impl Rng) -> serde_json::Value {
     let family: String = fake::faker::name::en::LastName().fake();
     let given: String = fake::faker::name::en::FirstName().fake();
-    let npi = format!("{}{}", rng.random_range(100..999), rng.random_range(1000000..9999999));
+    let npi = format!(
+        "{}{}",
+        rng.random_range(100..999),
+        rng.random_range(1000000..9999999)
+    );
     let year: u32 = rng.random_range(1950..=2000);
     let month: u32 = rng.random_range(1..=12);
     let day: u32 = rng.random_range(1..=28);
@@ -498,12 +517,18 @@ fn gen_practitioner_role(
     let days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
     let n_days = rng.random_range(2..6);
     let start_day = rng.random_range(0..days.len() - n_days + 1);
-    let work_days: Vec<String> = days[start_day..start_day + n_days].iter().map(|d| d.to_string()).collect();
+    let work_days: Vec<String> = days[start_day..start_day + n_days]
+        .iter()
+        .map(|d| d.to_string())
+        .collect();
 
     let mut locations = Vec::new();
     if !loc_ids.is_empty() {
         let loc_ref = random_ref("Location", loc_ids, rng);
-        locations.push(Reference { reference: loc_ref, display: None });
+        locations.push(Reference {
+            reference: loc_ref,
+            display: None,
+        });
     }
 
     let role = FhirPractitionerRole {
@@ -600,9 +625,18 @@ fn gen_location(id: &str, rng: &mut impl Rng) -> serde_json::Value {
     let loc = FhirLocation {
         resource_type: "Location".to_string(),
         id: id.to_string(),
-        meta: Meta { profile: vec!["http://hl7.org/fhir/us/davinci-pdex-plan-net/StructureDefinition/plannet-Location".to_string()] },
+        meta: Meta {
+            profile: vec![
+                "http://hl7.org/fhir/us/davinci-pdex-plan-net/StructureDefinition/plannet-Location"
+                    .to_string(),
+            ],
+        },
         status: status.to_string(),
-        name: format!("{} Clinic - {}", fake::faker::name::en::LastName().fake::<String>(), city_name),
+        name: format!(
+            "{} Clinic - {}",
+            fake::faker::name::en::LastName().fake::<String>(),
+            city_name
+        ),
         loc_type: vec![CodeableConcept {
             coding: vec![Coding {
                 system: "http://terminology.hl7.org/CodeSystem/v3-RoleCode".to_string(),
@@ -617,10 +651,17 @@ fn gen_location(id: &str, rng: &mut impl Rng) -> serde_json::Value {
                 display: Some(phys_type.1.to_string()),
             }],
         }),
-        position: Position { latitude: lat, longitude: lon },
+        position: Position {
+            latitude: lat,
+            longitude: lon,
+        },
         address: Some(Address {
             addr_type: "physical".to_string(),
-            line: vec![format!("{} {} St", rng.random_range(100..9999), fake::faker::name::en::LastName().fake::<String>())],
+            line: vec![format!(
+                "{} {} St",
+                rng.random_range(100..9999),
+                fake::faker::name::en::LastName().fake::<String>()
+            )],
             city: city_name,
             state: fake::faker::address::en::StateAbbr().fake(),
             postal_code: fake::faker::address::en::ZipCode().fake(),
@@ -707,22 +748,26 @@ fn gen_healthcare_service(
     serde_json::to_value(svc).unwrap()
 }
 
-fn gen_endpoint(
-    id: &str,
-    org_ids: &[String],
-    rng: &mut impl Rng,
-) -> serde_json::Value {
+fn gen_endpoint(id: &str, org_ids: &[String], rng: &mut impl Rng) -> serde_json::Value {
     let endpoint = FhirEndpoint {
         resource_type: "Endpoint".to_string(),
         id: id.to_string(),
-        meta: Meta { profile: vec!["http://hl7.org/fhir/us/davinci-pdex-plan-net/StructureDefinition/plannet-Endpoint".to_string()] },
+        meta: Meta {
+            profile: vec![
+                "http://hl7.org/fhir/us/davinci-pdex-plan-net/StructureDefinition/plannet-Endpoint"
+                    .to_string(),
+            ],
+        },
         status: "active".to_string(),
         connection_type: Coding {
             system: "http://terminology.hl7.org/CodeSystem/endpoint-connection-type".to_string(),
             code: "hl7-fhir-rest".to_string(),
             display: Some("HL7 FHIR REST".to_string()),
         },
-        name: format!("{} FHIR Endpoint", fake::faker::company::en::CompanyName().fake::<String>()),
+        name: format!(
+            "{} FHIR Endpoint",
+            fake::faker::company::en::CompanyName().fake::<String>()
+        ),
         payload_type: vec![CodeableConcept {
             coding: vec![Coding {
                 system: "http://terminology.hl7.org/CodeSystem/endpoint-payload-type".to_string(),
@@ -730,7 +775,10 @@ fn gen_endpoint(
                 display: Some("None".to_string()),
             }],
         }],
-        address: format!("https://{}.example.org/fhir", fake::faker::internet::en::DomainSuffix().fake::<String>()),
+        address: format!(
+            "https://{}.example.org/fhir",
+            fake::faker::internet::en::DomainSuffix().fake::<String>()
+        ),
         managing_organization: if org_ids.is_empty() {
             None
         } else {
@@ -755,7 +803,10 @@ fn gen_generic(resource_type: &str, id: &str, _rng: &mut impl Rng) -> serde_json
         "status": "active"
     });
     // Add a name field if the resource type typically has one
-    if matches!(resource_type, "Patient" | "Person" | "Group" | "List" | "Library") {
+    if matches!(
+        resource_type,
+        "Patient" | "Person" | "Group" | "List" | "Library"
+    ) {
         resource["name"] = serde_json::json!(fake::faker::name::en::Name().fake::<String>());
     }
     resource
@@ -786,11 +837,20 @@ mod tests {
 
         // NDJSON files should exist and have the right line counts
         for (resource_type, count) in &counts {
-            let path = dir.path().join("data").join(format!("{}.ndjson", resource_type));
+            let path = dir
+                .path()
+                .join("data")
+                .join(format!("{}.ndjson", resource_type));
             assert!(path.exists(), "{}.ndjson should exist", resource_type);
             let contents = std::fs::read_to_string(&path).unwrap();
             let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
-            assert_eq!(lines.len(), *count as usize, "{} should have {} lines", resource_type, count);
+            assert_eq!(
+                lines.len(),
+                *count as usize,
+                "{} should have {} lines",
+                resource_type,
+                count
+            );
 
             // Each line should be valid JSON
             for line in &lines {
@@ -824,12 +884,20 @@ mod tests {
             let prac_ref = pr["practitioner"]["reference"].as_str().unwrap();
             assert!(prac_ref.starts_with("Practitioner/"));
             let prac_id = prac_ref.strip_prefix("Practitioner/").unwrap();
-            assert!(prac_ids.contains(&prac_id.to_string()), "Practitioner reference {} should exist", prac_id);
+            assert!(
+                prac_ids.contains(&prac_id.to_string()),
+                "Practitioner reference {} should exist",
+                prac_id
+            );
 
             let org_ref = pr["organization"]["reference"].as_str().unwrap();
             assert!(org_ref.starts_with("Organization/"));
             let org_id = org_ref.strip_prefix("Organization/").unwrap();
-            assert!(org_ids.contains(&org_id.to_string()), "Organization reference {} should exist", org_id);
+            assert!(
+                org_ids.contains(&org_id.to_string()),
+                "Organization reference {} should exist",
+                org_id
+            );
         }
 
         // Check HealthcareService references
@@ -857,8 +925,16 @@ mod tests {
             let lat = loc["position"]["latitude"].as_f64().unwrap();
             let lon = loc["position"]["longitude"].as_f64().unwrap();
             // Should be in US range
-            assert!(lat >= 20.0 && lat <= 55.0, "Latitude {} should be in US range", lat);
-            assert!(lon >= -130.0 && lon <= -60.0, "Longitude {} should be in US range", lon);
+            assert!(
+                lat >= 20.0 && lat <= 55.0,
+                "Latitude {} should be in US range",
+                lat
+            );
+            assert!(
+                lon >= -130.0 && lon <= -60.0,
+                "Longitude {} should be in US range",
+                lon
+            );
         }
     }
 
@@ -875,8 +951,14 @@ mod tests {
         let org_idx = order.iter().position(|t| t == "Organization").unwrap();
         let loc_idx = order.iter().position(|t| t == "Location").unwrap();
         let pr_idx = order.iter().position(|t| t == "PractitionerRole").unwrap();
-        assert!(org_idx < pr_idx, "Organization should come before PractitionerRole");
-        assert!(loc_idx < pr_idx, "Location should come before PractitionerRole");
+        assert!(
+            org_idx < pr_idx,
+            "Organization should come before PractitionerRole"
+        );
+        assert!(
+            loc_idx < pr_idx,
+            "Location should come before PractitionerRole"
+        );
     }
 
     #[test]

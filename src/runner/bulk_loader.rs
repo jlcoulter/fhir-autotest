@@ -1,8 +1,8 @@
 use crate::config::models::WriteEndpoint;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::path::Path;
 use std::io::BufRead;
+use std::path::Path;
 
 /// Upload NDJSON files to the FHIR repository and return IDs per resource type.
 ///
@@ -51,7 +51,12 @@ pub async fn upload_ndjson_files(
         }
 
         println!("  Uploading {} {} resources ...", total, resource_type);
-        tracing::info!("Uploading {} {} resources to {}", total, resource_type, base_url);
+        tracing::info!(
+            "Uploading {} {} resources to {}",
+            total,
+            resource_type,
+            base_url
+        );
 
         let mut ids: Vec<String> = Vec::with_capacity(total);
         let mut uploaded = 0usize;
@@ -67,7 +72,8 @@ pub async fn upload_ndjson_files(
                     .with_context(|| format!("Invalid JSON in {}.ndjson", resource_type))?;
                 // Remove the id field — let the server assign one
                 let mut resource = resource;
-                let client_id = resource.get("id")
+                let client_id = resource
+                    .get("id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
@@ -96,7 +102,8 @@ pub async fn upload_ndjson_files(
                 match handle.await {
                     Ok(Ok((client_id, status, body))) => {
                         if status == 201 || status == 200 {
-                            let server_id = body.get("id")
+                            let server_id = body
+                                .get("id")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or(&client_id)
                                 .to_string();
@@ -104,7 +111,9 @@ pub async fn upload_ndjson_files(
                         } else {
                             tracing::warn!(
                                 "Failed to create {} resource: HTTP {} — {:?}",
-                                resource_type, status, body
+                                resource_type,
+                                status,
+                                body
                             );
                             errors += 1;
                         }
@@ -129,7 +138,10 @@ pub async fn upload_ndjson_files(
 
         println!(
             "  → {}/{} {} created ({} errors)",
-            ids.len(), total, resource_type, errors
+            ids.len(),
+            total,
+            resource_type,
+            errors
         );
         all_ids.insert(resource_type.clone(), ids);
     }
@@ -218,11 +230,14 @@ pub async fn delete_all_resources(
 }
 
 /// Add write auth headers to a request based on the endpoint config.
-fn add_write_auth(req: reqwest::RequestBuilder, endpoint: &WriteEndpoint) -> reqwest::RequestBuilder {
+fn add_write_auth(
+    req: reqwest::RequestBuilder,
+    endpoint: &WriteEndpoint,
+) -> reqwest::RequestBuilder {
     match endpoint {
-        WriteEndpoint::Repository { username, password, .. } => {
-            req.basic_auth(username.clone(), Some(password.clone()))
-        }
+        WriteEndpoint::Repository {
+            username, password, ..
+        } => req.basic_auth(username.clone(), Some(password.clone())),
         WriteEndpoint::Server { headers, .. } => {
             let mut r = req;
             for (key, value) in headers {

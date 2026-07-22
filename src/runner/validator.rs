@@ -88,20 +88,14 @@ pub fn validate_against_profile(
         if let Some(fixed) = &element.fixed_boolean {
             if let Some(val) = resource.get(&field_name).and_then(|v| v.as_bool()) {
                 if val != *fixed {
-                    errors.push(format!(
-                        "{}: expected {}, got {}",
-                        element.path, fixed, val
-                    ));
+                    errors.push(format!("{}: expected {}, got {}", element.path, fixed, val));
                 }
             }
         }
         if let Some(fixed) = &element.fixed_integer {
             if let Some(val) = resource.get(&field_name).and_then(|v| v.as_i64()) {
                 if val != *fixed as i64 {
-                    errors.push(format!(
-                        "{}: expected {}, got {}",
-                        element.path, fixed, val
-                    ));
+                    errors.push(format!("{}: expected {}, got {}", element.path, fixed, val));
                 }
             }
         }
@@ -276,7 +270,9 @@ mod tests {
             "resourceType": "Patient"
         });
         let errors = validate_against_profile(&resource, &profile);
-        assert!(errors.iter().any(|e| e.contains("name") && e.contains("Missing required")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("name") && e.contains("Missing required")));
     }
 
     #[test]
@@ -326,6 +322,8 @@ mod tests {
             "gender": "female"
         });
         let errors = validate_against_profile(&resource, &profile);
-        assert!(errors.iter().any(|e| e.contains("gender") && e.contains("expected code 'male'")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("gender") && e.contains("expected code 'male'")));
     }
 }

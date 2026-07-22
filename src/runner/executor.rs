@@ -1,5 +1,5 @@
-use crate::generate::model::*;
 use crate::config::models::WriteEndpoint;
+use crate::generate::model::*;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
@@ -57,10 +57,7 @@ impl TestExecutor {
 
     /// Convenience constructor that uses the same server for reads and writes
     /// (backward-compatible with the old ServerConfig-only approach).
-    pub fn from_server_config(
-        base_url: &str,
-        headers: HashMap<String, String>,
-    ) -> Result<Self> {
+    pub fn from_server_config(base_url: &str, headers: HashMap<String, String>) -> Result<Self> {
         Self::new(
             base_url.to_string(),
             headers.clone(),
@@ -74,9 +71,9 @@ impl TestExecutor {
     /// Build a reqwest request with the appropriate auth for the given endpoint.
     fn add_write_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.write_endpoint {
-            WriteEndpoint::Repository { username, password, .. } => {
-                req.basic_auth(username.clone(), Some(password.clone()))
-            }
+            WriteEndpoint::Repository {
+                username, password, ..
+            } => req.basic_auth(username.clone(), Some(password.clone())),
             WriteEndpoint::Server { headers, .. } => {
                 let mut r = req;
                 for (key, value) in headers {

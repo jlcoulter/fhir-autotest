@@ -110,7 +110,9 @@ pub fn search_param_to_field_paths(
         (_, "target") => vec![format!("{}.target[0].reference", resource_type)],
         (_, "organization") => vec![format!("{}.organization.reference", resource_type)],
         (_, "partOf") => vec![format!("{}.partOf.reference", resource_type)],
-        (_, "managingOrganization") => vec![format!("{}.managingOrganization.reference", resource_type)],
+        (_, "managingOrganization") => {
+            vec![format!("{}.managingOrganization.reference", resource_type)]
+        }
         // Special: _id
         (_, "_id") => vec![format!("{}.id", resource_type)],
         // Fallback: try common patterns based on param type
@@ -240,7 +242,13 @@ mod tests {
         created_ids.insert("Patient".to_string(), "patient-456".to_string());
 
         // "subject" should resolve to Patient type
-        let result = resolve_search_value("Observation", "subject", "reference", &HashMap::new(), &created_ids);
+        let result = resolve_search_value(
+            "Observation",
+            "subject",
+            "reference",
+            &HashMap::new(),
+            &created_ids,
+        );
         assert_eq!(result, Some("Patient/patient-456".to_string()));
     }
 
