@@ -1413,6 +1413,7 @@ mod debug_tests {
     use crate::parse::parse_package;
 
     #[test]
+    #[ignore = "requires local package/package.tgz — run with `cargo test -- --ignored`"]
     fn debug_real_package_cs_parsing() {
         let pkg = parse_package("package/package.tgz").unwrap();
         for cs in &pkg.capability_statements {
