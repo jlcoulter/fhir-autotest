@@ -19,6 +19,40 @@ cargo build --release
 
 ## Usage
 
+### Config-driven workflow (recommended)
+
+Create a `config.toml` (see [`config.toml`](config.toml) for a full example):
+
+```toml
+package = "path/to/ig-package.tgz"
+output = "./output"
+results = "./results.json"
+
+[server]
+base_url = "http://localhost:8080/fhir"
+```
+
+Then run:
+
+```bash
+# Generate test plan and resources
+fhir-ig-testgen --generate
+
+# Run tests against a FHIR server
+fhir-ig-testgen
+
+# Run tests against a built-in mock server (no real FHIR server needed)
+fhir-ig-testgen --mock
+
+# Mock server on a specific port
+fhir-ig-testgen --mock --mock-port 8091
+
+# Preview without executing
+fhir-ig-testgen --config config.toml --dry-run
+```
+
+CLI flags override config values: `--package`, `--output`, `--results`.
+
 ### Generate a test plan and resources
 
 ```bash
@@ -28,9 +62,11 @@ fhir-ig-testgen generate --package path/to/ig-package.tgz --output ./output
 This creates:
 
 - `output/test_plan.json` — the full test plan with all test cases
-- `output/resources/patient.json` — generated Patient resource
-- `output/resources/observation.json` — generated Observation resource
+- `output/resources/TestPatient.json` — generated Patient resource (named by profile)
+- `output/resources/TestObservation.json` — generated Observation resource (named by profile)
 - etc.
+
+Each generated resource includes `meta.profile` with the profile's canonical URL, so FHIR servers can validate which profile it conforms to.
 
 ### Run tests against a FHIR server
 
@@ -112,8 +148,9 @@ For each resource type declared in a server-mode CapabilityStatement, `fhir-ig-t
 | **CRUD interactions** | One test per supported interaction | `read`, `create`, `update`, `delete`, `search-type` |
 | **Single search params** | One test per declared search parameter | `?name=Smith`, `?birthdate=2024-01-01` |
 | **Search modifiers** | Type-appropriate modifiers | `:exact`, `:contains` on strings; `:missing` on all; `:not` on tokens |
-| **Search prefixes** | All 9 FHIR prefixes on date/number/quantity params | `?birthdate=gt2024-01-01`, `?birthdate=lt2024-01-01` |
-| **Combinatorial searches** | All 2-parameter combinations within a resource type | `?name=Smith&birthdate=2024-01-01` |
+|| **Search prefixes** | All 9 FHIR prefixes on date/number/quantity params | `?birthdate=gt2024-01-01`, `?birthdate=lt2024-01-01` |
+|| **Near searches** | Coordinate/distance searches for `special`-type params | `?near=-33.86:151.21:10:km` |
+|| **Combinatorial searches** | All 2-parameter combinations within a resource type | `?name=Smith&birthdate=2024-01-01` |
 | **`_include` / `_revinclude`** | From the CS's declared `searchInclude` and `searchRevInclude` | `?_include=Patient:organization` |
 | **Result parameters** | `_summary`, `_count`, `_sort` on every searchable resource | `?_summary=true`, `?_count=1`, `?_sort=name` |
 | **`$operation`** | From both resource-level and system-level `rest.operation` | `$everything`, `$export` |
@@ -212,11 +249,55 @@ Key settings:
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `server.base_url` | FHIR server base URL | Required |
-| `server.headers` | HTTP headers (auth tokens) | None |
+| `package` | Path to the IG package (.tgz) | Required (or `--package` flag) |
+| `output` | Directory for generated test plan and resources | `./output` |
+| `results` | Path to write detailed JSON test results | None |
+| `dry_run` | Print all test URLs without executing | `false` |
+| `server.base_url` | Public FHIR server URL (for GET/search queries) | Required |
+| `server.headers` | HTTP headers for the public server (auth tokens) | None |
+| `repository.base_url` | Internal repository URL (for POST/DELETE) | None |
+| `repository.username` | Basic auth username for the repository | None |
+| `repository.password` | Basic auth password for the repository | None |
 | `overrides.creation_order` | Manual resource creation order | Auto-resolved |
 | `overrides.fixtures_dir` | Directory for fixture JSON files | None |
 | `overrides.fixture_map` | Map resource type → fixture filename | None |
+| `data_generation.counts` | Bulk data counts per resource type (e.g. Organization = 20000) | None |
+| `--mock` | Use built-in mock FHIR server instead of configured server | off |
+| `--mock-port` | Port for mock server (0 = random) | 0 |
+
+### Repository vs Server
+
+When `repository` is configured, write operations (POST, PUT, DELETE) go to the
+repository endpoint with basic auth, while read/search queries go to the public
+`server` endpoint. This matches production setups where the public FHIR API is
+read-only and data must be loaded through an internal service.
+
+In development, leave `repository` commented out — all requests go to `server`.
+
+### Bulk Data Generation
+
+When `data_generation.counts` is configured, the tool generates realistic FHIR
+resources in NDJSON format (one file per resource type under `{output}/data/`),
+bulk-uploads them to the repository before tests, and bulk-deletes them afterward.
+
+```toml
+[data_generation]
+counts.Organization = 20_000
+counts.Practitioner = 100_000
+counts.PractitionerRole = 300_000
+counts.Location = 20_000
+counts.HealthcareService = 100_000
+```
+
+Key features:
+
+- **Cross-references**: PractitionerRole references Practitioner and Organization; HealthcareService references Organization and Location. All IDs are pre-allocated so references resolve correctly.
+- **Realistic data**: Names, addresses, NPIs, specialties, and coordinates are generated using the `fake` crate.
+- **Coordinate coverage**: Locations are spread across 20 US cities with lat/lon jitter, enabling `near` search tests.
+- **Dependency order**: Resources are created in the correct order (Organization/Location first, then Practitioner, then PractitionerRole/HealthcareService) and deleted in reverse.
+- **Concurrent uploads**: 20 parallel requests during upload and deletion for throughput.
+
+When `data_generation.counts` is set, the single-resource setup phase is skipped — only bulk data is used.
 
 ## Real-World Example
 

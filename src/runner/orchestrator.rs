@@ -1,6 +1,7 @@
 use crate::parse::*;
 use crate::generate::*;
 use crate::runner::executor::*;
+use crate::runner::bulk_loader::*;
 use crate::runner::validator::*;
 use crate::runner::response_assertions::assert_response;
 use crate::runner::value_resolver::extract_field_values;
@@ -11,12 +12,12 @@ use std::collections::HashMap;
 /// Orchestrates the full test pipeline:
 /// 1. Parse IG package
 /// 2. Resolve dependencies → creation order
-/// 3. Generate or load fixture resources
+/// 3. Generate or load fixture resources / bulk data
 /// 4. Generate test plan from CapabilityStatement
-/// 5. Create setup resources on the server
+/// 5. Create setup resources on the server (or bulk-upload NDJSON)
 /// 6. Execute test cases
 /// 7. Validate responses against profiles
-/// 8. Cleanup (delete created resources)
+/// 8. Cleanup (delete created resources / bulk-delete)
 pub struct Orchestrator {
     config: TestConfig,
 }
@@ -83,35 +84,85 @@ impl Orchestrator {
 
         tracing::info!("Resource creation order: {:?}", creation_order);
 
-        // 3. Load fixture overrides
+        // 3. Determine data setup strategy
+        let has_bulk_data = !self.config.data_generation.counts.is_empty();
+        let write_endpoint = self.config.write_endpoint();
+        let write_url = match &self.config.repository {
+            Some(repo) => &repo.base_url,
+            None => &self.config.server.base_url,
+        };
+
+        // Bulk data IDs for cleanup (used when data_generation is configured)
+        let mut bulk_ids: HashMap<String, Vec<String>> = HashMap::new();
+
+        if has_bulk_data {
+            // ── Bulk data path: generate NDJSON, upload, then test ──
+            let output_path = std::path::Path::new(&self.config.output);
+            let data_dir = output_path.join("data");
+
+            println!("\n── Generating bulk test data ──");
+            let counts = self.config.data_generation.counts.clone();
+            // Ensure creation order includes all types from counts
+            for rt in counts.keys() {
+                if !creation_order.contains(rt) {
+                    tracing::warn!("Data generation type '{}' not in creation order, appending", rt);
+                }
+            }
+
+            let generated_ids = generate_bulk_data(&counts, output_path)?;
+            let data_creation_order = bulk_data_creation_order(&counts);
+            let total_resources: u64 = counts.values().sum();
+            println!("  Generated {} total resources across {} types", total_resources, counts.len());
+            for (rt, ids) in &generated_ids {
+                println!("    {}: {} resources", rt, ids.len());
+            }
+
+            // Upload NDJSON files to the repository
+            println!("\n── Uploading bulk data to {} ──", write_url);
+            let uploaded_ids = upload_ndjson_files(
+                &data_dir,
+                &data_creation_order,
+                &write_endpoint,
+                20, // concurrency
+            ).await?;
+
+            bulk_ids = uploaded_ids;
+            println!("  Bulk data upload complete");
+        }
+
+        // 4. Load fixture overrides (for single-resource setup, not bulk)
         let fixtures = self.config.load_fixtures()?;
 
-        // 4. Generate or load resources for each type
+        // 5. Generate or load individual resources (when NOT using bulk data)
         let mut resources: HashMap<String, serde_json::Value> = HashMap::new();
-        for resource_type in &creation_order {
-            if let Some(fixture) = fixtures.get(resource_type) {
-                tracing::info!("Using fixture for {}", resource_type);
-                resources.insert(resource_type.clone(), fixture.clone());
-            } else {
-                // Find the profile for this resource type
-                let profile = pkg
-                    .structure_definitions
-                    .iter()
-                    .find(|sd| sd.base_type == *resource_type);
-                if let Some(profile) = profile {
-                    let generated = generate_resource(profile)?;
-                    tracing::info!("Generated resource for {}", resource_type);
-                    resources.insert(resource_type.clone(), generated);
+        let mut created_ids: HashMap<String, String> = HashMap::new();
+        let mut resource_field_values: HashMap<String, HashMap<String, String>> = HashMap::new();
+
+        if !has_bulk_data {
+            for resource_type in &creation_order {
+                if let Some(fixture) = fixtures.get(resource_type) {
+                    tracing::info!("Using fixture for {}", resource_type);
+                    resources.insert(resource_type.clone(), fixture.clone());
                 } else {
-                    tracing::warn!(
-                        "No profile found for {}, skipping resource generation",
-                        resource_type
-                    );
+                    let profile = pkg
+                        .structure_definitions
+                        .iter()
+                        .find(|sd| sd.base_type == *resource_type);
+                    if let Some(profile) = profile {
+                        let generated = generate_resource(profile)?;
+                        tracing::info!("Generated resource for {}", resource_type);
+                        resources.insert(resource_type.clone(), generated);
+                    } else {
+                        tracing::warn!(
+                            "No profile found for {}, skipping resource generation",
+                            resource_type
+                        );
+                    }
                 }
             }
         }
 
-        // 5. Generate test plan
+        // 6. Generate test plan
         let mut plan = generate_test_plan(
             cs,
             &pkg.structure_definitions,
@@ -127,39 +178,41 @@ impl Orchestrator {
             plan.total_tests()
         );
 
-        // 6. Execute: create setup resources, run tests
-        let executor = TestExecutor::new(&self.config.server)?;
-        let mut created_ids: HashMap<String, String> = HashMap::new();
-        let mut resource_field_values: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut results = Vec::new();
+        // 7. Create setup resources (single-resource path only)
+        let executor = TestExecutor::new(
+            self.config.server.base_url.clone(),
+            self.config.server.headers.clone(),
+            write_endpoint.clone(),
+        )?;
 
-        // Create resources in dependency order
-        println!("\n── Setup: creating resources ──");
-        for resource_type in &creation_order {
-            if let Some(body) = resources.get(resource_type) {
-                let mut body = body.clone();
-                resolve_references(&mut body, &created_ids);
+        if !has_bulk_data {
+            println!("\n── Setup: creating resources on {} ──", write_url);
+            for resource_type in &creation_order {
+                if let Some(body) = resources.get(resource_type) {
+                    let mut body = body.clone();
+                    resolve_references(&mut body, &created_ids);
 
-                // Extract field values BEFORE creating (so we know what we sent)
-                let field_values = extract_field_values(resource_type, &body);
-                resource_field_values.insert(resource_type.clone(), field_values);
+                    let field_values = extract_field_values(resource_type, &body);
+                    resource_field_values.insert(resource_type.clone(), field_values);
 
-                print!("  POST {}/{} ... ", self.config.server.base_url, resource_type);
-                match executor.create_resource(resource_type, &body).await {
-                    Ok((id, _)) => {
-                        println!("→ {}/{}", resource_type, id);
-                        created_ids.insert(resource_type.clone(), id);
-                    }
-                    Err(e) => {
-                        println!("✗ {}", e);
-                        // Continue with other resources
+                    print!("  POST {}/{} ... ", write_url, resource_type);
+                    match executor.create_resource(resource_type, &body).await {
+                        Ok((id, _)) => {
+                            println!("→ {}/{}", resource_type, id);
+                            created_ids.insert(resource_type.clone(), id);
+                        }
+                        Err(e) => {
+                            println!("✗ {}", e);
+                        }
                     }
                 }
             }
         }
 
-        // Run test cases
-        println!("\n── Running {} test cases ──", plan.total_tests());
+        // 8. Run test cases (GET/search goes to the public FHIR server)
+        println!("\n── Running {} test cases against {} ──", plan.total_tests(), self.config.server.base_url);
+        let mut results = Vec::new();
+
         for group in &plan.test_groups {
             println!("\n── {} ──", group.resource_type);
             for test in &group.tests {
@@ -171,7 +224,6 @@ impl Orchestrator {
                 }
 
                 // Resolve search parameter values from created resources
-                // and replace sentinel values with actual values
                 if test.request.url.contains('?') || test.request.url.contains('&') {
                     let fields = resource_field_values.get(&test.resource_type);
                     test.request.url = resolve_url_params(
@@ -185,10 +237,8 @@ impl Orchestrator {
                 // Populate response assertion field_values from created resources
                 if let Some(ref mut assertion) = test.validation.response_assertion {
                     if let Some(fields) = resource_field_values.get(&test.resource_type) {
-                        // Add key field values for response validation
                         let mut type_fields: HashMap<String, serde_json::Value> = HashMap::new();
                         for (path, value) in fields.iter() {
-                            // Only add top-level fields for response validation
                             if path.matches('.').count() <= 2 {
                                 type_fields.insert(path.clone(), serde_json::Value::String(value.clone()));
                             }
@@ -246,15 +296,24 @@ impl Orchestrator {
             }
         }
 
-        // 7. Cleanup: delete created resources in reverse order
-        println!("\n── Cleanup: deleting resources ──");
-        for resource_type in creation_order.iter().rev() {
-            if let Some(id) = created_ids.get(resource_type) {
-                print!("  DELETE {}/{} ... ", resource_type, id);
-                if let Err(e) = executor.delete_resource(resource_type, id).await {
-                    println!("✗ {}", e);
-                } else {
-                    println!("→ deleted");
+        // 9. Cleanup
+        if has_bulk_data {
+            // Bulk delete all uploaded resources
+            let data_creation_order = bulk_data_creation_order(&self.config.data_generation.counts);
+            println!("\n── Cleanup: bulk-deleting resources from {} ──", write_url);
+            delete_all_resources(&bulk_ids, &data_creation_order, &write_endpoint, 20).await?;
+            println!("  Bulk deletion complete");
+        } else {
+            // Delete individual setup resources in reverse order
+            println!("\n── Cleanup: deleting resources from {} ──", write_url);
+            for resource_type in creation_order.iter().rev() {
+                if let Some(id) = created_ids.get(resource_type) {
+                    print!("  DELETE {}/{} ... ", resource_type, id);
+                    if let Err(e) = executor.delete_resource(resource_type, id).await {
+                        println!("✗ {}", e);
+                    } else {
+                        println!("→ deleted");
+                    }
                 }
             }
         }

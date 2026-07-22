@@ -30,6 +30,13 @@ fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<Respon
             ..ResponseAssertion::none()
         }),
 
+        // Near/proximity search: expect Bundle searchset
+        TestCaseKind::SearchNear { .. } => Some(ResponseAssertion {
+            bundle_type: Some("searchset".to_string()),
+            min_entries: Some(0),
+            ..ResponseAssertion::none()
+        }),
+
         // Combo search: expect Bundle searchset
         TestCaseKind::SearchCombo { .. } => Some(ResponseAssertion {
             bundle_type: Some("searchset".to_string()),
@@ -245,6 +252,15 @@ fn build_test_group(
                 profile_url,
             ));
         }
+
+        // Near/proximity tests (special type, e.g. Location?near)
+        if sp.param_type == "special" {
+            tests.push(build_search_near_test(
+                &resource.resource_type,
+                &sp.name,
+                profile_url,
+            ));
+        }
     }
 
     // Also generate tests from standalone SearchParameter resources
@@ -278,6 +294,15 @@ fn build_test_group(
                 &sp.code,
                 &sp.param_type,
                 &prefix,
+                profile_url,
+            ));
+        }
+
+        // Near/proximity tests for standalone special-type params
+        if sp.param_type == "special" {
+            tests.push(build_search_near_test(
+                &resource.resource_type,
+                &sp.code,
                 profile_url,
             ));
         }
@@ -488,7 +513,7 @@ fn sample_value(param_type: &str) -> &'static str {
         "quantity" => "5.0||http://unitsofmeasure.org|kg",
         "uri" => "http://example.org",
         "composite" => "test-value",
-        "special" => "test-value",
+        "special" => "-33.86:151.21:10:km",  // FHIR near format: lat:lon:distance:units
         _ => "test-value",
     }
 }
@@ -604,6 +629,46 @@ fn build_search_prefix_test(
         kind: TestCaseKind::SearchPrefix {
             param_name: param_name.to_string(),
             prefix: prefix.clone(),
+        },
+        interaction: Interaction::SearchType,
+        resource_type: resource_type.to_string(),
+        profile_url: profile_url.clone(),
+        request: HttpRequest {
+            method: "GET".to_string(),
+            url,
+            headers: HashMap::new(),
+            body: None,
+        },
+        validation: ValidationSpec {
+            expected_status: 200,
+            profile_url: None,
+            required_elements: Vec::new(),
+            forbidden_elements: Vec::new(),
+            response_assertion: None,
+        },
+    }
+}
+
+/// Build a proximity/near search test for FHIR special-type params (e.g. Location?near).
+///
+/// FHIR near format: `?near=lat:lon[:distance[:units]]`
+/// e.g. `?near=-33.86:151.21:10` or `?near=-33.86:151.21:10:km`
+fn build_search_near_test(
+    resource_type: &str,
+    param_name: &str,
+    profile_url: &Option<String>,
+) -> TestCase {
+    // Test with coordinates and 10km radius
+    let url = format!("/{resource_type}?{param_name}=-33.86:151.21:10:km");
+
+    TestCase {
+        name: format!(
+            "{}_search_{}_near_10km",
+            resource_type.to_lowercase(),
+            param_name.replace('-', "_"),
+        ),
+        kind: TestCaseKind::SearchNear {
+            param_name: param_name.to_string(),
         },
         interaction: Interaction::SearchType,
         resource_type: resource_type.to_string(),
@@ -1150,6 +1215,65 @@ mod tests {
         assert!(gt_test.is_some(), "Should have gt prefix test for birthdate");
         let gt_test = gt_test.unwrap();
         assert!(gt_test.request.url.contains("birthdate=gt"), "URL should contain birthdate=gt, got {}", gt_test.request.url);
+    }
+
+    #[test]
+    fn near_search_generates_coordinate_tests() {
+        use crate::model::*;
+        use crate::generate::model::TestCaseKind;
+
+        // Build a CapabilityStatement with a Location resource that has a "near" search param
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Location".to_string(),
+                    profile: None,
+                    supported_profile: vec![],
+                    interaction: vec![
+                        RestInteraction { code: "read".to_string() },
+                        RestInteraction { code: "search-type".to_string() },
+                    ],
+                    search_param: vec![RestSearchParam {
+                        name: "near".to_string(),
+                        definition: None,
+                        param_type: "special".to_string(),
+                        documentation: None,
+                    }],
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                }],
+                interaction: vec![],
+                operation: vec![],
+            }],
+        };
+
+        let plan = generate_test_plan(&cs, &[], &[], None, None);
+        let group = plan.test_groups.iter().find(|g| g.resource_type == "Location").expect("Should have Location group");
+
+        // Should have a SearchSingle test for "near"
+        assert!(group.tests.iter().any(|t| matches!(t.kind, TestCaseKind::SearchSingle { ref param_name, .. } if param_name == "near")),
+            "Should have SearchSingle test for near param");
+
+        // Should have a SearchNear test with coordinate format
+        let near_test = group.tests.iter().find(|t| matches!(t.kind, TestCaseKind::SearchNear { .. }));
+        assert!(near_test.is_some(), "Should have SearchNear test for special-type param");
+        let near_test = near_test.unwrap();
+        assert!(near_test.request.url.contains("near=-33.86:151.21:10:km"),
+            "Near test URL should contain coordinate format, got {}", near_test.request.url);
+        assert!(near_test.request.url.starts_with("/Location?"),
+            "Near test URL should start with /Location?, got {}", near_test.request.url);
     }
 }
 

@@ -4,10 +4,16 @@ use anyhow::Result;
 /// Generate a synthetic FHIR resource that conforms to a StructureDefinition profile.
 ///
 /// Walks the snapshot elements, fills in required fields (min > 0) with appropriate
-/// sentinel values, and applies any fixed/pattern constraints.
+/// sentinel values, and applies any fixed/pattern constraints. Also stamps
+/// `meta.profile` with the profile's canonical URL.
 pub fn generate_resource(profile: &StructureDefinition) -> Result<serde_json::Value> {
     let mut resource = serde_json::json!({
         "resourceType": profile.base_type
+    });
+
+    // Stamp the profile URL so servers know which profile this conforms to
+    resource["meta"] = serde_json::json!({
+        "profile": [profile.url]
     });
 
     let empty = vec![];

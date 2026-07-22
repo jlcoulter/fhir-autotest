@@ -1,13 +1,21 @@
 use crate::generate::model::*;
-use crate::config::models::ServerConfig;
+use crate::config::models::WriteEndpoint;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
-/// Executes HTTP requests against a FHIR server.
+/// Executes HTTP requests against FHIR servers.
+///
+/// Test queries (GET) go to the public FHIR server.
+/// Write operations (POST/PUT/DELETE) go to the repository (if configured)
+/// or fall back to the public server.
 pub struct TestExecutor {
     client: reqwest::Client,
-    base_url: String,
-    headers: HashMap<String, String>,
+    /// Base URL for read/search requests (the public FHIR server).
+    read_url: String,
+    /// Headers to send with read requests.
+    read_headers: HashMap<String, String>,
+    /// Write endpoint configuration (repository with basic auth, or server with headers).
+    write_endpoint: WriteEndpoint,
 }
 
 /// Result of a single test case execution.
@@ -30,20 +38,75 @@ pub struct TestResult {
 }
 
 impl TestExecutor {
-    pub fn new(config: &ServerConfig) -> Result<Self> {
+    /// Create a new executor with separate read and write endpoints.
+    pub fn new(
+        read_url: String,
+        read_headers: HashMap<String, String>,
+        write_endpoint: WriteEndpoint,
+    ) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
         Ok(Self {
             client,
-            base_url: config.base_url.trim_end_matches('/').to_string(),
-            headers: config.headers.clone(),
+            read_url: read_url.trim_end_matches('/').to_string(),
+            read_headers,
+            write_endpoint,
         })
     }
 
+    /// Convenience constructor that uses the same server for reads and writes
+    /// (backward-compatible with the old ServerConfig-only approach).
+    pub fn from_server_config(
+        base_url: &str,
+        headers: HashMap<String, String>,
+    ) -> Result<Self> {
+        Self::new(
+            base_url.to_string(),
+            headers.clone(),
+            WriteEndpoint::Server {
+                base_url: base_url.to_string(),
+                headers,
+            },
+        )
+    }
+
+    /// Build a reqwest request with the appropriate auth for the given endpoint.
+    fn add_write_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.write_endpoint {
+            WriteEndpoint::Repository { username, password, .. } => {
+                req.basic_auth(username.clone(), Some(password.clone()))
+            }
+            WriteEndpoint::Server { headers, .. } => {
+                let mut r = req;
+                for (key, value) in headers {
+                    r = r.header(key.as_str(), value.as_str());
+                }
+                r
+            }
+        }
+    }
+
+    fn add_read_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let mut r = req;
+        for (key, value) in &self.read_headers {
+            r = r.header(key.as_str(), value.as_str());
+        }
+        r
+    }
+
+    fn write_base_url(&self) -> &str {
+        match &self.write_endpoint {
+            WriteEndpoint::Repository { base_url, .. } => base_url,
+            WriteEndpoint::Server { base_url, .. } => base_url,
+        }
+    }
+
     /// Execute a single test case against the server.
+    ///
+    /// Test requests are sent to the read endpoint (public FHIR server).
     pub async fn execute_test(&self, test: &TestCase) -> Result<TestResult> {
-        let url = format!("{}{}", self.base_url, test.request.url);
+        let url = format!("{}{}", self.read_url, test.request.url);
 
         let mut req = match test.request.method.as_str() {
             "GET" => self.client.get(&url),
@@ -54,9 +117,7 @@ impl TestExecutor {
             method => anyhow::bail!("Unsupported HTTP method: {}", method),
         };
 
-        for (key, value) in &self.headers {
-            req = req.header(key.as_str(), value.as_str());
-        }
+        req = self.add_read_auth(req);
         req = req
             .header("Content-Type", "application/fhir+json")
             .header("Accept", "application/fhir+json");
@@ -85,20 +146,18 @@ impl TestExecutor {
         })
     }
 
-    /// Create a resource on the server (POST to /{resource_type}).
+    /// Create a resource on the repository (POST to /{resource_type}).
     /// Returns the created resource's ID and the full response body.
     pub async fn create_resource(
         &self,
         resource_type: &str,
         body: &serde_json::Value,
     ) -> Result<(String, serde_json::Value)> {
-        let url = format!("{}/{}", self.base_url, resource_type);
+        let url = format!("{}/{}", self.write_base_url(), resource_type);
 
-        let mut req = self.client.post(&url);
-        for (key, value) in &self.headers {
-            req = req.header(key.as_str(), value.as_str());
-        }
-        req = req
+        let req = self.client.post(&url);
+        let req = self.add_write_auth(req);
+        let req = req
             .header("Content-Type", "application/fhir+json")
             .header("Accept", "application/fhir+json")
             .json(body);
@@ -113,7 +172,6 @@ impl TestExecutor {
             .json()
             .await
             .context("Failed to parse created resource response")?;
-
         if status.as_u16() != 201 {
             anyhow::bail!(
                 "Expected 201 Created for {}, got {}: {:?}",
@@ -132,16 +190,13 @@ impl TestExecutor {
         Ok((id, created))
     }
 
-    /// Delete a resource from the server.
+    /// Delete a resource from the repository.
     pub async fn delete_resource(&self, resource_type: &str, id: &str) -> Result<()> {
-        let url = format!("{}/{}/{}", self.base_url, resource_type, id);
+        let url = format!("{}/{}/{}", self.write_base_url(), resource_type, id);
 
-        let mut req = self.client.delete(&url);
-        for (key, value) in &self.headers {
-            req = req.header(key.as_str(), value.as_str());
-        }
-        req = req
-            .header("Accept", "application/fhir+json");
+        let req = self.client.delete(&url);
+        let req = self.add_write_auth(req);
+        let req = req.header("Accept", "application/fhir+json");
 
         req.send()
             .await

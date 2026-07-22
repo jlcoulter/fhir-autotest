@@ -3,21 +3,113 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Configuration for running tests against a FHIR server.
-#[derive(Debug, Deserialize)]
+///
+/// The config file is the single source of truth: it defines the IG package,
+/// server URL, output location, and all overrides. CLI flags override specific
+/// fields when provided.
+#[derive(Debug, Clone, Deserialize)]
 pub struct TestConfig {
+    /// Path to the IG package (.tgz).
+    pub package: Option<String>,
+
+    /// Output directory for generated test plan and resources (default: ./output).
+    #[serde(default = "default_output")]
+    pub output: String,
+
+    /// Path to write detailed JSON test results (optional).
+    /// When set, results are written to this file after running tests.
+    #[serde(default)]
+    pub results: Option<String>,
+
+    /// Run in dry-run mode: print all test URLs without executing.
+    #[serde(default)]
+    pub dry_run: bool,
+
+    /// Server connection settings for the public-facing FHIR API.
+    ///
+    /// This is where test queries (GET/search) are sent. In development,
+    /// this can also handle writes if no repository is configured.
     pub server: ServerConfig,
+
+    /// Internal repository endpoint for creating and deleting resources.
+    ///
+    /// When set, POST/PUT/DELETE requests go here instead of the public server.
+    /// This is useful when the public FHIR server only allows search/read,
+    /// and data must be loaded via an internal repository service.
+    ///
+    /// If omitted, all requests go to `server`.
+    #[serde(default)]
+    pub repository: Option<RepositoryConfig>,
+
+    /// Manual overrides for dependency order, fixtures, etc.
     #[serde(default)]
     pub overrides: OverrideConfig,
+
+    /// Bulk data generation settings.
+    ///
+    /// When configured, realistic FHIR resources are generated in bulk,
+    /// written as NDJSON files, uploaded to the repository before tests,
+    /// and deleted after tests complete.
+    #[serde(default)]
+    pub data_generation: DataGenerationConfig,
+
+    /// Use a built-in mock FHIR server instead of the configured server.
+    ///
+    /// Starts an in-process mock server and redirects all requests to it.
+    /// The mock server supports CRUD operations and basic search filtering.
+    /// Useful for development and CI where no real FHIR server is available.
+    ///
+    /// Can also be set via --mock on the CLI (CLI flag takes precedence).
+    #[serde(default)]
+    pub mock: bool,
+
+    /// Port for the mock server (default: 0 = random available port).
+    ///
+    /// Only used when mock is enabled. Set to a specific port for reproducibility
+    /// (e.g. for manual testing with curl). Use 0 for a random port.
+    #[serde(default = "default_mock_port")]
+    pub mock_port: u16,
 }
 
-#[derive(Debug, Deserialize)]
+fn default_output() -> String {
+    "./output".to_string()
+}
+
+fn default_mock_port() -> u16 {
+    0
+}
+
+/// Public-facing FHIR server configuration.
+///
+/// Used for test queries (read, search). Also used for writes
+/// when no `repository` is configured.
+#[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
+    /// Base URL of the FHIR server (e.g. "http://fhir.example.com/fhir").
     pub base_url: String,
+
+    /// Optional HTTP headers sent with every request (e.g. auth tokens).
     #[serde(default)]
     pub headers: HashMap<String, String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+/// Internal repository configuration for resource creation/deletion.
+///
+/// The repository is a FHIR server (or proxy) that accepts POST/PUT/DELETE
+/// but may not be publicly accessible. Username/password auth is typical.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepositoryConfig {
+    /// Base URL of the repository FHIR server (e.g. "http://repo.internal:8080/fhir").
+    pub base_url: String,
+
+    /// Username for basic auth.
+    pub username: String,
+
+    /// Password for basic auth.
+    pub password: String,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
 pub struct OverrideConfig {
     /// Manual creation order (overrides auto-resolved order).
     #[serde(default)]
@@ -28,6 +120,25 @@ pub struct OverrideConfig {
     /// Map of resource type → fixture filename to use instead of generating.
     #[serde(default)]
     pub fixture_map: HashMap<String, String>,
+}
+
+/// Bulk data generation settings.
+///
+/// Each key is a FHIR resource type (e.g. "Organization", "Practitioner"),
+/// and the value is the number of resources to generate.
+///
+/// Generated resources are written as NDJSON (one line per resource) to
+/// `{output}/data/{ResourceType}.ndjson`, then bulk-uploaded to the
+/// repository endpoint before tests run, and bulk-deleted afterward.
+///
+/// Resources reference each other: PractitionerRole points to Practitioner
+/// and Organization, HealthcareService references Location, etc.
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct DataGenerationConfig {
+    /// Number of resources to generate per type.
+    /// Key = FHIR resource type, Value = count.
+    #[serde(default)]
+    pub counts: HashMap<String, u64>,
 }
 
 impl TestConfig {
@@ -56,6 +167,42 @@ impl TestConfig {
         }
         Ok(fixtures)
     }
+
+    /// Returns the repository config if set, otherwise falls back to the server config.
+    ///
+    /// Use this for POST/PUT/DELETE (resource creation and cleanup).
+    /// In development mode where there's no separate repository, this returns
+    /// a synthetic RepositoryConfig derived from the server config (no basic auth).
+    pub fn write_endpoint(&self) -> WriteEndpoint {
+        match &self.repository {
+            Some(repo) => WriteEndpoint::Repository {
+                base_url: repo.base_url.clone(),
+                username: repo.username.clone(),
+                password: repo.password.clone(),
+            },
+            None => WriteEndpoint::Server {
+                base_url: self.server.base_url.clone(),
+                headers: self.server.headers.clone(),
+            },
+        }
+    }
+}
+
+/// The endpoint to use for write operations (POST/PUT/DELETE).
+///
+/// Either a repository with basic auth, or fall back to the public server
+/// with its configured headers.
+#[derive(Debug, Clone)]
+pub enum WriteEndpoint {
+    Repository {
+        base_url: String,
+        username: String,
+        password: String,
+    },
+    Server {
+        base_url: String,
+        headers: HashMap<String, String>,
+    },
 }
 
 #[cfg(test)]
@@ -65,6 +212,10 @@ mod tests {
     #[test]
     fn parse_config_toml() {
         let toml = r#"
+package = "ig-package.tgz"
+output = "./test-output"
+dry_run = true
+
 [server]
 base_url = "http://localhost:8080/fhir"
 
@@ -79,10 +230,107 @@ fixtures_dir = "./fixtures"
 Patient = "us-core-patient.json"
 "#;
         let config: TestConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.package.as_deref(), Some("ig-package.tgz"));
+        assert_eq!(config.output, "./test-output");
+        assert!(config.dry_run);
         assert_eq!(config.server.base_url, "http://localhost:8080/fhir");
         assert_eq!(config.server.headers.get("Authorization").unwrap(), "Bearer test-token");
         assert_eq!(config.overrides.creation_order, vec!["Patient", "Encounter", "Observation"]);
         assert!(config.overrides.fixtures_dir.is_some());
         assert_eq!(config.overrides.fixture_map.get("Patient").unwrap(), "us-core-patient.json");
+        assert!(config.repository.is_none());
+    }
+
+    #[test]
+    fn parse_config_defaults() {
+        let toml = r#"
+[server]
+base_url = "http://localhost:8080/fhir"
+"#;
+        let config: TestConfig = toml::from_str(toml).unwrap();
+        assert!(config.package.is_none());
+        assert_eq!(config.output, "./output");
+        assert!(!config.dry_run);
+        assert!(config.server.headers.is_empty());
+        assert!(config.overrides.creation_order.is_empty());
+        assert!(config.repository.is_none());
+        assert!(!config.mock);
+        assert_eq!(config.mock_port, 0);
+    }
+
+    #[test]
+    fn parse_config_with_mock() {
+        let toml = r#"
+mock = true
+mock_port = 8091
+
+[server]
+base_url = "http://localhost:8080/fhir"
+"#;
+        let config: TestConfig = toml::from_str(toml).unwrap();
+        assert!(config.mock);
+        assert_eq!(config.mock_port, 8091);
+    }
+
+    #[test]
+    fn parse_config_with_repository() {
+        let toml = r#"
+package = "ig-package.tgz"
+
+[server]
+base_url = "https://fhir.example.com/fhir"
+
+[repository]
+base_url = "http://repo.internal:8080/fhir"
+username = "admin"
+password = "s3cret"
+"#;
+        let config: TestConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.server.base_url, "https://fhir.example.com/fhir");
+        let repo = config.repository.unwrap();
+        assert_eq!(repo.base_url, "http://repo.internal:8080/fhir");
+        assert_eq!(repo.username, "admin");
+        assert_eq!(repo.password, "s3cret");
+    }
+
+    #[test]
+    fn write_endpoint_falls_back_to_server() {
+        let toml = r#"
+[server]
+base_url = "http://localhost:8080/fhir"
+
+[server.headers]
+Authorization = "Bearer test-token"
+"#;
+        let config: TestConfig = toml::from_str(toml).unwrap();
+        match config.write_endpoint() {
+            WriteEndpoint::Server { base_url, headers } => {
+                assert_eq!(base_url, "http://localhost:8080/fhir");
+                assert_eq!(headers.get("Authorization").unwrap(), "Bearer test-token");
+            }
+            WriteEndpoint::Repository { .. } => panic!("Expected Server fallback"),
+        }
+    }
+
+    #[test]
+    fn write_endpoint_uses_repository_when_configured() {
+        let toml = r#"
+[server]
+base_url = "https://fhir.example.com/fhir"
+
+[repository]
+base_url = "http://repo.internal:8080/fhir"
+username = "admin"
+password = "s3cret"
+"#;
+        let config: TestConfig = toml::from_str(toml).unwrap();
+        match config.write_endpoint() {
+            WriteEndpoint::Repository { base_url, username, password } => {
+                assert_eq!(base_url, "http://repo.internal:8080/fhir");
+                assert_eq!(username, "admin");
+                assert_eq!(password, "s3cret");
+            }
+            WriteEndpoint::Server { .. } => panic!("Expected Repository"),
+        }
     }
 }

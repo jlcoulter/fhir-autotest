@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use std::collections::HashMap;
 use std::io::Write;
 
 /// Create a minimal but realistic FHIR IG package (.tgz) for testing.
@@ -179,6 +180,21 @@ fn create_test_ig_package() -> Vec<u8> {
     gz_data
 }
 
+/// Helper: write a config.toml that references the given package path and output dir.
+fn write_config(config_path: &std::path::Path, package_path: &std::path::Path, output_dir: &std::path::Path) {
+    let config_content = format!(
+        r#"package = "{}"
+output = "{}"
+
+[server]
+base_url = "http://localhost:8080/fhir"
+"#,
+        package_path.display(),
+        output_dir.display(),
+    );
+    std::fs::write(config_path, config_content).unwrap();
+}
+
 #[test]
 fn generate_from_minimal_package() {
     let tgz_data = create_test_ig_package();
@@ -187,17 +203,13 @@ fn generate_from_minimal_package() {
     std::fs::write(&tgz_path, &tgz_data).unwrap();
 
     let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_config(&config_path, &tgz_path, &output_dir);
 
     let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
-    cmd.args([
-        "generate",
-        "--package",
-        tgz_path.to_str().unwrap(),
-        "--output",
-        output_dir.to_str().unwrap(),
-    ])
-    .assert()
-    .success();
+    cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
+        .assert()
+        .success();
 
     // Verify output directory contains expected files
     assert!(output_dir.join("test_plan.json").exists(), "test_plan.json should exist");
@@ -219,32 +231,31 @@ fn generated_resources_satisfy_profiles() {
     std::fs::write(&tgz_path, &tgz_data).unwrap();
 
     let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_config(&config_path, &tgz_path, &output_dir);
 
     let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
-    cmd.args([
-        "generate",
-        "--package",
-        tgz_path.to_str().unwrap(),
-        "--output",
-        output_dir.to_str().unwrap(),
-    ])
-    .assert()
-    .success();
+    cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
+        .assert()
+        .success();
 
-    // Check Patient resource
-    let patient_json = std::fs::read_to_string(output_dir.join("resources/patient.json")).unwrap();
+    // Resources are now named after their profile (e.g. TestPatient.json)
+    let patient_json = std::fs::read_to_string(output_dir.join("resources/TestPatient.json")).unwrap();
     let patient: serde_json::Value = serde_json::from_str(&patient_json).unwrap();
     assert_eq!(patient["resourceType"], "Patient");
     assert!(patient.get("name").is_some(), "Patient should have name (required)");
     assert!(patient.get("identifier").is_some(), "Patient should have identifier (required)");
+    // meta.profile should reference the profile URL
+    assert_eq!(patient["meta"]["profile"][0], "http://example.org/StructureDefinition/TestPatient");
 
     // Check Observation resource
-    let obs_json = std::fs::read_to_string(output_dir.join("resources/observation.json")).unwrap();
+    let obs_json = std::fs::read_to_string(output_dir.join("resources/TestObservation.json")).unwrap();
     let obs: serde_json::Value = serde_json::from_str(&obs_json).unwrap();
     assert_eq!(obs["resourceType"], "Observation");
     assert_eq!(obs["status"], "final", "Observation.status should have fixed code 'final'");
     assert!(obs.get("subject").is_some(), "Observation should have subject (required)");
     assert!(obs.get("code").is_some(), "Observation should have code (required)");
+    assert_eq!(obs["meta"]["profile"][0], "http://example.org/StructureDefinition/TestObservation");
 }
 
 #[test]
@@ -256,17 +267,13 @@ fn dependency_order_is_correct() {
     std::fs::write(&tgz_path, &tgz_data).unwrap();
 
     let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_config(&config_path, &tgz_path, &output_dir);
 
     let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
-    cmd.args([
-        "generate",
-        "--package",
-        tgz_path.to_str().unwrap(),
-        "--output",
-        output_dir.to_str().unwrap(),
-    ])
-    .assert()
-    .success();
+    cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
+        .assert()
+        .success();
 
     let plan_json = std::fs::read_to_string(output_dir.join("test_plan.json")).unwrap();
     let plan: serde_json::Value = serde_json::from_str(&plan_json).unwrap();
@@ -293,16 +300,18 @@ fn validate_command_with_valid_resource() {
     let patient_path = temp_dir.path().join("patient.json");
     std::fs::write(&patient_path, serde_json::to_string_pretty(&patient).unwrap()).unwrap();
 
+    let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_config(&config_path, &tgz_path, &output_dir);
+
     let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
     cmd.args([
+        "--config", config_path.to_str().unwrap(),
         "validate",
-        "--package",
-        tgz_path.to_str().unwrap(),
-        "--resource",
-        patient_path.to_str().unwrap(),
+        "--resource", patient_path.to_str().unwrap(),
     ])
-    .assert()
-    .success();
+        .assert()
+        .success();
 }
 
 #[test]
@@ -319,14 +328,16 @@ fn validate_command_with_invalid_resource() {
     let patient_path = temp_dir.path().join("bad_patient.json");
     std::fs::write(&patient_path, serde_json::to_string_pretty(&patient).unwrap()).unwrap();
 
+    let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_config(&config_path, &tgz_path, &output_dir);
+
     let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
     let output = cmd
         .args([
+            "--config", config_path.to_str().unwrap(),
             "validate",
-            "--package",
-            tgz_path.to_str().unwrap(),
-            "--resource",
-            patient_path.to_str().unwrap(),
+            "--resource", patient_path.to_str().unwrap(),
         ])
         .output()
         .unwrap();
@@ -343,17 +354,13 @@ fn test_plan_contains_all_test_kinds() {
     std::fs::write(&tgz_path, &tgz_data).unwrap();
 
     let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_config(&config_path, &tgz_path, &output_dir);
 
     let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
-    cmd.args([
-        "generate",
-        "--package",
-        tgz_path.to_str().unwrap(),
-        "--output",
-        output_dir.to_str().unwrap(),
-    ])
-    .assert()
-    .success();
+    cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
+        .assert()
+        .success();
 
     let plan_json = std::fs::read_to_string(output_dir.join("test_plan.json")).unwrap();
     let plan: serde_json::Value = serde_json::from_str(&plan_json).unwrap();
@@ -435,147 +442,14 @@ fn test_plan_contains_all_test_kinds() {
 // 5. Response assertion validation
 // 6. Resource cleanup (DELETE)
 
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    routing::{delete, get, post, put},
-    Json, Router,
-};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-type MockStore = Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>;
-
-async fn create_resource(
-    State(store): State<MockStore>,
-    Path(rtype): Path<String>,
-    Json(mut body): Json<serde_json::Value>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    let id = uuid::Uuid::new_v4().to_string();
-    body["id"] = serde_json::Value::String(id.clone());
-    let mut store = store.lock().unwrap();
-    store.entry(rtype.clone()).or_default().push(body.clone());
-    (StatusCode::CREATED, Json(body))
-}
-
-async fn read_resource(
-    State(store): State<MockStore>,
-    Path((rtype, id)): Path<(String, String)>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    let store = store.lock().unwrap();
-    if let Some(resources) = store.get(&rtype) {
-        if let Some(resource) = resources.iter().find(|r| r.get("id").and_then(|v| v.as_str()) == Some(&id)) {
-            return (StatusCode::OK, Json(resource.clone()));
-        }
-    }
-    (StatusCode::NOT_FOUND, Json(serde_json::json!({
-        "resourceType": "OperationOutcome",
-        "issue": [{"severity": "error", "code": "not-found", "diagnostics": format!("{}/{} not found", rtype, id)}]
-    })))
-}
-
-async fn search_resources(
-    State(store): State<MockStore>,
-    Path(rtype): Path<String>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    let store = store.lock().unwrap();
-    let resources = store.get(&rtype).cloned().unwrap_or_default();
-    let entries: Vec<serde_json::Value> = resources.iter().map(|r| {
-        serde_json::json!({
-            "resource": r,
-            "fullUrl": format!("http://localhost:8091/fhir/{}/{}", rtype, r["id"].as_str().unwrap_or_default())
-        })
-    }).collect();
-
-    (StatusCode::OK, Json(serde_json::json!({
-        "resourceType": "Bundle",
-        "type": "searchset",
-        "total": entries.len(),
-        "entry": entries
-    })))
-}
-
-async fn update_resource(
-    State(store): State<MockStore>,
-    Path((rtype, id)): Path<(String, String)>,
-    Json(mut body): Json<serde_json::Value>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    body["id"] = serde_json::Value::String(id.clone());
-    let mut store = store.lock().unwrap();
-    if let Some(resources) = store.get_mut(&rtype) {
-        if let Some(idx) = resources.iter().position(|r| r.get("id").and_then(|v| v.as_str()) == Some(&id)) {
-            resources[idx] = body.clone();
-            return (StatusCode::OK, Json(body));
-        }
-    }
-    (StatusCode::NOT_FOUND, Json(serde_json::json!({
-        "resourceType": "OperationOutcome",
-        "issue": [{"severity": "error", "code": "not-found"}]
-    })))
-}
-
-async fn delete_resource(
-    State(store): State<MockStore>,
-    Path((rtype, id)): Path<(String, String)>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    let mut store = store.lock().unwrap();
-    if let Some(resources) = store.get_mut(&rtype) {
-        let before = resources.len();
-        resources.retain(|r| r.get("id").and_then(|v| v.as_str()) != Some(&id));
-        if resources.len() < before {
-            return (StatusCode::OK, Json(serde_json::json!({
-                "resourceType": "OperationOutcome",
-                "issue": [{"severity": "information", "code": "informational", "diagnostics": "Deleted"}]
-            })));
-        }
-    }
-    (StatusCode::NOT_FOUND, Json(serde_json::json!({
-        "resourceType": "OperationOutcome",
-        "issue": [{"severity": "error", "code": "not-found"}]
-    })))
-}
-
-async fn operation_handler(
-    State(_store): State<MockStore>,
-) -> (StatusCode, Json<serde_json::Value>) {
-    (StatusCode::OK, Json(serde_json::json!({
-        "resourceType": "Parameters",
-        "parameter": [{"name": "result", "valueBoolean": true}]
-    })))
-}
-
-fn create_mock_app() -> Router {
-    let store: MockStore = Arc::new(Mutex::new(HashMap::new()));
-    Router::new()
-        .route("/fhir/{rtype}", post(create_resource))
-        .route("/fhir/{rtype}", get(search_resources))
-        .route("/fhir/{rtype}/{id}", get(read_resource))
-        .route("/fhir/{rtype}/{id}", put(update_resource))
-        .route("/fhir/{rtype}/{id}", delete(delete_resource))
-        .route("/fhir/${*op}", get(operation_handler))
-        .route("/fhir/{rtype}/${*op}", get(operation_handler))
-        .with_state(store)
-}
-
 #[tokio::test]
 async fn run_against_mock_fhir_server() {
     use fhir_ig_testgen::runner::orchestrator::Orchestrator;
     use fhir_ig_testgen::config::models::TestConfig;
 
-    // 1. Create a mock FHIR server on a random port
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let port = addr.port();
-
-    let app = create_mock_app();
-    let server = axum::serve(listener, app);
-
-    // Run server in background
-    tokio::spawn(async move {
-        server.await.unwrap();
-    });
-
-    // Give server a moment to start
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // 1. Start the mock FHIR server on a random port
+    let addr = fhir_ig_testgen::mock_server::start_mock_server(0).await.unwrap();
+    let mock_url = format!("http://{}", addr);
 
     // 2. Create the IG package
     let tgz_data = create_test_ig_package();
@@ -583,13 +457,21 @@ async fn run_against_mock_fhir_server() {
     let tgz_path = temp_dir.path().join("test_ig_package.tgz");
     std::fs::write(&tgz_path, &tgz_data).unwrap();
 
-    // 3. Create config
+    // 3. Create config programmatically
     let config = TestConfig {
+        package: Some(tgz_path.to_str().unwrap().to_string()),
+        output: temp_dir.path().join("output").to_str().unwrap().to_string(),
+        results: None,
+        dry_run: false,
         server: fhir_ig_testgen::config::models::ServerConfig {
-            base_url: format!("http://127.0.0.1:{}/fhir", port),
+            base_url: format!("{}/fhir", mock_url),
             headers: HashMap::new(),
         },
+        repository: None,
         overrides: fhir_ig_testgen::config::models::OverrideConfig::default(),
+        data_generation: fhir_ig_testgen::config::models::DataGenerationConfig::default(),
+        mock: false,
+        mock_port: 0,
     };
 
     // 4. Run the orchestrator
@@ -625,8 +507,6 @@ async fn run_against_mock_fhir_server() {
     assert!(!negative_tests.is_empty(), "Should have negative tests");
 
     // Check that response assertions were applied
-    // At least some tests should have validation errors from assertion checks
-    // (not all assertions will pass against a minimal mock)
     let with_assertion_errors: Vec<_> = report.results.iter()
         .filter(|r| !r.validation_errors.is_empty())
         .collect();

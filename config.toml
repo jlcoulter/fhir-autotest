@@ -1,0 +1,107 @@
+# FHIR IG Test Generator — Configuration
+#
+# The config file is the single source of truth. Once defined, running the tool
+# is as simple as: fhir-ig-testgen
+#
+# CLI flags (--package, --output, --results, --dry-run, --generate, --mock)
+# override the corresponding config fields when provided.
+
+# ── Inputs / Outputs ────────────────────────────────────────────────────────
+
+# Path to the IG package (.tgz). Required unless passed via --package flag.
+package = "./package/package.tgz"
+
+# Output directory for generated test plan and resources (default: ./output).
+# Resources are written to {output}/resources/{ProfileName}.json, one per
+# profile in the IG, each stamped with meta.profile for the canonical URL.
+output = "./output"
+
+# Path to write detailed JSON test results after running (optional).
+# Uncomment to enable.
+# results = "./results.json"
+
+# Run in dry-run mode: print all test URLs without executing them.
+# Uncomment to enable, or pass --dry-run on the CLI.
+# dry_run = true
+
+# ── Mock Server ─────────────────────────────────────────────────────────────
+#
+# Use a built-in mock FHIR server instead of connecting to a real one.
+# Starts an in-process server that handles CRUD operations and basic search
+# filtering. Useful for development, CI, and quick smoke tests.
+#
+# Can also be enabled via --mock on the CLI (CLI flag takes precedence).
+# When mock is true, the [server] and [repository] sections are ignored —
+# all requests go to the mock server.
+#
+# mock = true
+# mock_port = 0
+
+# ── Server ───────────────────────────────────────────────────────────────────
+
+# The base URL of the public-facing FHIR server.
+# Used for test queries (GET/search). In development, also used for writes
+# when no repository is configured.
+[server]
+base_url = "http://localhost:8091/fhir"
+
+# Optional HTTP headers sent with every request (e.g. auth tokens).
+# Uncomment and set as needed.
+# [server.headers]
+# Authorization = "Bearer your-token-here"
+# X-API-Key = "your-api-key"
+
+# ── Repository (optional) ────────────────────────────────────────────────────
+
+# Internal FHIR repository for creating and deleting test setup resources.
+# When configured, POST/PUT/DELETE go here instead of the public server.
+# This is useful when the public API only allows search/read.
+#
+[repository]
+base_url = "http://repo.internal:8080/fhir"
+username = "admin"
+password = "admin123"
+
+# ── Overrides ────────────────────────────────────────────────────────────────
+
+[overrides]
+
+# Manual creation order. If set, this replaces the auto-resolved dependency
+# order. Resource types not listed here are appended in their original order.
+# Uncomment to override.
+# creation_order = ["Patient", "Practitioner", "Organization", "Location", "HealthcareService", "Endpoint", "PractitionerRole", "Provenance"]
+
+# Directory containing fixture JSON files. When a fixture_map entry exists,
+# the fixture file is used instead of generating a resource from the profile.
+# Uncomment to enable.
+# fixtures_dir = "./fixtures"
+
+# Map of resource type → fixture filename (relative to fixtures_dir).
+# Only used when fixtures_dir is set.
+# [overrides.fixture_map]
+# Patient = "my-custom-patient.json"
+
+# ── Data Generation (optional) ──────────────────────────────────────────────
+#
+# Generate bulk test data in NDJSON format, upload it to the repository before
+# tests run, and delete it afterward. Each resource type gets its own file:
+#   {output}/data/{ResourceType}.ndjson
+#
+# Resources reference each other: PractitionerRole points to Practitioner and
+# Organization, HealthcareService references Location and Organization, etc.
+# Locations include realistic US coordinates for near/distance searches.
+#
+# This is the recommended way to create realistic load-test volumes. When
+# data_generation.counts is configured, the single-resource setup phase is
+# skipped — only the bulk data is uploaded.
+#
+[data_generation]
+
+# Number of resources to generate per type.
+# Comment out or remove types you don't need.
+counts.Organization = 20
+counts.Practitioner = 100
+counts.PractitionerRole = 300
+counts.Location = 20
+counts.HealthcareService = 100
+# counts.Endpoint = 5_000

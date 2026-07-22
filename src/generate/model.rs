@@ -243,6 +243,8 @@ pub enum TestCaseKind {
     SearchModifier { param_name: String, modifier: SearchModifier },
     /// Search param with prefix test (for number/date/quantity)
     SearchPrefix { param_name: String, prefix: SearchPrefix },
+    /// Proximity/near search test (FHIR special type: lat:lon[:distance[:units]])
+    SearchNear { param_name: String },
     /// Combinatorial search: multiple params combined
     SearchCombo { params: Vec<String> },
     /// Chained search: reference param chained into target param
