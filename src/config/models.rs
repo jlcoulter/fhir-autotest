@@ -114,10 +114,21 @@ pub struct RepositoryConfig {
     /// POST uses "create" (POST /{rtype} with server-assigned IDs).
     #[serde(default = "default_upload_method")]
     pub upload_method: String,
+
+    /// Number of parallel requests for upload and delete operations.
+    ///
+    /// Set to 1 for sequential (safe for most repositories). Increase for
+    /// repositories that can handle higher concurrency.
+    #[serde(default = "default_concurrency")]
+    pub concurrency: usize,
 }
 
 pub fn default_upload_method() -> String {
     "PUT".to_string()
+}
+
+pub fn default_concurrency() -> usize {
+    1
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -212,11 +223,13 @@ impl TestConfig {
                 username: repo.username.clone(),
                 password: repo.password.clone(),
                 upload_method: repo.upload_method.clone(),
+                concurrency: repo.concurrency,
             },
             None => WriteEndpoint::Server {
                 base_url: self.server.base_url.clone(),
                 headers: self.server.headers.clone(),
                 upload_method: default_upload_method(),
+                concurrency: default_concurrency(),
             },
         }
     }
@@ -234,12 +247,16 @@ pub enum WriteEndpoint {
         password: String,
         /// "PUT" (default) or "POST" — the HTTP method for resource upload.
         upload_method: String,
+        /// Number of parallel requests for upload and delete.
+        concurrency: usize,
     },
     Server {
         base_url: String,
         headers: HashMap<String, String>,
         /// "PUT" (default) or "POST" — the HTTP method for resource upload.
         upload_method: String,
+        /// Number of parallel requests for upload and delete.
+        concurrency: usize,
     },
 }
 
@@ -397,6 +414,7 @@ password = "s3cret"
                 username,
                 password,
                 upload_method,
+                ..
             } => {
                 assert_eq!(base_url, "http://repo.internal:8080/fhir");
                 assert_eq!(username, "admin");
@@ -436,5 +454,36 @@ upload_method = "POST"
 "#;
         let config: TestConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.repository.unwrap().upload_method, "POST");
+    }
+
+    #[test]
+    fn concurrency_defaults_to_one() {
+        let toml = r#"
+[server]
+base_url = "http://localhost:8080/fhir"
+
+[repository]
+base_url = "http://repo.internal:8080/fhir"
+username = "admin"
+password = "s3cret"
+"#;
+        let config: TestConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.repository.unwrap().concurrency, 1);
+    }
+
+    #[test]
+    fn concurrency_can_be_configured() {
+        let toml = r#"
+[server]
+base_url = "http://localhost:8080/fhir"
+
+[repository]
+base_url = "http://repo.internal:8080/fhir"
+username = "admin"
+password = "s3cret"
+concurrency = 10
+"#;
+        let config: TestConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.repository.unwrap().concurrency, 10);
     }
 }

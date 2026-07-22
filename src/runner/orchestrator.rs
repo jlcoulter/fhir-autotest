@@ -97,6 +97,10 @@ impl Orchestrator {
             WriteEndpoint::Repository { upload_method, .. }
             | WriteEndpoint::Server { upload_method, .. } => upload_method.to_uppercase(),
         };
+        let concurrency = match &write_endpoint {
+            WriteEndpoint::Repository { concurrency, .. }
+            | WriteEndpoint::Server { concurrency, .. } => *concurrency,
+        };
         let write_url = match &self.config.repository {
             Some(repo) => &repo.base_url,
             None => &self.config.server.base_url,
@@ -148,7 +152,7 @@ impl Orchestrator {
                     &data_dir,
                     &data_creation_order,
                     &write_endpoint,
-                    20, // concurrency
+                    concurrency,
                 )
                 .await?;
 
@@ -347,7 +351,13 @@ impl Orchestrator {
                 "\n── Cleanup: bulk-deleting resources from {} ──",
                 write_url
             );
-            delete_all_resources(&bulk_ids, &data_creation_order, &write_endpoint, 20).await?;
+            delete_all_resources(
+                &bulk_ids,
+                &data_creation_order,
+                &write_endpoint,
+                concurrency,
+            )
+            .await?;
             println!("  Bulk deletion complete");
         } else {
             // Delete individual setup resources in reverse order

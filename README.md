@@ -187,6 +187,7 @@ Key settings:
 | `repository.username` | Basic auth username for the repository | None |
 | `repository.password` | Basic auth password for the repository | None |
 | `repository.upload_method` | HTTP method for uploading resources: `PUT` or `POST` | `PUT` |
+| `repository.concurrency` | Parallel requests for upload/delete (1 = sequential) | `1` |
 | `overrides.creation_order` | Manual resource creation order | Auto-resolved |
 | `overrides.fixtures_dir` | Directory for fixture JSON files | None |
 | `overrides.fixture_map` | Map resource type → fixture filename | None |
@@ -219,6 +220,7 @@ base_url = "http://repo.internal:8080/fhir"
 username = "admin"
 password = "admin123"
 upload_method = "PUT"   # or "POST"
+concurrency = 1        # parallel requests for upload/delete
 ```
 
 ### Bulk Data Generation
