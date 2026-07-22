@@ -34,6 +34,14 @@ enum Commands {
         /// Path to config file (TOML) with server URL
         #[arg(short, long)]
         config: String,
+
+        /// Print all test URLs without executing them
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Write detailed JSON results to this file
+        #[arg(short, long)]
+        output: Option<String>,
     },
     /// Validate a JSON resource against a profile from the IG package
     Validate {
@@ -66,9 +74,13 @@ async fn main() -> anyhow::Result<()> {
         Commands::Generate { package, config, output } => {
             fhir_ig_testgen::run_generate(&package, config.as_deref(), &output)?;
         }
-        Commands::Run { package, config } => {
-            fhir_ig_testgen::run_generate(&package, Some(&config), "./output")?;
-            fhir_ig_testgen::run_tests(&package, &config).await?;
+        Commands::Run { package, config, dry_run, output } => {
+            if dry_run {
+                fhir_ig_testgen::run_dry_run(&package, Some(&config))?;
+            } else {
+                fhir_ig_testgen::run_generate(&package, Some(&config), "./output")?;
+                fhir_ig_testgen::run_tests(&package, &config, output.as_deref()).await?;
+            }
         }
         Commands::Validate { package, resource, profile } => {
             fhir_ig_testgen::run_validate(&package, &resource, profile.as_deref())?;

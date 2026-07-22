@@ -31,9 +31,13 @@ pub fn run_generate(package_path: &str, config_path: Option<&str>, output_dir: &
         },
     };
 
+    // Prefer a server-mode CapabilityStatement; fall back to first if none found
     let cs = pkg
         .capability_statements
-        .first()
+        .iter()
+        .find(|cs| cs.rest.iter().any(|r| r.mode == "server" && !r.resource.is_empty()))
+        .or_else(|| pkg.capability_statements.iter().find(|cs| cs.rest.iter().any(|r| !r.resource.is_empty())))
+        .or(pkg.capability_statements.first())
         .context("No CapabilityStatement found in IG package")?;
 
     // Resolve dependencies
@@ -64,6 +68,7 @@ pub fn run_generate(package_path: &str, config_path: Option<&str>, output_dir: &
         cs,
         &pkg.structure_definitions,
         &pkg.search_parameters,
+        Some(&pkg.operation_definitions),
         None,
     );
     plan.creation_order = creation_order;
@@ -102,16 +107,111 @@ pub fn run_generate(package_path: &str, config_path: Option<&str>, output_dir: &
 }
 
 /// Run tests against a FHIR server.
-pub async fn run_tests(package_path: &str, config_path: &str) -> Result<()> {
+/// If `output_path` is provided, writes detailed JSON results to that file.
+pub async fn run_tests(package_path: &str, config_path: &str, output_path: Option<&str>) -> Result<()> {
     let config = TestConfig::load(config_path)?;
     let orchestrator = runner::Orchestrator::new(config);
     let report = orchestrator.run(package_path).await?;
 
     println!("{}", report);
 
+    if let Some(path) = output_path {
+        let json = serde_json::to_string_pretty(&report)?;
+        std::fs::write(path, &json)?;
+        println!("\nResults written to: {}", path);
+    }
+
     if report.failed > 0 {
         anyhow::bail!("{} test(s) failed", report.failed);
     }
+
+    Ok(())
+}
+
+/// Dry-run: generate the test plan and print all test URLs without executing them.
+pub fn run_dry_run(package_path: &str, config_path: Option<&str>) -> Result<()> {
+    let pkg = parse_package(package_path)?;
+
+    let config = match config_path {
+        Some(path) => TestConfig::load(path)?,
+        None => TestConfig {
+            server: crate::config::models::ServerConfig {
+                base_url: "http://localhost:8080/fhir".to_string(),
+                headers: HashMap::new(),
+            },
+            overrides: crate::config::models::OverrideConfig::default(),
+        },
+    };
+
+    let cs = pkg
+        .capability_statements
+        .iter()
+        .find(|cs| cs.rest.iter().any(|r| r.mode == "server" && !r.resource.is_empty()))
+        .or_else(|| pkg.capability_statements.iter().find(|cs| cs.rest.iter().any(|r| !r.resource.is_empty())))
+        .or(pkg.capability_statements.first())
+        .context("No CapabilityStatement found in IG package")?;
+
+    let auto_deps = extract_dependencies(&pkg.structure_definitions);
+    let auto_order = resolve_creation_order(&auto_deps)?;
+    let creation_order = merge_creation_order(&auto_order, &config.overrides.creation_order);
+
+    let fixtures = config.load_fixtures()?;
+    let mut resources: HashMap<String, serde_json::Value> = HashMap::new();
+    for resource_type in &creation_order {
+        if let Some(fixture) = fixtures.get(resource_type) {
+            resources.insert(resource_type.clone(), fixture.clone());
+        } else {
+            let profile = pkg
+                .structure_definitions
+                .iter()
+                .find(|sd| sd.base_type == *resource_type);
+            if let Some(profile) = profile {
+                let generated = generate_resource(profile)?;
+                resources.insert(resource_type.clone(), generated);
+            }
+        }
+    }
+
+    let mut plan = generate_test_plan(
+        cs,
+        &pkg.structure_definitions,
+        &pkg.search_parameters,
+        Some(&pkg.operation_definitions),
+        None,
+    );
+    plan.creation_order = creation_order.clone();
+
+    println!();
+    println!("=== Dry Run: {} test groups, {} total tests ===", plan.test_groups.len(), plan.total_tests());
+    println!();
+    println!("Server: {}", config.server.base_url);
+    println!();
+
+    println!("Setup resources (creation order):");
+    for rt in &creation_order {
+        if resources.contains_key(rt) {
+            println!("  POST {}/{}  [will create]", config.server.base_url, rt);
+        } else {
+            println!("  POST {}/{}  [no profile — skipped]", config.server.base_url, rt);
+        }
+    }
+    println!();
+
+    println!("Test cases:");
+    let mut last_group = String::new();
+    for group in &plan.test_groups {
+        for test in &group.tests {
+            if group.resource_type != last_group {
+                println!();
+                println!("── {} ──", group.resource_type);
+                last_group = group.resource_type.clone();
+            }
+            println!("  {} {}{}", test.request.method, config.server.base_url, test.request.url);
+        }
+    }
+    println!();
+    println!("Cleanup: DELETE {} resources in reverse order", creation_order.len());
+    println!();
 
     Ok(())
 }

@@ -19,6 +19,8 @@ pub struct Rest {
     pub resource: Vec<RestResource>,
     #[serde(default)]
     pub interaction: Vec<RestInteraction>,
+    #[serde(default)]
+    pub operation: Vec<RestOperation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +48,10 @@ pub struct RestResource {
     pub conditional_update: Option<bool>,
     #[serde(rename = "conditionalDelete", default)]
     pub conditional_delete: Option<String>,
+    #[serde(rename = "searchInclude", default)]
+    pub search_include: Vec<String>,
+    #[serde(rename = "searchRevInclude", default)]
+    pub search_revinclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

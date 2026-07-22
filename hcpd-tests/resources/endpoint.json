@@ -1,0 +1,25 @@
+{
+  "address": "http://example.org/generated-url",
+  "connectionType": {
+    "code": "generated-code",
+    "system": "http://example.org/code-system"
+  },
+  "identifier": [
+    {
+      "system": "http://example.org/identifier",
+      "value": "generated-de229340-d543-42bd-bb84-b85c26e38b57"
+    }
+  ],
+  "payloadType": [
+    {
+      "coding": [
+        {
+          "code": "generated-code",
+          "system": "http://example.org/code-system"
+        }
+      ]
+    }
+  ],
+  "resourceType": "Endpoint",
+  "status": "generated-code"
+}

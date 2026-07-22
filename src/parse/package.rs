@@ -35,7 +35,8 @@ pub fn parse_package(path: &str) -> Result<IgPackage> {
         let entry_path = entry.path()?.to_path_buf();
         let path_str = entry_path.to_string_lossy();
 
-        if !path_str.ends_with(".json") {
+        // Only process JSON files in the package/ directory
+        if !path_str.starts_with("package/") || !path_str.ends_with(".json") {
             continue;
         }
 
@@ -45,7 +46,7 @@ pub fn parse_package(path: &str) -> Result<IgPackage> {
         let json: Value = match serde_json::from_str(&content) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("Skipping non-JSON or invalid file {}: {e}", path_str);
+                tracing::debug!("Skipping non-JSON or invalid file {}: {e}", path_str);
                 continue;
             }
         };

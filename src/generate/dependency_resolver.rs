@@ -1,6 +1,6 @@
 use anyhow::Result;
 use petgraph::graph::DiGraph;
-use petgraph::algo::toposort;
+use petgraph::algo::kosaraju_scc;
 use std::collections::{HashMap, HashSet};
 use crate::model::*;
 
@@ -31,15 +31,19 @@ pub fn extract_dependencies(profiles: &[StructureDefinition]) -> DependencyMap {
                         for target in &type_def.target_profile {
                             // Extract resource type from profile URL
                             // e.g., "http://hl7.org/fhir/StructureDefinition/Patient" → "Patient"
+                            // Also handle version suffixes like "Patient|4.0.1" → "Patient"
                             let ref_type = target.rsplit('/').next().unwrap_or("Resource");
+                            let ref_type = ref_type.split('|').next().unwrap_or(ref_type);
+                            // Skip non-resource profile names (e.g. "hcpd-practitioner" is a profile, not a resource type)
+                            // FHIR resource types start with uppercase and contain no hyphens
+                            if ref_type.chars().next().map_or(true, |c| c.is_lowercase()) || ref_type.contains('-') {
+                                continue;
+                            }
                             if ref_type != "Resource" && ref_type != resource_type {
                                 references.insert(ref_type.to_string());
                             }
                         }
                         // If no target profiles, it's a generic reference — skip
-                        if type_def.target_profile.is_empty() {
-                            // Could reference anything, not helpful for ordering
-                        }
                     }
                 }
             }
@@ -53,7 +57,10 @@ pub fn extract_dependencies(profiles: &[StructureDefinition]) -> DependencyMap {
 
 /// Resolve creation order from a dependency map using topological sort.
 ///
-/// Returns an error if circular dependencies are detected.
+/// Circular dependencies are handled gracefully by collapsing them into
+/// strongly connected components (SCCs). FHIR resources with circular
+/// references (e.g. Organization ↔ Endpoint) can still be created — one
+/// direction simply uses a placeholder reference that's resolved later.
 pub fn resolve_creation_order(deps: &DependencyMap) -> Result<Vec<String>> {
     let mut graph = DiGraph::<String, ()>::new();
     let mut node_indices: HashMap<String, petgraph::graph::NodeIndex> = HashMap::new();
@@ -75,26 +82,64 @@ pub fn resolve_creation_order(deps: &DependencyMap) -> Result<Vec<String>> {
         }
     }
 
-    // Topological sort gives us an order where dependencies come first
-    let sorted = toposort(&graph, None)
-        .map_err(|cycle| {
-            let node = cycle.node_id();
-            anyhow::anyhow!(
-                "Circular dependency detected involving: {}",
-                graph[node]
-            )
-        })?;
+    // Find strongly connected components (SCCs) to handle cycles.
+    // kosaraju_scc returns SCCs in reverse topological order,
+    // so we can simply iterate to get dependencies-first ordering.
+    let sccs = kosaraju_scc(&graph);
 
-    // Reverse because toposort puts dependencies last (dependents first)
-    // We want dependencies first (create Patient before Observation)
-    let mut order: Vec<String> = sorted
-        .into_iter()
-        .rev()
-        .map(|idx| graph[idx].clone())
-        .collect();
+    // Build SCC DAG for topological sort
+    let mut scc_id: HashMap<petgraph::graph::NodeIndex, usize> = HashMap::new();
+    for (i, scc) in sccs.iter().enumerate() {
+        for &node in scc {
+            scc_id.insert(node, i);
+        }
+    }
+
+    // Build adjacency list for SCC DAG
+    let mut scc_deps: Vec<HashSet<usize>> = vec![HashSet::new(); sccs.len()];
+    for edge in graph.raw_edges() {
+        let from_scc = scc_id[&edge.source()];
+        let to_scc = scc_id[&edge.target()];
+        if from_scc != to_scc {
+            scc_deps[from_scc].insert(to_scc);
+        }
+    }
+
+    // Kahn's algorithm on SCC DAG: process SCCs with no remaining dependencies first.
+    // Edge A → B means "A depends on B", so B should come first.
+    // dep_count[i] = number of SCCs that i depends on (out-degree in SCC DAG).
+    let mut dep_count: Vec<usize> = sccs.iter().enumerate().map(|(i, _)| scc_deps[i].len()).collect();
+    let mut order = Vec::new();
+
+    // Start with SCCs that have no dependencies
+    let mut queue: Vec<usize> = (0..sccs.len()).filter(|&i| dep_count[i] == 0).collect();
+
+    while let Some(scc_idx) = queue.pop() {
+        // Emit all nodes in this SCC (within a cycle, order doesn't matter much)
+        for &node in &sccs[scc_idx] {
+            order.push(graph[node].clone());
+        }
+        // Remove edges: for any SCC that depended on this one, decrement its count
+        for other in 0..sccs.len() {
+            if scc_deps[other].contains(&scc_idx) {
+                scc_deps[other].remove(&scc_idx);
+                dep_count[other] -= 1;
+                if dep_count[other] == 0 {
+                    queue.push(other);
+                }
+            }
+        }
+    }
+
+    // Any remaining SCCs (unreachable cycles) — just append them
+    let ordered_set: HashSet<String> = order.iter().cloned().collect();
+    for (resource_type, _) in deps {
+        if !ordered_set.contains(resource_type) {
+            order.push(resource_type.clone());
+        }
+    }
 
     // Also add resource types that weren't in the dependency map but were referenced
-    // (they might not have their own profiles but still need to be created)
     let all_referenced: HashSet<String> = deps
         .iter()
         .flat_map(|(_, refs)| refs.iter())
@@ -159,14 +204,18 @@ mod tests {
     }
 
     #[test]
-    fn detect_circular_dependency() {
+    fn resolve_circular_dependency() {
+        // Circular dependencies should be handled gracefully, not cause an error.
+        // Organization → Endpoint → Organization is a valid FHIR pattern.
         let deps = vec![
-            ("A".to_string(), vec!["B".to_string()]),
-            ("B".to_string(), vec!["C".to_string()]),
-            ("C".to_string(), vec!["A".to_string()]),
+            ("Organization".to_string(), vec!["Endpoint".to_string()]),
+            ("Endpoint".to_string(), vec!["Organization".to_string()]),
         ];
-        let result = resolve_creation_order(&deps);
-        assert!(result.is_err(), "Should detect circular dependency");
+        let order = resolve_creation_order(&deps).unwrap();
+        // Both should appear in the output (order within cycle doesn't matter much)
+        assert_eq!(order.len(), 2);
+        assert!(order.contains(&"Organization".to_string()));
+        assert!(order.contains(&"Endpoint".to_string()));
     }
 
     #[test]

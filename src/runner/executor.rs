@@ -11,13 +11,22 @@ pub struct TestExecutor {
 }
 
 /// Result of a single test case execution.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TestResult {
     pub test_name: String,
     pub passed: bool,
     pub status_code: u16,
     pub response_body: Option<serde_json::Value>,
     pub validation_errors: Vec<String>,
+    /// The full request URL that was executed.
+    #[serde(default)]
+    pub request_url: String,
+    /// The HTTP method used.
+    #[serde(default)]
+    pub request_method: String,
+    /// The request body (for POST/PUT).
+    #[serde(default)]
+    pub request_body: Option<serde_json::Value>,
 }
 
 impl TestExecutor {
@@ -70,6 +79,9 @@ impl TestExecutor {
             status_code: status,
             response_body: body,
             validation_errors: Vec::new(),
+            request_url: url,
+            request_method: test.request.method.clone(),
+            request_body: test.request.body.clone(),
         })
     }
 
