@@ -314,7 +314,10 @@ counts.Organization = 100
 "#;
         let config: TestConfig = toml::from_str(toml).unwrap();
         assert!(config.data_generation.generate_only);
-        assert_eq!(config.data_generation.counts.get("Organization"), Some(&100));
+        assert_eq!(
+            config.data_generation.counts.get("Organization"),
+            Some(&100)
+        );
     }
 
     #[test]
