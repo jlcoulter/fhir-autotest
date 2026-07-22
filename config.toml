@@ -52,9 +52,9 @@ base_url = "http://localhost:8091/fhir"
 # X-API-Key = "your-api-key"
 
 # ── Repository (optional) ────────────────────────────────────────────────────
-
+#
 # Internal FHIR repository for creating and deleting test setup resources.
-# When configured, POST/PUT/DELETE go here instead of the public server.
+# When configured, resource upload/delete go here instead of the public server.
 # This is useful when the public API only allows search/read.
 # Uncomment and configure as needed.
 #
@@ -62,6 +62,7 @@ base_url = "http://localhost:8091/fhir"
 # base_url = "http://repo.internal:8080/fhir"
 # username = "admin"
 # password = "admin123"
+# upload_method = "PUT"
 
 # ── Overrides ────────────────────────────────────────────────────────────────
 

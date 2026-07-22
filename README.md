@@ -183,9 +183,10 @@ Key settings:
 | `mock_port` | Port for mock server (0 = random) | `0` |
 | `server.base_url` | Public FHIR server URL (for GET/search queries) | Required |
 | `server.headers` | HTTP headers for the public server (auth tokens) | None |
-| `repository.base_url` | Internal repository URL (for POST/DELETE) | None |
+| `repository.base_url` | Internal repository URL (for resource upload/delete) | None |
 | `repository.username` | Basic auth username for the repository | None |
 | `repository.password` | Basic auth password for the repository | None |
+| `repository.upload_method` | HTTP method for uploading resources: `PUT` or `POST` | `PUT` |
 | `overrides.creation_order` | Manual resource creation order | Auto-resolved |
 | `overrides.fixtures_dir` | Directory for fixture JSON files | None |
 | `overrides.fixture_map` | Map resource type → fixture filename | None |
@@ -194,12 +195,31 @@ Key settings:
 
 ### Repository vs Server
 
-When `repository` is configured, write operations (POST, PUT, DELETE) go to the
+When `repository` is configured, resource upload and delete operations go to the
 repository endpoint with basic auth, while read/search queries go to the public
 `server` endpoint. This matches production setups where the public FHIR API is
 read-only and data must be loaded through an internal service.
 
 In development, leave `repository` commented out — all requests go to `server`.
+
+### Upload Method
+
+The `repository.upload_method` setting controls how resources are created:
+
+- **`PUT`** (default): Uses `PUT /{ResourceType}/{id}` with client-assigned IDs
+  (FHIR "update as create" pattern). The resource body must include an `id` field.
+  This is the most common pattern for bulk data loading.
+
+- **`POST`**: Uses `POST /{ResourceType}` with server-assigned IDs. The `id` field
+  is removed from the resource body before sending.
+
+```toml
+[repository]
+base_url = "http://repo.internal:8080/fhir"
+username = "admin"
+password = "admin123"
+upload_method = "PUT"   # or "POST"
+```
 
 ### Bulk Data Generation
 

@@ -7,9 +7,10 @@ use std::path::Path;
 /// Upload NDJSON files to the FHIR repository and return IDs per resource type.
 ///
 /// For each resource type in `creation_order`, reads the NDJSON file from
-/// `{data_dir}/{ResourceType}.ndjson` and POSTs each resource to the repository.
+/// `{data_dir}/{ResourceType}.ndjson` and uploads each resource to the repository.
 /// Returns a map of resource type → list of server-assigned IDs.
 ///
+/// Uses PUT (update-as-create) by default, or POST if `upload_method` is "POST".
 /// Uses concurrency (up to `concurrency` parallel requests) for throughput.
 pub async fn upload_ndjson_files(
     data_dir: &Path,
@@ -24,6 +25,11 @@ pub async fn upload_ndjson_files(
     let base_url = match write_endpoint {
         WriteEndpoint::Repository { base_url, .. } => base_url,
         WriteEndpoint::Server { base_url, .. } => base_url,
+    };
+
+    let upload_method = match write_endpoint {
+        WriteEndpoint::Repository { upload_method, .. }
+        | WriteEndpoint::Server { upload_method, .. } => upload_method.to_uppercase(),
     };
 
     let mut all_ids: HashMap<String, Vec<String>> = HashMap::new();
@@ -70,27 +76,45 @@ pub async fn upload_ndjson_files(
             for line in chunk {
                 let resource: serde_json::Value = serde_json::from_str(line)
                     .with_context(|| format!("Invalid JSON in {}.ndjson", resource_type))?;
-                // Remove the id field — let the server assign one
                 let mut resource = resource;
                 let client_id = resource
                     .get("id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                resource.as_object_mut().map(|o| o.remove("id"));
 
-                let url = format!("{}/{}", base_url, resource_type);
+                // POST: remove client id — let the server assign one
+                if upload_method != "PUT" {
+                    resource.as_object_mut().map(|o| o.remove("id"));
+                }
+
+                let url = if upload_method == "PUT" {
+                    // PUT /{rtype}/{id} — update-as-create with client-assigned ID
+                    format!("{}/{}/{}", base_url, resource_type, client_id)
+                } else {
+                    // POST /{rtype} — server-assigned ID
+                    format!("{}/{}", base_url, resource_type)
+                };
+
                 let client = client.clone();
                 let write_endpoint = write_endpoint.clone();
+                let upload_method = upload_method.clone();
 
                 handles.push(tokio::spawn(async move {
-                    let mut req = client
-                        .post(&url)
-                        .header("Content-Type", "application/fhir+json")
-                        .header("Accept", "application/fhir+json")
-                        .json(&resource);
-
-                    req = add_write_auth(req, &write_endpoint);
+                    let req = if upload_method == "PUT" {
+                        client
+                            .put(&url)
+                            .header("Content-Type", "application/fhir+json")
+                            .header("Accept", "application/fhir+json")
+                            .json(&resource)
+                    } else {
+                        client
+                            .post(&url)
+                            .header("Content-Type", "application/fhir+json")
+                            .header("Accept", "application/fhir+json")
+                            .json(&resource)
+                    };
+                    let req = add_write_auth(req, &write_endpoint);
                     let resp = req.send().await?;
                     let status = resp.status();
                     let body: serde_json::Value = resp.json().await.unwrap_or_default();

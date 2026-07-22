@@ -107,6 +107,17 @@ pub struct RepositoryConfig {
 
     /// Password for basic auth.
     pub password: String,
+
+    /// HTTP method for resource upload: "PUT" (default) or "POST".
+    ///
+    /// PUT uses "update as create" (PUT /{rtype}/{id} with client-assigned IDs).
+    /// POST uses "create" (POST /{rtype} with server-assigned IDs).
+    #[serde(default = "default_upload_method")]
+    pub upload_method: String,
+}
+
+pub fn default_upload_method() -> String {
+    "PUT".to_string()
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -200,10 +211,12 @@ impl TestConfig {
                 base_url: repo.base_url.clone(),
                 username: repo.username.clone(),
                 password: repo.password.clone(),
+                upload_method: repo.upload_method.clone(),
             },
             None => WriteEndpoint::Server {
                 base_url: self.server.base_url.clone(),
                 headers: self.server.headers.clone(),
+                upload_method: default_upload_method(),
             },
         }
     }
@@ -219,10 +232,14 @@ pub enum WriteEndpoint {
         base_url: String,
         username: String,
         password: String,
+        /// "PUT" (default) or "POST" — the HTTP method for resource upload.
+        upload_method: String,
     },
     Server {
         base_url: String,
         headers: HashMap<String, String>,
+        /// "PUT" (default) or "POST" — the HTTP method for resource upload.
+        upload_method: String,
     },
 }
 
@@ -352,7 +369,9 @@ Authorization = "Bearer test-token"
 "#;
         let config: TestConfig = toml::from_str(toml).unwrap();
         match config.write_endpoint() {
-            WriteEndpoint::Server { base_url, headers } => {
+            WriteEndpoint::Server {
+                base_url, headers, ..
+            } => {
                 assert_eq!(base_url, "http://localhost:8080/fhir");
                 assert_eq!(headers.get("Authorization").unwrap(), "Bearer test-token");
             }
@@ -377,12 +396,45 @@ password = "s3cret"
                 base_url,
                 username,
                 password,
+                upload_method,
             } => {
                 assert_eq!(base_url, "http://repo.internal:8080/fhir");
                 assert_eq!(username, "admin");
                 assert_eq!(password, "s3cret");
+                assert_eq!(upload_method, "PUT");
             }
             WriteEndpoint::Server { .. } => panic!("Expected Repository"),
         }
+    }
+
+    #[test]
+    fn upload_method_defaults_to_put() {
+        let toml = r#"
+[server]
+base_url = "http://localhost:8080/fhir"
+
+[repository]
+base_url = "http://repo.internal:8080/fhir"
+username = "admin"
+password = "s3cret"
+"#;
+        let config: TestConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.repository.unwrap().upload_method, "PUT");
+    }
+
+    #[test]
+    fn upload_method_can_be_post() {
+        let toml = r#"
+[server]
+base_url = "http://localhost:8080/fhir"
+
+[repository]
+base_url = "http://repo.internal:8080/fhir"
+username = "admin"
+password = "s3cret"
+upload_method = "POST"
+"#;
+        let config: TestConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.repository.unwrap().upload_method, "POST");
     }
 }
