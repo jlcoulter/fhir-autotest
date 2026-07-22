@@ -40,7 +40,7 @@ pub async fn upload_ndjson_files(
         let reader = std::io::BufReader::new(file);
         let lines: Vec<String> = reader
             .lines()
-            .filter_map(|l| l.ok())
+            .map_while(Result::ok)
             .filter(|l| !l.trim().is_empty())
             .collect();
 
@@ -118,7 +118,7 @@ pub async fn upload_ndjson_files(
                             errors += 1;
                         }
                         uploaded += 1;
-                        if uploaded % 1000 == 0 {
+                        if uploaded.is_multiple_of(1000) {
                             println!("    {}/{} {} uploaded", uploaded, total, resource_type);
                         }
                     }
@@ -201,12 +201,8 @@ pub async fn delete_all_resources(
 
                 for handle in handles {
                     match handle.await {
-                        Ok(Ok(status)) => {
-                            if status == 200 || status == 204 || status == 410 {
-                                deleted += 1;
-                            } else {
-                                errors += 1;
-                            }
+                        Ok(Ok(200 | 204 | 410)) => {
+                            deleted += 1;
                         }
                         _ => {
                             errors += 1;
@@ -214,7 +210,7 @@ pub async fn delete_all_resources(
                     }
                 }
 
-                if deleted > 0 && deleted % 1000 == 0 {
+                if deleted > 0 && deleted.is_multiple_of(1000) {
                     println!("    {}/{} {} deleted", deleted, total, resource_type);
                 }
             }
@@ -255,7 +251,7 @@ mod tests {
         // Verify that the upload function respects creation order
         // This is implicitly tested by the integration tests
         // but we verify the ordering logic here
-        let order = vec![
+        let order = [
             "Organization".to_string(),
             "Location".to_string(),
             "Practitioner".to_string(),

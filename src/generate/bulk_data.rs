@@ -58,7 +58,7 @@ pub fn generate_bulk_data(counts: &HashMap<String, u64>, output_dir: &Path) -> R
         let mut writer = BufWriter::new(file);
         let mut written = 0u64;
 
-        for (_i, id) in type_ids.iter().enumerate() {
+        for id in type_ids.iter() {
             let resource = match resource_type.as_str() {
                 "Organization" => gen_organization(id, &mut rng),
                 "Practitioner" => gen_practitioner(id, &mut rng),
@@ -75,7 +75,7 @@ pub fn generate_bulk_data(counts: &HashMap<String, u64>, output_dir: &Path) -> R
             serde_json::to_writer(&mut writer, &resource)?;
             writeln!(writer)?;
             written += 1;
-            if written % 10_000 == 0 {
+            if written.is_multiple_of(10_000) {
                 // Flush progress to disk so external observers see the file growing.
                 writer.flush()?;
                 tracing::info!(
@@ -926,12 +926,12 @@ mod tests {
             let lon = loc["position"]["longitude"].as_f64().unwrap();
             // Should be in US range
             assert!(
-                lat >= 20.0 && lat <= 55.0,
+                (20.0..=55.0).contains(&lat),
                 "Latitude {} should be in US range",
                 lat
             );
             assert!(
-                lon >= -130.0 && lon <= -60.0,
+                (-130.0..=-60.0).contains(&lon),
                 "Longitude {} should be in US range",
                 lon
             );

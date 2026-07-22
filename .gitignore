@@ -1,6 +1,21 @@
-/target
-*.swp
-*.swo
-*~
-.DS_Store
+# Build
+target/
+bin/
+dist/
+
+# Output
 output/
+results.json
+package/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Env
+.env
+.env.local

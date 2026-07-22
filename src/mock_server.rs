@@ -300,11 +300,7 @@ pub fn create_mock_app() -> Router {
 ///
 /// The server runs in a background tokio task. Call `shutdown` to stop it.
 pub async fn start_mock_server(port: u16) -> anyhow::Result<SocketAddr> {
-    let addr = if port == 0 {
-        std::net::Ipv4Addr::LOCALHOST
-    } else {
-        std::net::Ipv4Addr::LOCALHOST
-    };
+    let addr = std::net::Ipv4Addr::LOCALHOST;
     let listener = tokio::net::TcpListener::bind((addr, port)).await?;
     let bound_addr = listener.local_addr()?;
 

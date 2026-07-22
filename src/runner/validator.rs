@@ -44,14 +44,12 @@ pub fn validate_against_profile(
         }
 
         // Check required elements
-        if element.min.unwrap_or(0) > 0 {
-            if resource.get(&field_name).is_none() {
-                errors.push(format!(
-                    "Missing required element: {} (min={})",
-                    element.path,
-                    element.min.unwrap_or(0)
-                ));
-            }
+        if element.min.unwrap_or(0) > 0 && resource.get(&field_name).is_none() {
+            errors.push(format!(
+                "Missing required element: {} (min={})",
+                element.path,
+                element.min.unwrap_or(0)
+            ));
         }
 
         // Check fixed values

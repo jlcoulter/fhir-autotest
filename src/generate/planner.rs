@@ -923,9 +923,9 @@ fn build_operation_test(
     });
 
     // Determine URL based on operation scope
-    let url = if op_def.map(|d| d.instance.unwrap_or(false)).unwrap_or(true) {
-        format!("/{resource_type}/${code}")
-    } else if op_def.map(|d| d.type_.unwrap_or(false)).unwrap_or(false) {
+    let url = if op_def.map(|d| d.instance.unwrap_or(false)).unwrap_or(true)
+        || op_def.map(|d| d.type_.unwrap_or(false)).unwrap_or(false)
+    {
         format!("/{resource_type}/${code}")
     } else {
         format!("/${code}")

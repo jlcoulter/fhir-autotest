@@ -124,7 +124,7 @@ pub fn assert_response(
             }
 
             // --- Include types ---
-            for (include_type, _param) in &assertion.include_types {
+            for include_type in assertion.include_types.keys() {
                 let found = entries.iter().any(|e| {
                     e.get("resource")
                         .and_then(|r| r.get("resourceType"))
@@ -178,13 +178,12 @@ pub fn assert_response(
                     }
                 }
             }
-        } else if assertion.bundle_type.is_some()
+        } else if (assertion.bundle_type.is_some()
             || assertion.min_entries.is_some()
-            || !assertion.resource_types.is_empty()
+            || !assertion.resource_types.is_empty())
+            && body.get("resourceType").and_then(|v| v.as_str()) == Some("Bundle")
         {
-            if body.get("resourceType").and_then(|v| v.as_str()) == Some("Bundle") {
-                errors.push("Bundle has no 'entry' array".to_string());
-            }
+            errors.push("Bundle has no 'entry' array".to_string());
         }
     }
 
@@ -249,7 +248,7 @@ pub fn assert_response(
 
 /// Resolve a dotted JSON path like "name.family" or "birthDate" to a value.
 /// Handles arrays by returning the first matching value.
-fn resolve_json_path<'a>(value: &'a Value, path: &str) -> Option<Value> {
+fn resolve_json_path(value: &Value, path: &str) -> Option<Value> {
     let parts: Vec<&str> = path.split('.').collect();
     let mut current = value;
 

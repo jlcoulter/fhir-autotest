@@ -36,7 +36,7 @@ pub fn extract_dependencies(profiles: &[StructureDefinition]) -> DependencyMap {
                             let ref_type = ref_type.split('|').next().unwrap_or(ref_type);
                             // Skip non-resource profile names (e.g. "hcpd-practitioner" is a profile, not a resource type)
                             // FHIR resource types start with uppercase and contain no hyphens
-                            if ref_type.chars().next().map_or(true, |c| c.is_lowercase())
+                            if ref_type.chars().next().is_none_or(|c| c.is_lowercase())
                                 || ref_type.contains('-')
                             {
                                 continue;
