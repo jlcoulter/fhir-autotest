@@ -63,6 +63,9 @@ base_url = "http://localhost:8091/fhir"
 # username = "admin"
 # password = "admin123"
 # upload_method = "PUT"
+# Concurrency for upload/delete operations. 1 = sequential, safe for most
+# repositories. Increase if the repository can handle parallel requests.
+# concurrency = 1
 
 # ── Overrides ────────────────────────────────────────────────────────────────
 

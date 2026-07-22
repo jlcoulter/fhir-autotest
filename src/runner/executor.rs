@@ -1,4 +1,4 @@
-use crate::config::models::{default_upload_method, WriteEndpoint};
+use crate::config::models::{default_concurrency, default_upload_method, WriteEndpoint};
 use crate::generate::model::*;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -65,6 +65,7 @@ impl TestExecutor {
                 base_url: base_url.to_string(),
                 headers,
                 upload_method: default_upload_method(),
+                concurrency: default_concurrency(),
             },
         )
     }
