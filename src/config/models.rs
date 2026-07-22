@@ -128,8 +128,11 @@ pub struct OverrideConfig {
 /// and the value is the number of resources to generate.
 ///
 /// Generated resources are written as NDJSON (one line per resource) to
-/// `{output}/data/{ResourceType}.ndjson`, then bulk-uploaded to the
-/// repository endpoint before tests run, and bulk-deleted afterward.
+/// `{output}/data/{ResourceType}.ndjson`.
+///
+/// By default, generated data is uploaded to the repository before tests
+/// and deleted afterward. Set `generate_only = true` to skip upload/delete
+/// and keep the NDJSON files for manual use.
 ///
 /// Resources reference each other: PractitionerRole points to Practitioner
 /// and Organization, HealthcareService references Location, etc.
@@ -139,6 +142,12 @@ pub struct DataGenerationConfig {
     /// Key = FHIR resource type, Value = count.
     #[serde(default)]
     pub counts: HashMap<String, u64>,
+
+    /// When true, generate NDJSON files but skip uploading to the repository
+    /// and skip bulk deletion after tests. The files remain in
+    /// `{output}/data/` for manual upload.
+    #[serde(default)]
+    pub generate_only: bool,
 }
 
 impl TestConfig {
@@ -291,6 +300,21 @@ base_url = "http://localhost:8080/fhir"
         let config: TestConfig = toml::from_str(toml).unwrap();
         assert!(config.mock);
         assert_eq!(config.mock_port, 8091);
+    }
+
+    #[test]
+    fn parse_config_with_generate_only() {
+        let toml = r#"
+[server]
+base_url = "http://localhost:8080/fhir"
+
+[data_generation]
+generate_only = true
+counts.Organization = 100
+"#;
+        let config: TestConfig = toml::from_str(toml).unwrap();
+        assert!(config.data_generation.generate_only);
+        assert_eq!(config.data_generation.counts.get("Organization"), Some(&100));
     }
 
     #[test]

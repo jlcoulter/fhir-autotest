@@ -102,7 +102,7 @@ impl Orchestrator {
         let mut bulk_ids: HashMap<String, Vec<String>> = HashMap::new();
 
         if has_bulk_data {
-            // ── Bulk data path: generate NDJSON, upload, then test ──
+            // ── Bulk data path: generate NDJSON, optionally upload, then test ──
             let output_path = std::path::Path::new(&self.config.output);
             let data_dir = output_path.join("data");
 
@@ -130,18 +130,24 @@ impl Orchestrator {
                 println!("    {}: {} resources", rt, ids.len());
             }
 
-            // Upload NDJSON files to the repository
-            println!("\n── Uploading bulk data to {} ──", write_url);
-            let uploaded_ids = upload_ndjson_files(
-                &data_dir,
-                &data_creation_order,
-                &write_endpoint,
-                20, // concurrency
-            )
-            .await?;
+            if self.config.data_generation.generate_only {
+                // Skip upload — NDJSON files are left in {output}/data/ for manual use
+                println!("\n  generate_only = true: skipping upload and deletion");
+                println!("  NDJSON files are in {}/data/", self.config.output);
+            } else {
+                // Upload NDJSON files to the repository
+                println!("\n── Uploading bulk data to {} ──", write_url);
+                let uploaded_ids = upload_ndjson_files(
+                    &data_dir,
+                    &data_creation_order,
+                    &write_endpoint,
+                    20, // concurrency
+                )
+                .await?;
 
-            bulk_ids = uploaded_ids;
-            println!("  Bulk data upload complete");
+                bulk_ids = uploaded_ids;
+                println!("  Bulk data upload complete");
+            }
         }
 
         // 4. Load fixture overrides (for single-resource setup, not bulk)
@@ -327,7 +333,7 @@ impl Orchestrator {
         }
 
         // 9. Cleanup
-        if has_bulk_data {
+        if has_bulk_data && !self.config.data_generation.generate_only {
             // Bulk delete all uploaded resources
             let data_creation_order = bulk_data_creation_order(&self.config.data_generation.counts);
             println!(
