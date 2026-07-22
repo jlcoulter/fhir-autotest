@@ -1,4 +1,4 @@
-use crate::config::models::WriteEndpoint;
+use crate::config::models::{default_upload_method, WriteEndpoint};
 use crate::generate::model::*;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -64,6 +64,7 @@ impl TestExecutor {
             WriteEndpoint::Server {
                 base_url: base_url.to_string(),
                 headers,
+                upload_method: default_upload_method(),
             },
         )
     }
@@ -143,48 +144,97 @@ impl TestExecutor {
         })
     }
 
-    /// Create a resource on the repository (POST to /{resource_type}).
-    /// Returns the created resource's ID and the full response body.
+    /// Create a resource on the repository.
+    ///
+    /// Uses PUT (update-as-create) when `upload_method` is "PUT", which sends
+    /// `PUT /{resource_type}/{id}` with the ID included in the resource body.
+    /// Uses POST (server-assigned ID) when `upload_method` is "POST".
+    ///
+    /// Returns the resource's ID and the full response body.
     pub async fn create_resource(
         &self,
         resource_type: &str,
         body: &serde_json::Value,
     ) -> Result<(String, serde_json::Value)> {
-        let url = format!("{}/{}", self.write_base_url(), resource_type);
+        let method = match &self.write_endpoint {
+            WriteEndpoint::Repository { upload_method, .. }
+            | WriteEndpoint::Server { upload_method, .. } => upload_method.to_uppercase(),
+        };
 
-        let req = self.client.post(&url);
-        let req = self.add_write_auth(req);
-        let req = req
-            .header("Content-Type", "application/fhir+json")
-            .header("Accept", "application/fhir+json")
-            .json(body);
+        if method == "PUT" {
+            // PUT (update-as-create): include client-assigned ID in URL and body
+            let id = body.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
+                anyhow::anyhow!("PUT upload requires resource to have an 'id' field")
+            })?;
+            let url = format!("{}/{}/{}", self.write_base_url(), resource_type, id);
 
-        let resp = req
-            .send()
-            .await
-            .with_context(|| format!("Failed to create {}", resource_type))?;
+            let req = self.client.put(&url);
+            let req = self.add_write_auth(req);
+            let req = req
+                .header("Content-Type", "application/fhir+json")
+                .header("Accept", "application/fhir+json")
+                .json(body);
 
-        let status = resp.status();
-        let created: serde_json::Value = resp
-            .json()
-            .await
-            .context("Failed to parse created resource response")?;
-        if status.as_u16() != 201 {
-            anyhow::bail!(
-                "Expected 201 Created for {}, got {}: {:?}",
-                resource_type,
-                status.as_u16(),
-                created
-            );
+            let resp = req
+                .send()
+                .await
+                .with_context(|| format!("Failed to PUT {}", resource_type))?;
+            let status = resp.status();
+            let created: serde_json::Value = resp
+                .json()
+                .await
+                .context("Failed to parse PUT resource response")?;
+            if status.as_u16() != 200 && status.as_u16() != 201 {
+                anyhow::bail!(
+                    "Expected 200/201 for PUT {}, got {}: {:?}",
+                    resource_type,
+                    status.as_u16(),
+                    created
+                );
+            }
+
+            let id = created
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("PUT response missing id"))?
+                .to_string();
+            Ok((id, created))
+        } else {
+            // POST: server-assigned ID — remove client id before sending
+            let url = format!("{}/{}", self.write_base_url(), resource_type);
+
+            let req = self.client.post(&url);
+            let req = self.add_write_auth(req);
+            let req = req
+                .header("Content-Type", "application/fhir+json")
+                .header("Accept", "application/fhir+json")
+                .json(body);
+
+            let resp = req
+                .send()
+                .await
+                .with_context(|| format!("Failed to create {}", resource_type))?;
+            let status = resp.status();
+            let created: serde_json::Value = resp
+                .json()
+                .await
+                .context("Failed to parse created resource response")?;
+            if status.as_u16() != 201 {
+                anyhow::bail!(
+                    "Expected 201 Created for {}, got {}: {:?}",
+                    resource_type,
+                    status.as_u16(),
+                    created
+                );
+            }
+
+            let id = created
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Created resource missing id"))?
+                .to_string();
+            Ok((id, created))
         }
-
-        let id = created
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Created resource missing id"))?
-            .to_string();
-
-        Ok((id, created))
     }
 
     /// Delete a resource from the repository.

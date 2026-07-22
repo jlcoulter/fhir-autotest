@@ -227,11 +227,13 @@ pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
     println!("Read endpoint (GET/search):  {}", config.server.base_url);
     match &config.repository {
         Some(repo) => println!(
-            "Write endpoint (POST/DELETE): {} (user: {})",
-            repo.base_url, repo.username
+            "Write endpoint ({}): {} (user: {})",
+            repo.upload_method.to_uppercase(),
+            repo.base_url,
+            repo.username
         ),
         None => println!(
-            "Write endpoint (POST/DELETE): {} (same as read)",
+            "Write endpoint (PUT): {} (same as read)",
             config.server.base_url
         ),
     }
@@ -241,13 +243,21 @@ pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
         Some(repo) => &repo.base_url,
         None => &config.server.base_url,
     };
+    let upload_method = config
+        .repository
+        .as_ref()
+        .map(|r| r.upload_method.to_uppercase())
+        .unwrap_or_else(|| "PUT".to_string());
 
     println!("Setup resources (creation order):");
     for rt in &creation_order {
         if resources.contains_key(rt) {
-            println!("  POST {}/{}  [will create]", write_url, rt);
+            println!("  {} {}/{}  [will create]", upload_method, write_url, rt);
         } else {
-            println!("  POST {}/{}  [no profile — skipped]", write_url, rt);
+            println!(
+                "  {} {}/{}  [no profile — skipped]",
+                upload_method, write_url, rt
+            );
         }
     }
     println!();

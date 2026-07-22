@@ -93,6 +93,10 @@ impl Orchestrator {
         // 3. Determine data setup strategy
         let has_bulk_data = !self.config.data_generation.counts.is_empty();
         let write_endpoint = self.config.write_endpoint();
+        let upload_method = match &write_endpoint {
+            WriteEndpoint::Repository { upload_method, .. }
+            | WriteEndpoint::Server { upload_method, .. } => upload_method.to_uppercase(),
+        };
         let write_url = match &self.config.repository {
             Some(repo) => &repo.base_url,
             None => &self.config.server.base_url,
@@ -136,7 +140,10 @@ impl Orchestrator {
                 println!("  NDJSON files are in {}/data/", self.config.output);
             } else {
                 // Upload NDJSON files to the repository
-                println!("\n── Uploading bulk data to {} ──", write_url);
+                println!(
+                    "\n── Uploading bulk data to {} ({}) ──",
+                    write_url, upload_method
+                );
                 let uploaded_ids = upload_ndjson_files(
                     &data_dir,
                     &data_creation_order,
@@ -215,7 +222,7 @@ impl Orchestrator {
                     let field_values = extract_field_values(resource_type, &body);
                     resource_field_values.insert(resource_type.clone(), field_values);
 
-                    print!("  POST {}/{} ... ", write_url, resource_type);
+                    print!("  {} {}/{} ... ", upload_method, write_url, resource_type);
                     match executor.create_resource(resource_type, &body).await {
                         Ok((id, _)) => {
                             println!("→ {}/{}", resource_type, id);

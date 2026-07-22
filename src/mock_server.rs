@@ -225,22 +225,18 @@ async fn update_resource(
 ) -> (StatusCode, Json<serde_json::Value>) {
     body["id"] = serde_json::Value::String(id.clone());
     let mut store = store.lock().unwrap();
-    if let Some(resources) = store.get_mut(&rtype) {
-        if let Some(idx) = resources
-            .iter()
-            .position(|r| r.get("id").and_then(|v| v.as_str()) == Some(&id))
-        {
-            resources[idx] = body.clone();
-            return (StatusCode::OK, Json(body));
-        }
+    let resources = store.entry(rtype.clone()).or_default();
+    if let Some(idx) = resources
+        .iter()
+        .position(|r| r.get("id").and_then(|v| v.as_str()) == Some(&id))
+    {
+        resources[idx] = body.clone();
+        (StatusCode::OK, Json(body))
+    } else {
+        // Update-as-create: resource doesn't exist yet, create it
+        resources.push(body.clone());
+        (StatusCode::CREATED, Json(body))
     }
-    (
-        StatusCode::NOT_FOUND,
-        Json(serde_json::json!({
-            "resourceType": "OperationOutcome",
-            "issue": [{"severity": "error", "code": "not-found"}]
-        })),
-    )
 }
 
 async fn delete_resource(
