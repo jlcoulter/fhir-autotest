@@ -47,8 +47,34 @@ impl std::fmt::Display for RunReport {
                 "[{}] {} (HTTP {})",
                 status, result.test_name, result.status_code
             )?;
+            // Show the request that was made
+            writeln!(f, "  → {} {}", result.request_method, result.request_url)?;
             for err in &result.validation_errors {
-                writeln!(f, "  - {}", err)?;
+                writeln!(f, "  ✗ {}", err)?;
+            }
+            // For failed tests, show the request and response for debugging
+            if !result.passed {
+                if let Some(body) = &result.request_body {
+                    let body_str = serde_json::to_string(body).unwrap_or_else(|_| body.to_string());
+                    let max_body = 500;
+                    if body_str.len() > max_body {
+                        writeln!(f, "  Request body (truncated):\n{}", &body_str[..max_body])?;
+                    } else {
+                        writeln!(f, "  Request body:\n{}", body_str)?;
+                    }
+                }
+                if let Some(body) = &result.response_body {
+                    let body_str =
+                        serde_json::to_string_pretty(body).unwrap_or_else(|_| body.to_string());
+                    // Truncate very long responses to keep output readable
+                    let max_len = 2000;
+                    if body_str.len() > max_len {
+                        writeln!(f, "  Response (truncated):\n{}", &body_str[..max_len])?;
+                        writeln!(f, "  ... ({} bytes truncated)", body_str.len() - max_len)?;
+                    } else {
+                        writeln!(f, "  Response:\n{}", body_str)?;
+                    }
+                }
             }
         }
         Ok(())
