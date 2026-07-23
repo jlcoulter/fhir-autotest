@@ -69,6 +69,10 @@ fhir-ig-testgen validate --package path/to/ig-package.tgz --resource patient.jso
 
 For each resource type declared in a server-mode CapabilityStatement, `fhir-ig-testgen` generates:
 
+### Test Plan (Functional Tests)
+
+These tests exercise the interactions and parameters the CapabilityStatement declares the server supports.
+
 | Test Kind | Description | Example |
 |-----------|-------------|---------|
 | **CRUD interactions** | One test per supported interaction | `read`, `create`, `update`, `delete`, `search-type` |
@@ -77,10 +81,31 @@ For each resource type declared in a server-mode CapabilityStatement, `fhir-ig-t
 | **Search prefixes** | All 9 FHIR prefixes on date/number/quantity params | `?birthdate=gt2024-01-01`, `?birthdate=lt2024-01-01` |
 | **Near searches** | Coordinate/distance searches for `special`-type params | `?near=-33.86:151.21:10:km` |
 | **Combinatorial searches** | All 2-parameter combinations within a resource type | `?name=Smith&birthdate=2024-01-01` |
+| **Chained searches** | Reference params chained into target params | `?subject.name=Smith` |
 | **`_include` / `_revinclude`** | From the CS's declared `searchInclude` and `searchRevInclude` | `?_include=Patient:organization` |
 | **Result parameters** | `_summary`, `_count`, `_sort` on every searchable resource | `?_summary=true`, `?_count=1`, `?_sort=name` |
 | **`$operation`** | From both resource-level and system-level `rest.operation` | `$everything`, `$export` |
 | **Negative tests** | Read nonexistent ID (404), search with invalid parameter | `/Patient/nonexistent-id-99999` |
+
+### Conformance Tests (Responder Obligations)
+
+These tests verify that the server actually meets the obligations it declares in its CapabilityStatement. They are **IG-agnostic** — driven entirely by whatever CapabilityStatement and StructureDefinitions are in the package, not hardcoded for any specific IG.
+
+| Test Category | What It Checks | Example |
+|---------------|----------------|---------|
+| **CapabilityStatement validation** | CS has required fields (`status`, server-mode `rest`, resource `type`, search param `name`/`type`) | CS missing `status` → error; resource entry without `type` → error |
+| **MustSupport field presence** | Fields marked `mustSupport=true` in declared profiles appear in search responses | `Patient.name` is mustSupport → `GET /Patient?_count=10` must return entries containing `name` |
+| **Cardinality enforcement** | `min` and `max` constraints from profile ElementDefinitions are respected | `Patient.name` has min=1 → responses must include `name`; `Patient.birthDate` has max=1 → responses must not have multiple `birthDate` |
+| **Undeclared interaction rejection** | Interactions NOT in the CS are properly rejected (non-2xx status + OperationOutcome) | CS declares only `read` and `search-type` for Patient → `POST /Patient` (create) must be rejected |
+| **Undeclared search param rejection** | Search parameters NOT in the CS are properly rejected | `GET /Patient?__invalid_conformance_test__=value` must return an error |
+
+**How profile matching works:**
+
+1. If the CS references a `profile` URL, use that StructureDefinition
+2. If the CS references `supportedProfile` URLs, use those
+3. Otherwise, fall back to any StructureDefinition whose `base_type` matches the resource type
+
+**Negative conformance tests** use `expected_status: 0` as a sentinel meaning "any non-2xx status is a pass." The test also checks for an `OperationOutcome` with severity `error` in the response body.
 
 ### Response Assertions
 
@@ -90,6 +115,7 @@ Every test case carries a `ResponseAssertion` that validates the server response
 - **Entry count**: `_count` tests verify entries ≤ requested count
 - **Resource types**: included resources match expected types
 - **Field values**: response fields match auto-generated sentinel values
+- **Required field presence**: mustSupport fields must exist in responses (regardless of value)
 - **Include types**: `_include`/`_revinclude` results contain declared target types
 - **Sort order**: `_sort` results are ordered by the specified field
 - **Absent fields**: `_summary=true` strips `text` div
