@@ -230,14 +230,17 @@ impl Orchestrator {
             // Build a map of resource_type → profile URL from the
             // CapabilityStatement so bulk data generation stamps the correct
             // meta.profile instead of hardcoded Plan-Net URLs.
+            // Strip FHIR version suffixes (e.g. "|26.0.0") — meta.profile
+            // should contain the plain canonical URL for server compatibility.
             let profile_urls: HashMap<String, String> = cs
                 .rest
                 .iter()
                 .flat_map(|r| &r.resource)
                 .filter_map(|res| {
-                    res.profile
-                        .as_ref()
-                        .map(|p| (res.resource_type.clone(), p.clone()))
+                    res.profile.as_ref().map(|p| {
+                        let url = p.split('|').next().unwrap_or(p);
+                        (res.resource_type.clone(), url.to_string())
+                    })
                 })
                 .collect();
 
