@@ -237,7 +237,7 @@ fn overlay_cross_references(
                 let ref_str = random_ref("Location", loc_ids, rng);
                 obj.insert(
                     "location".to_string(),
-                    serde_json::json!({ "reference": ref_str }),
+                    serde_json::json!([{ "reference": ref_str }]),
                 );
             }
         }

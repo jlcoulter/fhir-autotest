@@ -117,7 +117,7 @@ fn populate_required_fields(
         // For BackboneElement, populate required sub-fields from nested elements
         if type_code == "BackboneElement" {
             let mut backbone = value.as_object().cloned().unwrap_or_default();
-            populate_backbone_fields(&mut backbone, &element.path, elements);
+            populate_backbone_fields(&mut backbone, &element.path, elements, resource_type);
             let max = element.max.as_deref().unwrap_or("1");
             if max != "1" {
                 resource[&field_name] = serde_json::json!([backbone]);
@@ -128,12 +128,11 @@ fn populate_required_fields(
         }
 
         // Handle cardinality: if max is "*" or > 1, wrap in array.
-        // Also wrap in array for FHIR types that are always repeatable
-        // (e.g. identifier, name, telecom, address, extension, qualification)
-        // even when a profile constrains max to 1 — the base FHIR spec
-        // defines these as 0..*, and HAPI validates against the base spec.
+        // Also wrap in array for fields that are 0..* in the FHIR R4 base
+        // spec but constrained to max=1 by a profile. HAPI validates against
+        // the base spec and rejects non-array values for these fields.
         let max = element.max.as_deref().unwrap_or("1");
-        if max != "1" || is_always_array_type(&field_name) {
+        if max != "1" || is_base_spec_repeatable(resource_type, &field_name) {
             resource[&field_name] = serde_json::json!([value]);
         } else {
             resource[&field_name] = value;
@@ -152,6 +151,7 @@ fn populate_backbone_fields(
     backbone: &mut serde_json::Map<String, serde_json::Value>,
     parent_path: &str,
     elements: &[ElementDefinition],
+    resource_type: &str,
 ) {
     // First pass: populate direct children (depth 1)
     for element in elements {
@@ -227,7 +227,7 @@ fn populate_backbone_fields(
         }
 
         let max = element.max.as_deref().unwrap_or("1");
-        if max != "1" {
+        if max != "1" || is_base_spec_repeatable(resource_type, field_name) {
             backbone.insert(field_name.to_string(), serde_json::json!([value]));
         } else {
             backbone.insert(field_name.to_string(), value);
@@ -341,16 +341,18 @@ fn is_complex_type(type_code: &str) -> bool {
     )
 }
 
-/// Returns true for field names that are always arrays in FHIR R4.
-/// These are defined as 0..* in the base spec, and HAPI validates
-/// against the base spec even when a profile constrains max to 1.
-fn is_always_array_type(field_name: &str) -> bool {
-    matches!(
+/// Returns true for fields that are 0..* in the FHIR R4 base spec.
+///
+/// Some fields (identifier, telecom, extension, etc.) are always repeatable
+/// across all resource types. Others (name, address) are only repeatable for
+/// specific resource types. HAPI validates against the base spec and rejects
+/// non-array values for these fields even when a profile constrains max=1.
+fn is_base_spec_repeatable(resource_type: &str, field_name: &str) -> bool {
+    // Fields that are always 0..* regardless of resource type
+    if matches!(
         field_name,
         "identifier"
-            | "name"
             | "telecom"
-            | "address"
             | "extension"
             | "contained"
             | "contact"
@@ -364,7 +366,6 @@ fn is_always_array_type(field_name: &str) -> bool {
             | "availableTime"
             | "notAvailable"
             | "communication"
-            | "code"
             | "category"
             | "language"
             | "referralMethod"
@@ -391,7 +392,18 @@ fn is_always_array_type(field_name: &str) -> bool {
             | "coding"
             | "given"
             | "line"
-    )
+    ) {
+        return true;
+    }
+
+    // Fields that are 0..* only for specific resource types
+    match (resource_type, field_name) {
+        ("Patient" | "Person" | "Practitioner" | "RelatedPerson", "name") => true,
+        ("Organization" | "HealthcareService" | "Location", "name") => false,
+        ("Organization" | "Location" | "HealthcareService" | "PractitionerRole", "address") => true,
+        ("Patient" | "Person" | "Practitioner" | "RelatedPerson", "address") => true,
+        _ => false,
+    }
 }
 
 /// Extract the field name from a FHIR path like "Patient.name" → "name".
@@ -1325,18 +1337,18 @@ mod tests {
             "identifier should be an array (max=*)"
         );
 
-        // name (max="1", HumanName type) should be an array (always-array type)
+        // name (max="1", Organization.name is a string 0..1) should be a string
         let name = resource.get("name").unwrap();
         assert!(
-            name.is_array(),
-            "name should be an array (HumanName is always-array type)"
+            name.is_string(),
+            "name should be a string (Organization.name is 0..1 in base spec)"
         );
 
-        // address (max="1" but always-array type) should be an array
+        // address (max="1" but Organization.address is 0..* in base spec) should be an array
         let address = resource.get("address").unwrap();
         assert!(
             address.is_array(),
-            "address should be an array (always-array type even with max=1)"
+            "address should be an array (Organization.address is 0..* in base spec)"
         );
     }
 
