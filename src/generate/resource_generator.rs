@@ -127,9 +127,13 @@ fn populate_required_fields(
             continue;
         }
 
-        // Handle cardinality: if max is "*" or > 1, wrap in array
+        // Handle cardinality: if max is "*" or > 1, wrap in array.
+        // Also wrap in array for FHIR types that are always repeatable
+        // (e.g. identifier, name, telecom, address, extension, qualification)
+        // even when a profile constrains max to 1 — the base FHIR spec
+        // defines these as 0..*, and HAPI validates against the base spec.
         let max = element.max.as_deref().unwrap_or("1");
-        if max != "1" {
+        if max != "1" || is_always_array_type(&field_name) {
             resource[&field_name] = serde_json::json!([value]);
         } else {
             resource[&field_name] = value;
@@ -142,24 +146,25 @@ fn populate_required_fields(
 /// Populate required sub-fields of a BackboneElement by looking at nested elements
 /// in the snapshot. E.g., for "Practitioner.qualification", find
 /// "Practitioner.qualification.identifier" (min=1) and "Practitioner.qualification.code" (min=1).
+/// Also handles 2-level nesting: e.g. "Practitioner.qualification.code.text" (min=1)
+/// populates the `text` field inside the `code` CodeableConcept.
 fn populate_backbone_fields(
     backbone: &mut serde_json::Map<String, serde_json::Value>,
     parent_path: &str,
     elements: &[ElementDefinition],
 ) {
+    // First pass: populate direct children (depth 1)
     for element in elements {
-        // Only consider direct children of the backbone path
         if !element.path.starts_with(&format!("{}.", parent_path)) {
             continue;
         }
 
-        // Only consider direct children (not deeper nesting)
         let suffix = element
             .path
             .strip_prefix(&format!("{}.", parent_path))
             .unwrap_or("");
         if suffix.contains('.') {
-            continue; // Skip deeply nested paths
+            continue; // Skip deeply nested paths in first pass
         }
 
         // Strip slice notation
@@ -167,10 +172,9 @@ fn populate_backbone_fields(
 
         let min = element.min.unwrap_or(0);
         if min == 0 {
-            continue; // Optional, skip
+            continue;
         }
 
-        // Already populated?
         if backbone.contains_key(field_name) {
             continue;
         }
@@ -202,7 +206,6 @@ fn populate_backbone_fields(
             continue;
         }
 
-        // Skip fields with no type info
         if element.type_.is_empty() {
             continue;
         }
@@ -210,12 +213,19 @@ fn populate_backbone_fields(
         let type_code = &element.type_[0].code;
         let target_profiles = &element.type_[0].target_profile.clone();
 
-        // Skip Extension type — can't generate valid extensions without URLs
         if type_code == "Extension" {
             continue;
         }
 
-        let value = generate_typed_value(type_code, target_profiles);
+        let mut value = generate_typed_value(type_code, target_profiles);
+
+        // For complex types inside a backbone, check for required sub-fields
+        // at depth 2 (e.g. qualification.code.text)
+        if is_complex_type(type_code) {
+            let child_path = format!("{}.{}", parent_path, field_name);
+            populate_nested_required_fields(&mut value, &child_path, elements);
+        }
+
         let max = element.max.as_deref().unwrap_or("1");
         if max != "1" {
             backbone.insert(field_name.to_string(), serde_json::json!([value]));
@@ -223,6 +233,165 @@ fn populate_backbone_fields(
             backbone.insert(field_name.to_string(), value);
         }
     }
+}
+
+/// Populate required sub-fields at depth 2 inside a complex type.
+/// E.g., for "Practitioner.qualification.code", find
+/// "Practitioner.qualification.code.text" (min=1) and populate it.
+fn populate_nested_required_fields(
+    value: &mut serde_json::Value,
+    parent_path: &str,
+    elements: &[ElementDefinition],
+) {
+    let obj = match value.as_object_mut() {
+        Some(o) => o,
+        None => return,
+    };
+
+    for element in elements {
+        if !element.path.starts_with(&format!("{}.", parent_path)) {
+            continue;
+        }
+
+        let suffix = element
+            .path
+            .strip_prefix(&format!("{}.", parent_path))
+            .unwrap_or("");
+        if suffix.contains('.') {
+            continue; // Only depth 2 (direct children of the complex type)
+        }
+
+        let field_name = suffix.split(':').next().unwrap_or(suffix);
+        let min = element.min.unwrap_or(0);
+        if min == 0 {
+            continue;
+        }
+        if obj.contains_key(field_name) {
+            continue;
+        }
+
+        // Apply fixed/pattern values
+        if let Some(val) = &element.fixed_string {
+            obj.insert(
+                field_name.to_string(),
+                serde_json::Value::String(val.clone()),
+            );
+            continue;
+        }
+        if let Some(val) = &element.fixed_code {
+            obj.insert(
+                field_name.to_string(),
+                serde_json::Value::String(val.clone()),
+            );
+            continue;
+        }
+        if let Some(val) = &element.fixed_uri {
+            obj.insert(
+                field_name.to_string(),
+                serde_json::Value::String(val.clone()),
+            );
+            continue;
+        }
+        if let Some(val) = &element.fixed_boolean {
+            obj.insert(field_name.to_string(), serde_json::Value::Bool(*val));
+            continue;
+        }
+
+        if element.type_.is_empty() {
+            continue;
+        }
+
+        let type_code = &element.type_[0].code;
+        let target_profiles = &element.type_[0].target_profile.clone();
+
+        if type_code == "Extension" {
+            continue;
+        }
+
+        let child_value = generate_typed_value(type_code, target_profiles);
+        let max = element.max.as_deref().unwrap_or("1");
+        if max != "1" {
+            obj.insert(field_name.to_string(), serde_json::json!([child_value]));
+        } else {
+            obj.insert(field_name.to_string(), child_value);
+        }
+    }
+}
+
+/// Returns true for FHIR complex types that can have sub-fields.
+fn is_complex_type(type_code: &str) -> bool {
+    matches!(
+        type_code,
+        "Identifier"
+            | "HumanName"
+            | "Address"
+            | "ContactPoint"
+            | "CodeableConcept"
+            | "Coding"
+            | "Quantity"
+            | "Reference"
+            | "Period"
+            | "Attachment"
+            | "Annotation"
+            | "Range"
+            | "Ratio"
+            | "Timing"
+            | "SampledData"
+            | "BackboneElement"
+    )
+}
+
+/// Returns true for field names that are always arrays in FHIR R4.
+/// These are defined as 0..* in the base spec, and HAPI validates
+/// against the base spec even when a profile constrains max to 1.
+fn is_always_array_type(field_name: &str) -> bool {
+    matches!(
+        field_name,
+        "identifier"
+            | "name"
+            | "telecom"
+            | "address"
+            | "extension"
+            | "contained"
+            | "contact"
+            | "qualification"
+            | "location"
+            | "healthcareService"
+            | "endpoint"
+            | "alias"
+            | "type"
+            | "specialty"
+            | "availableTime"
+            | "notAvailable"
+            | "communication"
+            | "code"
+            | "category"
+            | "language"
+            | "referralMethod"
+            | "practiceSetting"
+            | "coverageArea"
+            | "serviceType"
+            | "eligibility"
+            | "program"
+            | "characteristic"
+            | "annotation"
+            | "note"
+            | "photo"
+            | "review"
+            | "usage"
+            | "coverage"
+            | "plan"
+            | "guarantor"
+            | "network"
+            | "resource"
+            | "entry"
+            | "link"
+            | "outcome"
+            | "issue"
+            | "coding"
+            | "given"
+            | "line"
+    )
 }
 
 /// Extract the field name from a FHIR path like "Patient.name" → "name".
@@ -290,9 +459,9 @@ fn generate_typed_value(type_code: &str, target_profiles: &[String]) -> serde_js
         "Address" => serde_json::json!({
             "line": ["123 Generated St"],
             "city": "GeneratedCity",
-            "state": "GC",
-            "postalCode": "00000",
-            "country": "US"
+            "state": "NSW",
+            "postalCode": "2000",
+            "country": "AU"
         }),
         "ContactPoint" => serde_json::json!({
             "system": "phone",
@@ -990,6 +1159,361 @@ mod tests {
         assert!(
             resource.get("identifier").is_some(),
             "identifier should still be populated even when extension is skipped"
+        );
+    }
+
+    #[test]
+    fn always_array_fields_are_wrapped_in_arrays() {
+        // Organization profile with address (min=1, max=1) and identifier (min=1, max=*)
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/TestOrg".to_string(),
+            base_type: "Organization".to_string(),
+            name: "TestOrg".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: None,
+            snapshot: Some(Snapshot {
+                element: vec![
+                    ElementDefinition {
+                        id: "Organization".to_string(),
+                        path: "Organization".to_string(),
+                        min: Some(0),
+                        max: Some("*".to_string()),
+                        type_: vec![],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                    ElementDefinition {
+                        id: "Organization.identifier".to_string(),
+                        path: "Organization.identifier".to_string(),
+                        min: Some(1),
+                        max: Some("*".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "Identifier".to_string(),
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                    ElementDefinition {
+                        id: "Organization.name".to_string(),
+                        path: "Organization.name".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "string".to_string(),
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                    ElementDefinition {
+                        id: "Organization.address".to_string(),
+                        path: "Organization.address".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "Address".to_string(),
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                ],
+            }),
+            differential: None,
+        };
+
+        let resource = generate_resource(&profile).unwrap();
+
+        // identifier (max="*") should be an array
+        let identifier = resource.get("identifier").unwrap();
+        assert!(
+            identifier.is_array(),
+            "identifier should be an array (max=*)"
+        );
+
+        // name (max="1", HumanName type) should be an array (always-array type)
+        let name = resource.get("name").unwrap();
+        assert!(
+            name.is_array(),
+            "name should be an array (HumanName is always-array type)"
+        );
+
+        // address (max="1" but always-array type) should be an array
+        let address = resource.get("address").unwrap();
+        assert!(
+            address.is_array(),
+            "address should be an array (always-array type even with max=1)"
+        );
+    }
+
+    #[test]
+    fn nested_required_fields_at_depth_2() {
+        // Practitioner with qualification.code.text (min=1) — 2-level nesting
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/TestPractitioner".to_string(),
+            base_type: "Practitioner".to_string(),
+            name: "TestPractitioner".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: None,
+            snapshot: Some(Snapshot {
+                element: vec![
+                    ElementDefinition {
+                        id: "Practitioner".to_string(),
+                        path: "Practitioner".to_string(),
+                        min: Some(0),
+                        max: Some("*".to_string()),
+                        type_: vec![],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                    ElementDefinition {
+                        id: "Practitioner.qualification".to_string(),
+                        path: "Practitioner.qualification".to_string(),
+                        min: Some(1),
+                        max: Some("*".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "BackboneElement".to_string(),
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                    ElementDefinition {
+                        id: "Practitioner.qualification.code".to_string(),
+                        path: "Practitioner.qualification.code".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "CodeableConcept".to_string(),
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                    ElementDefinition {
+                        id: "Practitioner.qualification.code.text".to_string(),
+                        path: "Practitioner.qualification.code.text".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "string".to_string(),
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                ],
+            }),
+            differential: None,
+        };
+
+        let resource = generate_resource(&profile).unwrap();
+
+        let qualification = resource.get("qualification").unwrap();
+        let qual_array = qualification.as_array().unwrap();
+        assert!(
+            !qual_array.is_empty(),
+            "qualification array should not be empty"
+        );
+
+        let qual = &qual_array[0];
+        let code = qual.get("code").unwrap();
+        assert!(
+            code.is_object(),
+            "code should be an object (CodeableConcept)"
+        );
+        let text = code.get("text").unwrap();
+        assert_eq!(
+            text.as_str().unwrap(),
+            "generated-string",
+            "code.text should be populated (required at depth 2)"
         );
     }
 }
