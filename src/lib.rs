@@ -23,6 +23,12 @@ use std::path::Path;
 pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
     let pkg = parse_package(package_path)?;
 
+    // Resolve parent profile chains — download missing parent profiles
+    // from the FHIR package registry and merge their snapshots so that
+    // slice definitions with discriminator patterns are available.
+    let mut profiles = pkg.structure_definitions;
+    resolve_parent_chain(&mut profiles)?;
+
     // Prefer a server-mode CapabilityStatement; fall back to first if none found
     let cs = pkg
         .capability_statements
@@ -41,7 +47,7 @@ pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
         .context("No CapabilityStatement found in IG package")?;
 
     // Resolve dependencies (by resource type)
-    let auto_deps = extract_dependencies(&pkg.structure_definitions);
+    let auto_deps = extract_dependencies(&profiles);
     let auto_order = resolve_creation_order(&auto_deps)?;
     let creation_order = merge_creation_order(&auto_order, &config.overrides.creation_order);
 
@@ -68,8 +74,7 @@ pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
         }
 
         // Generate one resource per profile for this resource type
-        let profiles_for_type: Vec<_> = pkg
-            .structure_definitions
+        let profiles_for_type: Vec<_> = profiles
             .iter()
             .filter(|sd| sd.base_type == *resource_type)
             .collect();
@@ -96,7 +101,7 @@ pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
     // Generate test plan
     let mut plan = generate_test_plan(
         cs,
-        &pkg.structure_definitions,
+        &profiles,
         &pkg.search_parameters,
         Some(&pkg.operation_definitions),
         None,
@@ -166,6 +171,10 @@ pub async fn run_tests(package_path: &str, config: &TestConfig) -> Result<()> {
 pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
     let pkg = parse_package(package_path)?;
 
+    // Resolve parent profile chains
+    let mut profiles = pkg.structure_definitions;
+    resolve_parent_chain(&mut profiles)?;
+
     let cs = pkg
         .capability_statements
         .iter()
@@ -182,7 +191,7 @@ pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
         .or(pkg.capability_statements.first())
         .context("No CapabilityStatement found in IG package")?;
 
-    let auto_deps = extract_dependencies(&pkg.structure_definitions);
+    let auto_deps = extract_dependencies(&profiles);
     let auto_order = resolve_creation_order(&auto_deps)?;
     let creation_order = merge_creation_order(&auto_order, &config.overrides.creation_order);
 
@@ -195,10 +204,7 @@ pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
             resources.insert(resource_type.clone(), fixture.clone());
         } else {
             // Use first profile for each type
-            let profile = pkg
-                .structure_definitions
-                .iter()
-                .find(|sd| sd.base_type == *resource_type);
+            let profile = profiles.iter().find(|sd| sd.base_type == *resource_type);
             if let Some(profile) = profile {
                 let generated = generate_resource(profile)?;
                 resources.insert(resource_type.clone(), generated);
@@ -208,7 +214,7 @@ pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
 
     let mut plan = generate_test_plan(
         cs,
-        &pkg.structure_definitions,
+        &profiles,
         &pkg.search_parameters,
         Some(&pkg.operation_definitions),
         None,
@@ -293,6 +299,11 @@ pub fn run_validate(
     profile_url: Option<&str>,
 ) -> Result<()> {
     let pkg = parse_package(package_path)?;
+
+    // Resolve parent profile chains
+    let mut profiles = pkg.structure_definitions;
+    resolve_parent_chain(&mut profiles)?;
+
     let resource_content = std::fs::read_to_string(resource_path)?;
     let resource: serde_json::Value = serde_json::from_str(&resource_content)?;
 
@@ -303,13 +314,13 @@ pub fn run_validate(
 
     // Find the profile
     let profile = if let Some(url) = profile_url {
-        pkg.structure_definitions
+        profiles
             .iter()
             .find(|sd| sd.url == url)
             .with_context(|| format!("Profile '{}' not found in IG package", url))?
     } else {
         // Auto-detect by resource type
-        pkg.structure_definitions
+        profiles
             .iter()
             .find(|sd| sd.base_type == resource_type)
             .with_context(|| {

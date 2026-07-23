@@ -612,6 +612,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Patient.name".to_string(),
@@ -643,6 +645,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Patient.birthDate".to_string(),
@@ -674,6 +678,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                 ],
             }),
