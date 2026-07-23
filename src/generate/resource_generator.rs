@@ -400,8 +400,14 @@ fn is_base_spec_repeatable(resource_type: &str, field_name: &str) -> bool {
     match (resource_type, field_name) {
         ("Patient" | "Person" | "Practitioner" | "RelatedPerson", "name") => true,
         ("Organization" | "HealthcareService" | "Location", "name") => false,
-        ("Organization" | "Location" | "HealthcareService" | "PractitionerRole", "address") => true,
-        ("Patient" | "Person" | "Practitioner" | "RelatedPerson", "address") => true,
+        (
+            "Organization" | "Practitioner" | "Patient" | "Person" | "RelatedPerson"
+            | "PractitionerRole",
+            "address",
+        ) => true,
+        ("Location", "address") => false,
+        ("PractitionerRole", "code") => true,
+        ("HealthcareService", "code") => true,
         _ => false,
     }
 }
