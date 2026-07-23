@@ -385,9 +385,33 @@ impl Orchestrator {
             for test in &group.tests {
                 let mut test = test.clone();
 
-                // Replace {id} placeholders in URLs with actual created IDs
+                // Replace {id} placeholders in URLs with actual created IDs.
+                // If the placeholder is still present after substitution, the
+                // resource was never created — skip the test rather than sending
+                // a request to a broken URL.
                 if let Some(id) = created_ids.get(&test.resource_type) {
                     test.request.url = test.request.url.replace("{id}", id);
+                }
+                if test.request.url.contains("{id}") {
+                    println!(
+                        "  ⊘ {} {} — skipped: no resource created for {}",
+                        test.request.method, test.request.url, test.resource_type
+                    );
+                    results.push(TestResult {
+                        test_name: test.name,
+                        passed: false,
+                        status_code: 0,
+                        response_body: None,
+                        validation_errors: vec![format!(
+                            "Skipped: {{id}} placeholder unresolved — no resource created for {}",
+                            test.resource_type
+                        )],
+                        request_url: format!("{}{}", self.config.server.base_url, test.request.url),
+                        request_method: test.request.method.clone(),
+                        request_body: test.request.body.clone(),
+                        test_group: group.resource_type.clone(),
+                    });
+                    continue;
                 }
 
                 // Resolve search parameter values from created resources

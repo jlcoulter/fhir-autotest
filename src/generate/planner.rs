@@ -105,11 +105,12 @@ pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<Re
             ..ResponseAssertion::none()
         }),
 
-        // Negative tests: expect OperationOutcome with error/warning
-        TestCaseKind::Negative { .. } => Some(ResponseAssertion {
-            outcome_severity: Some("error".to_string()),
-            ..ResponseAssertion::none()
-        }),
+        // Negative tests: expected_status already encodes what HTTP response
+        // to accept.  Do NOT assert OperationOutcome severity here because:
+        //  - read_nonexistent expects 404 (no body)
+        //  - search_invalid_param expects 200 (FHIR allows ignoring unknown params)
+        // If a server returns an OperationOutcome, that's fine but not required.
+        TestCaseKind::Negative { .. } => None,
 
         // Conformance tests carry their own assertions
         TestCaseKind::Conformance { .. } => None,
@@ -413,12 +414,16 @@ fn build_test_group(
         404,
         profile_url,
     ));
+    // Per FHIR spec, unknown search parameters may be silently ignored by
+    // servers.  A 200 response with a valid Bundle is acceptable.  We still
+    // generate the test to surface the behaviour, but expect 200 and a
+    // searchset Bundle rather than requiring an error.
     tests.push(build_negative_test(
         rt,
         "search_invalid_param",
         "GET",
         &format!("/{rt}?__invalid_param__=value"),
-        400, // or 200 with OperationOutcome
+        200,
         profile_url,
     ));
 
@@ -655,8 +660,10 @@ fn build_search_near_test(
     param_name: &str,
     profile_url: &Option<String>,
 ) -> TestCase {
-    // Test with coordinates and 10km radius
-    let url = format!("/{resource_type}?{param_name}=-33.86:151.21:10:km");
+    // Test with coordinates and 10km radius.
+    // FHIR R4 near parameter format: latitude|longitude|distance|units
+    // Pipe characters must be URL-encoded as %7C.
+    let url = format!("/{resource_type}?{param_name}=-33.86%7C151.21%7C10%7Ckm");
 
     TestCase {
         name: format!(
@@ -1398,8 +1405,11 @@ mod tests {
         );
         let near_test = near_test.unwrap();
         assert!(
-            near_test.request.url.contains("near=-33.86:151.21:10:km"),
-            "Near test URL should contain coordinate format, got {}",
+            near_test
+                .request
+                .url
+                .contains("near=-33.86%7C151.21%7C10%7Ckm"),
+            "Near test URL should contain URL-encoded coordinate format, got {}",
             near_test.request.url
         );
         assert!(
