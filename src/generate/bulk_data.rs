@@ -15,7 +15,11 @@ pub type IdStore = HashMap<String, Vec<String>>;
 /// Writes one `.ndjson` file per resource type under `output_dir/data/`.
 /// Returns an `IdStore` mapping each resource type to its generated IDs,
 /// which is used to resolve cross-references during generation.
-pub fn generate_bulk_data(counts: &HashMap<String, u64>, output_dir: &Path) -> Result<IdStore> {
+pub fn generate_bulk_data(
+    counts: &HashMap<String, u64>,
+    profile_urls: &HashMap<String, String>,
+    output_dir: &Path,
+) -> Result<IdStore> {
     use std::io::BufWriter;
 
     let data_dir = output_dir.join("data");
@@ -58,8 +62,14 @@ pub fn generate_bulk_data(counts: &HashMap<String, u64>, output_dir: &Path) -> R
         let mut writer = BufWriter::new(file);
         let mut written = 0u64;
 
+        // Resolve the profile URL for this resource type: prefer the IG's
+        // profile, fall back to the base FHIR profile.
+        let profile_url = profile_urls.get(resource_type).cloned().unwrap_or_else(|| {
+            format!("http://hl7.org/fhir/StructureDefinition/{}", resource_type)
+        });
+
         for id in type_ids.iter() {
-            let resource = match resource_type.as_str() {
+            let mut resource = match resource_type.as_str() {
                 "Organization" => gen_organization(id, &mut rng),
                 "Practitioner" => gen_practitioner(id, &mut rng),
                 "PractitionerRole" => {
@@ -71,6 +81,10 @@ pub fn generate_bulk_data(counts: &HashMap<String, u64>, output_dir: &Path) -> R
                 // Generic fallback for any resource type not explicitly handled
                 _ => gen_generic(resource_type, id, &mut rng),
             };
+
+            // Stamp the correct profile URL from the IG package, overriding
+            // the hardcoded Plan-Net defaults in the gen_* functions.
+            resource["meta"]["profile"] = serde_json::json!([profile_url]);
 
             serde_json::to_writer(&mut writer, &resource)?;
             writeln!(writer)?;
@@ -826,7 +840,8 @@ mod tests {
         counts.insert("Location".to_string(), 20);
         counts.insert("HealthcareService".to_string(), 50);
 
-        let ids = generate_bulk_data(&counts, dir.path()).unwrap();
+        let profile_urls = HashMap::new();
+        let ids = generate_bulk_data(&counts, &profile_urls, dir.path()).unwrap();
 
         // Each type should have the right number of IDs
         assert_eq!(ids.get("Organization").unwrap().len(), 10);
@@ -871,7 +886,8 @@ mod tests {
         counts.insert("Location".to_string(), 5);
         counts.insert("HealthcareService".to_string(), 10);
 
-        let ids = generate_bulk_data(&counts, dir.path()).unwrap();
+        let profile_urls = HashMap::new();
+        let ids = generate_bulk_data(&counts, &profile_urls, dir.path()).unwrap();
 
         // Check PractitionerRole references
         let pr_path = dir.path().join("data/PractitionerRole.ndjson");
@@ -916,7 +932,7 @@ mod tests {
         let mut counts = HashMap::new();
         counts.insert("Location".to_string(), 100);
 
-        generate_bulk_data(&counts, dir.path()).unwrap();
+        generate_bulk_data(&counts, &HashMap::new(), dir.path()).unwrap();
 
         let loc_path = dir.path().join("data/Location.ndjson");
         let contents = std::fs::read_to_string(&loc_path).unwrap();
@@ -967,7 +983,7 @@ mod tests {
         let mut counts = HashMap::new();
         counts.insert("Patient".to_string(), 5);
 
-        let ids = generate_bulk_data(&counts, dir.path()).unwrap();
+        let ids = generate_bulk_data(&counts, &HashMap::new(), dir.path()).unwrap();
         assert_eq!(ids.get("Patient").unwrap().len(), 5);
 
         let path = dir.path().join("data/Patient.ndjson");
@@ -976,5 +992,57 @@ mod tests {
         let patient: serde_json::Value = serde_json::from_str(first_line).unwrap();
         assert_eq!(patient["resourceType"], "Patient");
         assert_eq!(patient["status"], "active");
+    }
+
+    #[test]
+    fn profile_urls_override_meta_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut counts = HashMap::new();
+        counts.insert("Organization".to_string(), 3);
+
+        let mut profile_urls = HashMap::new();
+        profile_urls.insert(
+            "Organization".to_string(),
+            "http://example.org/fhir/StructureDefinition/MyOrg".to_string(),
+        );
+
+        let ids = generate_bulk_data(&counts, &profile_urls, dir.path()).unwrap();
+        assert_eq!(ids.get("Organization").unwrap().len(), 3);
+
+        let path = dir.path().join("data/Organization.ndjson");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        for line in contents.lines().filter(|l| !l.is_empty()) {
+            let org: serde_json::Value = serde_json::from_str(line).unwrap();
+            let profiles = org["meta"]["profile"].as_array().unwrap();
+            assert_eq!(
+                profiles[0].as_str().unwrap(),
+                "http://example.org/fhir/StructureDefinition/MyOrg",
+                "meta.profile should use the IG profile URL, not the hardcoded Plan-Net URL"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_urls_fallback_to_base_fhir() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut counts = HashMap::new();
+        counts.insert("Organization".to_string(), 2);
+
+        // No profile_urls provided — should fall back to base FHIR profile
+        let profile_urls = HashMap::new();
+        let ids = generate_bulk_data(&counts, &profile_urls, dir.path()).unwrap();
+        assert_eq!(ids.get("Organization").unwrap().len(), 2);
+
+        let path = dir.path().join("data/Organization.ndjson");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        for line in contents.lines().filter(|l| !l.is_empty()) {
+            let org: serde_json::Value = serde_json::from_str(line).unwrap();
+            let profiles = org["meta"]["profile"].as_array().unwrap();
+            assert_eq!(
+                profiles[0].as_str().unwrap(),
+                "http://hl7.org/fhir/StructureDefinition/Organization",
+                "meta.profile should fall back to base FHIR profile when no IG profile is provided"
+            );
+        }
     }
 }

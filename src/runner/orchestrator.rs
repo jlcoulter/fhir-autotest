@@ -227,7 +227,21 @@ impl Orchestrator {
                 }
             }
 
-            let generated_ids = generate_bulk_data(&counts, output_path)?;
+            // Build a map of resource_type → profile URL from the
+            // CapabilityStatement so bulk data generation stamps the correct
+            // meta.profile instead of hardcoded Plan-Net URLs.
+            let profile_urls: HashMap<String, String> = cs
+                .rest
+                .iter()
+                .flat_map(|r| &r.resource)
+                .filter_map(|res| {
+                    res.profile
+                        .as_ref()
+                        .map(|p| (res.resource_type.clone(), p.clone()))
+                })
+                .collect();
+
+            let generated_ids = generate_bulk_data(&counts, &profile_urls, output_path)?;
             let data_creation_order = bulk_data_creation_order(&counts);
             let total_resources: u64 = counts.values().sum();
             println!(
