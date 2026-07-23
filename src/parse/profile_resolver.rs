@@ -26,8 +26,11 @@ pub fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Result<(
             }
         };
 
+        // Strip FHIR version suffix (e.g. "|4.0.1") for URL matching
+        let base_url_clean = base_url.split('|').next().unwrap_or(&base_url).to_string();
+
         // Check if parent is already in our list
-        if !url_map.contains_key(&base_url) {
+        if !url_map.contains_key(&base_url_clean) {
             // Download the parent profile
             let parent = download_profile(&base_url)
                 .with_context(|| format!("Failed to download parent profile: {}", base_url))?;
@@ -38,7 +41,7 @@ pub fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Result<(
         }
 
         // Merge parent snapshot into child
-        let parent_idx = url_map[&base_url];
+        let parent_idx = url_map[&base_url_clean];
         let parent_elements = match &profiles[parent_idx].snapshot {
             Some(s) => s.element.clone(),
             None => {
@@ -96,8 +99,10 @@ fn merge_snapshot_elements(child: &mut StructureDefinition, parent_elements: &[E
 /// 1. https://packages.fhir.org/StructureDefinition/<name>
 /// 2. https://hl7.org/fhir/<name>.json (for base FHIR definitions)
 fn download_profile(url: &str) -> Result<StructureDefinition> {
+    // Strip FHIR version suffix (e.g. "|4.0.1") if present
+    let clean_url = url.split('|').next().unwrap_or(url);
     // Extract the profile name from the URL
-    let name = url
+    let name = clean_url
         .rsplit('/')
         .next()
         .context("Cannot extract profile name from URL")?;
