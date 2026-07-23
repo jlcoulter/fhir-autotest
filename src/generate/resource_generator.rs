@@ -560,6 +560,10 @@ fn generate_typed_value(type_code: &str, target_profiles: &[String]) -> serde_js
 /// For each field with slicing, check if any slice has min > 0.
 /// If so, generate an additional element that applies the slice's
 /// pattern values (e.g., patternUri on system for identifier slices).
+///
+/// If no slice is individually required but the field itself is required
+/// and has slicing, replace the generic value with one matching the
+/// first slice's discriminator pattern so the resource passes validation.
 fn populate_required_slices(
     resource: &mut serde_json::Value,
     elements: &[ElementDefinition],
@@ -580,13 +584,19 @@ fn populate_required_slices(
     }
 
     for (field_name, slices) in &slice_fields {
+        // Find the discriminator path from the slicing element
+        let discriminator_path: Option<String> = elements
+            .iter()
+            .find(|e| {
+                let fname = get_field_name(&e.path, resource_type);
+                fname.as_deref() == Some(field_name) && e.slicing.is_some()
+            })
+            .and_then(|e| e.slicing.as_ref())
+            .and_then(|s| s.discriminator.first().map(|d| d.path.clone()));
+
         // Check if any slice has min > 0 (required slice)
         let required_slices: Vec<&&ElementDefinition> =
             slices.iter().filter(|s| s.min.unwrap_or(0) > 0).collect();
-
-        if required_slices.is_empty() {
-            continue;
-        }
 
         // Get the field value — if the field doesn't exist yet,
         // it will be handled by the main populate_required_fields loop
@@ -595,8 +605,6 @@ fn populate_required_slices(
             None => continue,
         };
 
-        // For each required slice, generate an element that matches
-        // the slice discriminator
         let mut slice_values = Vec::new();
 
         // Start with the existing value(s)
@@ -606,9 +614,23 @@ fn populate_required_slices(
             slice_values.push(field_value);
         }
 
-        for slice in required_slices {
-            if let Some(val) = generate_slice_value(slice, resource_type) {
-                slice_values.push(val);
+        if !required_slices.is_empty() {
+            // Add values for each required slice
+            for slice in required_slices {
+                if let Some(val) =
+                    generate_slice_value(slice, resource_type, discriminator_path.as_deref())
+                {
+                    slice_values.push(val);
+                }
+            }
+        } else if slice_values.len() == 1 {
+            // No slice is individually required, but the field has slicing.
+            // Replace the generic value with one matching the first slice's
+            // discriminator pattern so the resource passes validation.
+            if let Some(val) =
+                generate_slice_value(slices[0], resource_type, discriminator_path.as_deref())
+            {
+                slice_values = vec![val];
             }
         }
 
@@ -622,9 +644,15 @@ fn populate_required_slices(
 ///
 /// Examines the slice element for pattern values (patternUri, patternCode, etc.)
 /// and creates a value that satisfies the discriminator.
+///
+/// If no pattern values are present but the slice has a type profile reference,
+/// uses the discriminator path to generate a matching value:
+/// - `system` discriminator: sets the `system` field to a URI derived from the profile
+/// - `type` discriminator: sets the `type` field with a coding matching the profile
 fn generate_slice_value(
     slice: &ElementDefinition,
     _resource_type: &str,
+    discriminator_path: Option<&str>,
 ) -> Option<serde_json::Value> {
     // Determine the base type from the element's type
     let type_code = slice.type_.first()?.code.clone();
@@ -669,6 +697,42 @@ fn generate_slice_value(
     if let Some(val) = &slice.pattern_codeable_concept {
         if let Some(obj) = value.as_object_mut() {
             obj.insert("coding".to_string(), val.clone());
+        }
+    }
+
+    // If no pattern values were applied but we have a discriminator path,
+    // generate a value that would match the slice
+    if type_code == "Identifier" {
+        if let Some(obj) = value.as_object_mut() {
+            match discriminator_path {
+                Some("system") => {
+                    // Set a unique system URI so the value matches a system-based slice
+                    if !obj.contains_key("system") {
+                        let profile_url = slice
+                            .type_
+                            .first()
+                            .and_then(|t| t.target_profile.first())
+                            .map(|s| s.as_str())
+                            .unwrap_or("http://example.org/identifier");
+                        obj.insert("system".to_string(), serde_json::json!(profile_url));
+                    }
+                }
+                Some("type") => {
+                    // Set a type coding so the value matches a type-based slice
+                    if !obj.contains_key("type") {
+                        obj.insert(
+                            "type".to_string(),
+                            serde_json::json!({
+                                "coding": [{
+                                    "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                                    "code": "XX"
+                                }]
+                            }),
+                        );
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
