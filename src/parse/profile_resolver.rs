@@ -245,11 +245,21 @@ fn merge_snapshot_elements(child: &mut StructureDefinition, parent_elements: &[E
     child_elements.sort_by(|a, b| a.id.cmp(&b.id));
 }
 
+/// Write a downloaded profile to the disk cache.
+fn cache_profile(path: &std::path::Path, sd: &StructureDefinition) {
+    if let Ok(json) = serde_json::to_string_pretty(sd) {
+        std::fs::write(path, &json).ok();
+    }
+}
+
 /// Download a StructureDefinition from the FHIR package registry or HL7 servers.
 ///
 /// Tries multiple URL patterns:
 /// 1. https://packages.fhir.org/StructureDefinition/<name>
 /// 2. Domain-specific fallback based on the original URL's host
+///
+/// Results are cached to disk at ~/.cache/fhir-ig-testgen/packages/<name>.json
+/// so subsequent runs don't re-download.
 fn download_profile(url: &str) -> Result<StructureDefinition> {
     // Strip FHIR version suffix (e.g. "|4.0.1") if present
     let clean_url = url.split('|').next().unwrap_or(url);
@@ -258,6 +268,16 @@ fn download_profile(url: &str) -> Result<StructureDefinition> {
         .rsplit('/')
         .next()
         .context("Cannot extract profile name from URL")?;
+
+    // Check disk cache first
+    let cache_path = cache_dir().join(format!("{}.json", name));
+    if cache_path.exists() {
+        let content = std::fs::read_to_string(&cache_path)?;
+        if let Ok(sd) = serde_json::from_str::<StructureDefinition>(&content) {
+            tracing::debug!("Using cached profile: {} ({})", sd.name, sd.url);
+            return Ok(sd);
+        }
+    }
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -275,6 +295,7 @@ fn download_profile(url: &str) -> Result<StructureDefinition> {
         Ok(resp) if resp.status().is_success() => {
             let sd: StructureDefinition = resp.json()?;
             tracing::info!("Downloaded parent profile: {} ({})", sd.name, sd.url);
+            cache_profile(&cache_path, &sd);
             return Ok(sd);
         }
         Ok(resp) => {
@@ -340,6 +361,7 @@ fn download_profile(url: &str) -> Result<StructureDefinition> {
                     sd.name,
                     sd.url
                 );
+                cache_profile(&cache_path, &sd);
                 return Ok(sd);
             }
             Err(e) => {
