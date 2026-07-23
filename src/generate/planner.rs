@@ -105,11 +105,12 @@ pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<Re
             ..ResponseAssertion::none()
         }),
 
-        // Negative tests: expect OperationOutcome with error/warning
-        TestCaseKind::Negative { .. } => Some(ResponseAssertion {
-            outcome_severity: Some("error".to_string()),
-            ..ResponseAssertion::none()
-        }),
+        // Negative tests: expected_status already encodes what HTTP response
+        // to accept.  Do NOT assert OperationOutcome severity here because:
+        //  - read_nonexistent expects 404 (no body)
+        //  - search_invalid_param expects 200 (FHIR allows ignoring unknown params)
+        // If a server returns an OperationOutcome, that's fine but not required.
+        TestCaseKind::Negative { .. } => None,
 
         // Conformance tests carry their own assertions
         TestCaseKind::Conformance { .. } => None,
@@ -415,12 +416,16 @@ fn build_test_group(
         404,
         profile_url,
     ));
+    // Per FHIR spec, unknown search parameters may be silently ignored by
+    // servers.  A 200 response with a valid Bundle is acceptable.  We still
+    // generate the test to surface the behaviour, but expect 200 and a
+    // searchset Bundle rather than requiring an error.
     tests.push(build_negative_test(
         rt,
         "search_invalid_param",
         "GET",
         &format!("/{rt}?__invalid_param__=value"),
-        400, // or 200 with OperationOutcome
+        200,
         profile_url,
     ));
 

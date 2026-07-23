@@ -203,7 +203,10 @@ pub fn generate_conformance_tests(
                             expected_status: 200,
                             must_contain_fields: vec![field_path],
                             must_not_contain_fields: vec![],
-                            min_entries: Some(1),
+                            // min_entries=0: an empty search result Bundle (total=0)
+                            // is valid per FHIR spec; field presence is only checked
+                            // when entries actually exist.
+                            min_entries: Some(0),
                             bundle_type: Some("searchset".to_string()),
                             expect_operation_outcome: false,
                         },
@@ -241,7 +244,9 @@ pub fn generate_conformance_tests(
                             expected_status: 200,
                             must_contain_fields: vec![],
                             must_not_contain_fields: vec![],
-                            min_entries: Some(1),
+                            // min_entries=0: empty search results are valid; cardinality
+                            // is only meaningful when entries exist.
+                            min_entries: Some(0),
                             bundle_type: Some("searchset".to_string()),
                             expect_operation_outcome: false,
                         },
@@ -428,7 +433,9 @@ pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::m
     match &ct.kind {
         ConformanceTestKind::MustSupportPresence { field_path } => {
             response_assertion.bundle_type = Some("searchset".to_string());
-            response_assertion.min_entries = Some(1);
+            // min_entries=0: empty search results (total=0) are valid per FHIR spec;
+            // required_fields checks are skipped when no entries exist.
+            response_assertion.min_entries = Some(0);
             // Use required_fields for presence check (not field_values)
             // — this checks the key exists regardless of its value.
             let mut required = std::collections::HashMap::new();
@@ -437,20 +444,33 @@ pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::m
         }
         ConformanceTestKind::Cardinality { .. } => {
             response_assertion.bundle_type = Some("searchset".to_string());
-            response_assertion.min_entries = Some(1);
+            // min_entries=0: cardinality checks only apply when entries exist.
+            response_assertion.min_entries = Some(0);
         }
-        ConformanceTestKind::UndeclaredInteraction { .. }
-        | ConformanceTestKind::UndeclaredSearchParam { .. } => {
-            // Expect an error response (OperationOutcome)
+        ConformanceTestKind::UndeclaredInteraction { .. } => {
+            // Interactions not declared in the CapabilityStatement SHOULD be
+            // rejected — expect OperationOutcome with error severity.
             response_assertion.outcome_severity = Some("error".to_string());
+        }
+        ConformanceTestKind::UndeclaredSearchParam { .. } => {
+            // Per FHIR spec, servers MAY silently ignore unknown search
+            // parameters and return a valid Bundle (possibly empty).  Only
+            // assert that the response is a valid Bundle — do NOT require
+            // OperationOutcome/error, as that is not mandatory.
+            response_assertion.bundle_type = Some("searchset".to_string());
+            response_assertion.min_entries = Some(0);
         }
     }
 
     let expected_status = match &ct.kind {
-        ConformanceTestKind::UndeclaredInteraction { .. }
-        | ConformanceTestKind::UndeclaredSearchParam { .. } => {
+        ConformanceTestKind::UndeclaredInteraction { .. } => {
             // Use 0 as sentinel — the test framework should accept any non-2xx status
             0
+        }
+        ConformanceTestKind::UndeclaredSearchParam { .. } => {
+            // Per FHIR spec, servers may silently ignore unknown params and
+            // return 200 with a Bundle. Accept 200 as a valid response.
+            200
         }
         _ => ct.assertion.expected_status,
     };

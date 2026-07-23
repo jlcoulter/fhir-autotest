@@ -108,7 +108,11 @@ impl TestExecutor {
     ///
     /// Test requests are sent to the read endpoint (public FHIR server).
     pub async fn execute_test(&self, test: &TestCase) -> Result<TestResult> {
-        let url = format!("{}{}", self.read_url, test.request.url);
+        let url = format!(
+            "{}/{}",
+            self.read_url.trim_end_matches('/'),
+            test.request.url.trim_start_matches('/')
+        );
 
         let mut req = match test.request.method.as_str() {
             "GET" => self.client.get(&url),
