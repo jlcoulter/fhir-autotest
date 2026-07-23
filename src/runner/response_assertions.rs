@@ -243,6 +243,50 @@ pub fn assert_response(
         }
     }
 
+    // --- MustSupport required field presence ---
+    // Checks that specified fields exist in Bundle entries, regardless of their value.
+    for (resource_type, fields) in &assertion.required_fields {
+        if let Some(body) = body {
+            if let Some(entries) = body.get("entry").and_then(|v| v.as_array()) {
+                let matching: Vec<&Value> = entries
+                    .iter()
+                    .filter(|e| {
+                        e.get("resource")
+                            .and_then(|r| r.get("resourceType"))
+                            .and_then(|v| v.as_str())
+                            == Some(resource_type.as_str())
+                    })
+                    .collect();
+
+                if matching.is_empty() {
+                    errors.push(format!(
+                        "Expected at least one {} in Bundle for required field check, found none",
+                        resource_type
+                    ));
+                    continue;
+                }
+
+                for entry in &matching {
+                    let resource = entry.get("resource").unwrap();
+                    for field_path in fields {
+                        let actual = resolve_json_path(resource, field_path);
+                        if actual.is_none() {
+                            errors.push(format!(
+                                "{}: mustSupport field '{}' not found in response",
+                                resource_type, field_path
+                            ));
+                        }
+                    }
+                }
+            } else {
+                errors.push(format!(
+                    "Expected Bundle with entries for {} required field check",
+                    resource_type
+                ));
+            }
+        }
+    }
+
     errors
 }
 

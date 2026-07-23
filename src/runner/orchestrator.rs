@@ -229,6 +229,37 @@ impl Orchestrator {
         );
         plan.creation_order = creation_order.clone();
 
+        // 6b. Validate CapabilityStatement well-formedness
+        let cs_validation = validate_capability_statement(cs);
+        for warning in &cs_validation.warnings {
+            tracing::warn!("CapabilityStatement warning: {}", warning);
+        }
+        for error in &cs_validation.errors {
+            tracing::error!("CapabilityStatement error: {}", error);
+        }
+
+        // 6c. Generate conformance tests and add them to the plan
+        let conformance_tests = generate_conformance_tests(cs, &pkg.structure_definitions);
+        if !conformance_tests.is_empty() {
+            // Convert conformance tests into regular test cases and add to plan
+            let mut conformance_group = TestGroup {
+                resource_type: "_conformance".to_string(),
+                profile_url: None,
+                tests: conformance_tests
+                    .iter()
+                    .map(conformance_test_to_test_case)
+                    .collect(),
+            };
+            // Stamp response assertions
+            for test in &mut conformance_group.tests {
+                if test.validation.response_assertion.is_none() {
+                    test.validation.response_assertion =
+                        assertion_for_kind(&test.kind, &test.resource_type);
+                }
+            }
+            plan.test_groups.push(conformance_group);
+        }
+
         tracing::info!(
             "Generated test plan with {} test groups, {} total tests",
             plan.test_groups.len(),

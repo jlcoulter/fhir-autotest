@@ -1,10 +1,12 @@
 pub mod bulk_data;
+pub mod conformance;
 pub mod dependency_resolver;
 pub mod model;
 pub mod planner;
 pub mod resource_generator;
 
 pub use bulk_data::*;
+pub use conformance::*;
 pub use dependency_resolver::*;
 pub use model::*;
 pub use planner::*;

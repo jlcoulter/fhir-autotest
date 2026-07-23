@@ -3,7 +3,7 @@ use crate::model::*;
 use std::collections::HashMap;
 
 /// Build a ResponseAssertion appropriate for the test case kind.
-fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<ResponseAssertion> {
+pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<ResponseAssertion> {
     match kind {
         // CRUD interactions: expect a single resource, not a Bundle
         TestCaseKind::Interaction => None,
@@ -110,6 +110,9 @@ fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<Respon
             outcome_severity: Some("error".to_string()),
             ..ResponseAssertion::none()
         }),
+
+        // Conformance tests carry their own assertions
+        TestCaseKind::Conformance { .. } => None,
     }
 }
 
