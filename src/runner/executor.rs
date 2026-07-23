@@ -133,9 +133,18 @@ impl TestExecutor {
         let status = resp.status().as_u16();
         let body: Option<serde_json::Value> = resp.json().await.ok();
 
+        // expected_status == 0 is a sentinel meaning "expect non-2xx"
+        // (used by negative conformance tests for undeclared interactions/params)
+        let passed = if test.validation.expected_status == 0 {
+            // Negative test: any non-2xx status is a pass
+            !(200..=299).contains(&status)
+        } else {
+            status == test.validation.expected_status
+        };
+
         Ok(TestResult {
             test_name: test.name.clone(),
-            passed: status == test.validation.expected_status,
+            passed,
             status_code: status,
             response_body: body,
             validation_errors: Vec::new(),

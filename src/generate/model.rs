@@ -5,7 +5,7 @@ use std::collections::HashMap;
 ///
 /// Each test case carries one of these to describe what the response MUST contain
 /// beyond just the HTTP status code. The orchestrator evaluates these after execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResponseAssertion {
     /// The response MUST be a Bundle of this type (e.g. "searchset", "batch").
     #[serde(default)]
@@ -48,13 +48,19 @@ pub struct ResponseAssertion {
     #[serde(default)]
     pub outcome_severity: Option<String>,
 
+    /// For mustSupport conformance: these field paths MUST be present in
+    /// Bundle entry resources, regardless of their value.
+    /// Keyed by resource type → list of field paths.
+    #[serde(default)]
+    pub required_fields: HashMap<String, Vec<String>>,
+
     /// For $operation: response MUST contain this top-level key.
     #[serde(default)]
     pub response_contains_key: Option<String>,
 }
 
 /// Sort direction assertion for _sort tests.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SortAssertion {
     pub field: String,
     pub direction: String, // "asc" or "desc"
@@ -73,6 +79,7 @@ impl ResponseAssertion {
             sort_by: None,
             absent_fields: Vec::new(),
             outcome_severity: None,
+            required_fields: HashMap::new(),
             response_contains_key: None,
         }
     }
@@ -280,6 +287,8 @@ pub enum TestCaseKind {
     Operation { code: String },
     /// Negative / error test
     Negative { description: String },
+    /// Conformance test: verifies responder obligations from the CapabilityStatement
+    Conformance { description: String },
 }
 
 /// An HTTP request template for a test case.
