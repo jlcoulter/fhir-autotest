@@ -6,6 +6,7 @@ dist/
 # Output
 output/
 package/
+results/
 
 # IDE
 .idea/
