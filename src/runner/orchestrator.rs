@@ -404,10 +404,7 @@ impl Orchestrator {
                             "Skipped: no resource created for {} — {{id}} placeholder unresolved",
                             test.resource_type
                         )],
-                        request_url: format!(
-                            "{}{}",
-                            self.config.server.base_url, test.request.url
-                        ),
+                        request_url: format!("{}{}", self.config.server.base_url, test.request.url),
                         request_method: test.request.method.clone(),
                         request_body: test.request.body.clone(),
                         test_group: group.resource_type.clone(),
