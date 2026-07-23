@@ -1,6 +1,74 @@
 use crate::model::*;
+use crate::parse::parse_package;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+
+/// Cache of downloaded FHIR packages, keyed by package ID.
+struct PackageCache {
+    packages: HashMap<String, Vec<StructureDefinition>>,
+}
+
+impl PackageCache {
+    fn new() -> Self {
+        Self {
+            packages: HashMap::new(),
+        }
+    }
+
+    /// Get a profile by URL from the cache, downloading the package if needed.
+    fn get_profile(&mut self, url: &str) -> Option<&StructureDefinition> {
+        for profiles in self.packages.values() {
+            if let Some(sd) = profiles.iter().find(|p| p.url == url) {
+                return Some(sd);
+            }
+        }
+        None
+    }
+
+    /// Ensure a package is loaded, downloading it if not cached.
+    fn ensure_package(&mut self, package_id: &str, version: &str) -> Result<()> {
+        let cache_key = format!("{}@{}", package_id, version);
+        if self.packages.contains_key(&cache_key) {
+            return Ok(());
+        }
+
+        let tgz_url = format!(
+            "https://packages.fhir.org/{}/-/{}-{}.tgz",
+            package_id, package_id, version
+        );
+
+        tracing::info!("Downloading FHIR package: {}@{}", package_id, version);
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .user_agent("fhir-ig-testgen/0.1")
+            .build()?;
+
+        let response = client.get(&tgz_url).send()?;
+        if !response.status().is_success() {
+            anyhow::bail!(
+                "Failed to download package {} (status: {})",
+                package_id,
+                response.status()
+            );
+        }
+
+        let bytes = response.bytes()?;
+        let temp_dir = std::env::temp_dir();
+        let tgz_path = temp_dir.join(format!("{}.tgz", package_id));
+        std::fs::write(&tgz_path, &bytes)?;
+
+        let pkg = parse_package(tgz_path.to_str().unwrap())?;
+        tracing::info!(
+            "Loaded package {}: {} StructureDefinitions",
+            package_id,
+            pkg.structure_definitions.len()
+        );
+
+        self.packages.insert(cache_key, pkg.structure_definitions);
+        Ok(())
+    }
+}
 
 /// Resolve the full parent chain for all StructureDefinitions in a package.
 ///
@@ -14,6 +82,8 @@ pub fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Result<(
     for (i, p) in profiles.iter().enumerate() {
         url_map.insert(p.url.clone(), i);
     }
+
+    let mut package_cache = PackageCache::new();
 
     // Resolve each profile's parent chain
     let mut i = 0;
@@ -31,9 +101,30 @@ pub fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Result<(
 
         // Check if parent is already in our list
         if !url_map.contains_key(&base_url_clean) {
-            // Download the parent profile
-            let parent = download_profile(&base_url)
-                .with_context(|| format!("Failed to download parent profile: {}", base_url))?;
+            // Check the package cache first
+            let parent = if let Some(cached) = package_cache.get_profile(&base_url_clean) {
+                cached.clone()
+            } else {
+                // Try downloading the individual profile
+                match download_profile(&base_url) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        // Individual download failed — try downloading the parent's FHIR package
+                        match resolve_via_package(&base_url, &mut package_cache) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Skipping parent resolution for {}: {}",
+                                    profiles[i].name,
+                                    e
+                                );
+                                i += 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            };
 
             // Add to our list
             url_map.insert(parent.url.clone(), profiles.len());
@@ -50,16 +141,46 @@ pub fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Result<(
             }
         };
 
-        // Merge: for each element in the child's snapshot, if it's a slice
-        // (has sliceName), keep it. For non-slice elements, prefer the child's
-        // version (it may have tighter constraints). Add any parent elements
-        // that don't exist in the child.
         merge_snapshot_elements(&mut profiles[i], &parent_elements);
 
         i += 1;
     }
 
     Ok(())
+}
+
+/// Try to resolve a profile URL by downloading its containing FHIR package.
+fn resolve_via_package(url: &str, cache: &mut PackageCache) -> Result<StructureDefinition> {
+    // Extract version suffix (e.g. "|2.0.0") and clean URL
+    let version = url.split('|').nth(1).unwrap_or("1.0.0");
+    let clean_url = url.split('|').next().unwrap_or(url);
+
+    let package_id =
+        url_to_package_id(clean_url).context("Cannot determine FHIR package from URL")?;
+
+    cache.ensure_package(&package_id, version)?;
+
+    cache.get_profile(clean_url).cloned().context(format!(
+        "Profile {} not found in package {}@{}",
+        clean_url, package_id, version
+    ))
+}
+
+/// Map a profile URL to its FHIR package ID.
+///
+/// Examples:
+///   http://hl7.org.au/fhir/core/StructureDefinition/au-core-patient
+///     → hl7.fhir.au.core
+///   http://hl7.org.au/fhir/StructureDefinition/au-hpio
+///     → hl7.fhir.au.base
+fn url_to_package_id(url: &str) -> Option<String> {
+    if url.contains("hl7.org.au/fhir/core") {
+        Some("hl7.fhir.au.core".to_string())
+    } else if url.contains("hl7.org.au/fhir") {
+        Some("hl7.fhir.au.base".to_string())
+    } else {
+        None
+    }
 }
 
 /// Merge parent snapshot elements into the child's snapshot.
@@ -93,11 +214,11 @@ fn merge_snapshot_elements(child: &mut StructureDefinition, parent_elements: &[E
     child_elements.sort_by(|a, b| a.id.cmp(&b.id));
 }
 
-/// Download a StructureDefinition from the FHIR package registry.
+/// Download a StructureDefinition from the FHIR package registry or HL7 servers.
 ///
 /// Tries multiple URL patterns:
 /// 1. https://packages.fhir.org/StructureDefinition/<name>
-/// 2. https://hl7.org/fhir/<name>.json (for base FHIR definitions)
+/// 2. Domain-specific fallback based on the original URL's host
 fn download_profile(url: &str) -> Result<StructureDefinition> {
     // Strip FHIR version suffix (e.g. "|4.0.1") if present
     let clean_url = url.split('|').next().unwrap_or(url);
@@ -107,12 +228,13 @@ fn download_profile(url: &str) -> Result<StructureDefinition> {
         .next()
         .context("Cannot extract profile name from URL")?;
 
-    // Try the FHIR package registry first
-    let registry_url = format!("https://packages.fhir.org/StructureDefinition/{}", name);
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        .user_agent("fhir-ig-testgen/0.1")
         .build()?;
 
+    // Try the FHIR package registry first
+    let registry_url = format!("https://packages.fhir.org/StructureDefinition/{}", name);
     let response = client
         .get(&registry_url)
         .header("Accept", "application/fhir+json")
@@ -126,7 +248,7 @@ fn download_profile(url: &str) -> Result<StructureDefinition> {
         }
         Ok(resp) => {
             tracing::debug!(
-                "Registry returned {} for {}, trying FHIR base",
+                "Registry returned {} for {}, trying HL7 fallback",
                 resp.status(),
                 url
             );
@@ -136,28 +258,71 @@ fn download_profile(url: &str) -> Result<StructureDefinition> {
         }
     }
 
-    // Fallback: try the HL7 FHIR base URL
-    let base_url = format!("https://hl7.org/fhir/{}.json", name);
-    let response = client
-        .get(&base_url)
-        .header("Accept", "application/fhir+json")
-        .send()?;
-
-    if response.status().is_success() {
-        let sd: StructureDefinition = response.json()?;
-        tracing::info!(
-            "Downloaded parent profile from HL7: {} ({})",
-            sd.name,
-            sd.url
-        );
-        Ok(sd)
+    // Fallback: try domain-specific HL7 URLs
+    // hl7.org.au → https://hl7.org.au/fhir/StructureDefinition-{name}.json
+    // hl7.org    → try both direct .profile.json and StructureDefinition path
+    let fallback_urls: Vec<String> = if clean_url.contains("hl7.org.au") {
+        vec![format!(
+            "https://hl7.org.au/fhir/StructureDefinition-{}.json",
+            name
+        )]
     } else {
-        anyhow::bail!(
-            "Failed to download parent profile {} from registry or HL7 (status: {})",
-            url,
-            response.status()
-        )
+        vec![
+            format!("https://hl7.org/fhir/{}.profile.json", name),
+            format!("https://hl7.org/fhir/StructureDefinition/{}", name),
+        ]
+    };
+
+    let mut last_status = 0u16;
+    for fallback_url in &fallback_urls {
+        tracing::debug!("Trying HL7 fallback URL: {}", fallback_url);
+        let response = client
+            .get(fallback_url)
+            .header("Accept", "application/fhir+json")
+            .send()?;
+
+        last_status = response.status().as_u16();
+        tracing::debug!("HL7 fallback returned status: {}", last_status);
+
+        if !response.status().is_success() {
+            continue;
+        }
+
+        // Verify the response is actually JSON (some servers return HTML with 200)
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !content_type.contains("json") {
+            tracing::debug!(
+                "HL7 fallback returned non-JSON content-type: {}",
+                content_type
+            );
+            continue;
+        }
+
+        match response.json::<StructureDefinition>() {
+            Ok(sd) => {
+                tracing::info!(
+                    "Downloaded parent profile from HL7: {} ({})",
+                    sd.name,
+                    sd.url
+                );
+                return Ok(sd);
+            }
+            Err(e) => {
+                tracing::debug!("HL7 fallback JSON parse failed: {}", e);
+                continue;
+            }
+        }
     }
+
+    anyhow::bail!(
+        "Failed to download parent profile {} from registry or HL7 (status: {})",
+        url,
+        last_status
+    )
 }
 
 /// Collect slice definitions from a profile's snapshot.
@@ -195,6 +360,22 @@ pub fn find_slicing_info<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_url_to_package_id() {
+        assert_eq!(
+            url_to_package_id("http://hl7.org.au/fhir/core/StructureDefinition/au-core-patient"),
+            Some("hl7.fhir.au.core".to_string())
+        );
+        assert_eq!(
+            url_to_package_id("http://hl7.org.au/fhir/StructureDefinition/au-hpio"),
+            Some("hl7.fhir.au.base".to_string())
+        );
+        assert_eq!(
+            url_to_package_id("http://hl7.org/fhir/StructureDefinition/Patient"),
+            None
+        );
+    }
 
     #[test]
     fn test_merge_snapshot_elements() {
