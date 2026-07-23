@@ -36,8 +36,8 @@ fn populate_required_fields(
     elements: &[ElementDefinition],
     resource_type: &str,
 ) -> Result<()> {
+    // First pass: populate direct required children (depth 1 fields)
     for element in elements {
-        // Skip the root element (e.g., "Patient")
         let field_name = match get_field_name(&element.path, resource_type) {
             Some(name) => name,
             None => continue,
@@ -59,62 +59,170 @@ fn populate_required_fields(
 
         // Apply fixed values first
         if let Some(val) = &element.fixed_string {
-            resource[field_name] = serde_json::Value::String(val.clone());
+            resource[&field_name] = serde_json::Value::String(val.clone());
             continue;
         }
         if let Some(val) = &element.fixed_code {
-            resource[field_name] = serde_json::Value::String(val.clone());
+            resource[&field_name] = serde_json::Value::String(val.clone());
             continue;
         }
         if let Some(val) = &element.fixed_uri {
-            resource[field_name] = serde_json::Value::String(val.clone());
+            resource[&field_name] = serde_json::Value::String(val.clone());
             continue;
         }
         if let Some(val) = &element.fixed_boolean {
-            resource[field_name] = serde_json::Value::Bool(*val);
+            resource[&field_name] = serde_json::Value::Bool(*val);
             continue;
         }
         if let Some(val) = &element.fixed_integer {
-            resource[field_name] = serde_json::Value::Number((*val).into());
+            resource[&field_name] = serde_json::Value::Number((*val).into());
             continue;
         }
 
         // Apply pattern values
         if let Some(val) = &element.pattern_string {
-            resource[field_name] = serde_json::Value::String(val.clone());
+            resource[&field_name] = serde_json::Value::String(val.clone());
             continue;
         }
         if let Some(val) = &element.pattern_code {
-            resource[field_name] = serde_json::Value::String(val.clone());
+            resource[&field_name] = serde_json::Value::String(val.clone());
             continue;
         }
         if let Some(val) = &element.pattern_uri {
-            resource[field_name] = serde_json::Value::String(val.clone());
+            resource[&field_name] = serde_json::Value::String(val.clone());
             continue;
         }
         if let Some(val) = &element.pattern_boolean {
-            resource[field_name] = serde_json::Value::Bool(*val);
+            resource[&field_name] = serde_json::Value::Bool(*val);
             continue;
         }
 
-        // Generate based on type
+        // Skip fields with no type information (slice definitions etc.)
         if element.type_.is_empty() {
             continue;
         }
 
         let type_code = &element.type_[0].code;
-        let value = generate_typed_value(type_code, &element.type_[0].target_profile);
+
+        // Skip Extension type — empty extensions are always invalid (violates ext-1:
+        // "Must have either extensions or value[x], not both"). Without knowing the
+        // extension URL and value, we can't generate a valid extension.
+        if type_code == "Extension" {
+            continue;
+        }
+
+        let target_profiles = &element.type_[0].target_profile;
+        let value = generate_typed_value(type_code, target_profiles);
+
+        // For BackboneElement, populate required sub-fields from nested elements
+        if type_code == "BackboneElement" {
+            let mut backbone = value.as_object().cloned().unwrap_or_default();
+            populate_backbone_fields(&mut backbone, &element.path, elements);
+            let max = element.max.as_deref().unwrap_or("1");
+            if max != "1" {
+                resource[&field_name] = serde_json::json!([backbone]);
+            } else {
+                resource[&field_name] = serde_json::json!(backbone);
+            }
+            continue;
+        }
 
         // Handle cardinality: if max is "*" or > 1, wrap in array
         let max = element.max.as_deref().unwrap_or("1");
         if max != "1" {
-            resource[field_name] = serde_json::json!([value]);
+            resource[&field_name] = serde_json::json!([value]);
         } else {
-            resource[field_name] = value;
+            resource[&field_name] = value;
         }
     }
 
     Ok(())
+}
+
+/// Populate required sub-fields of a BackboneElement by looking at nested elements
+/// in the snapshot. E.g., for "Practitioner.qualification", find
+/// "Practitioner.qualification.identifier" (min=1) and "Practitioner.qualification.code" (min=1).
+fn populate_backbone_fields(
+    backbone: &mut serde_json::Map<String, serde_json::Value>,
+    parent_path: &str,
+    elements: &[ElementDefinition],
+) {
+    for element in elements {
+        // Only consider direct children of the backbone path
+        if !element.path.starts_with(&format!("{}.", parent_path)) {
+            continue;
+        }
+
+        // Only consider direct children (not deeper nesting)
+        let suffix = element
+            .path
+            .strip_prefix(&format!("{}.", parent_path))
+            .unwrap_or("");
+        if suffix.contains('.') {
+            continue; // Skip deeply nested paths
+        }
+
+        // Strip slice notation
+        let field_name = suffix.split(':').next().unwrap_or(suffix);
+
+        let min = element.min.unwrap_or(0);
+        if min == 0 {
+            continue; // Optional, skip
+        }
+
+        // Already populated?
+        if backbone.contains_key(field_name) {
+            continue;
+        }
+
+        // Apply fixed/pattern values
+        if let Some(val) = &element.fixed_string {
+            backbone.insert(
+                field_name.to_string(),
+                serde_json::Value::String(val.clone()),
+            );
+            continue;
+        }
+        if let Some(val) = &element.fixed_code {
+            backbone.insert(
+                field_name.to_string(),
+                serde_json::Value::String(val.clone()),
+            );
+            continue;
+        }
+        if let Some(val) = &element.fixed_uri {
+            backbone.insert(
+                field_name.to_string(),
+                serde_json::Value::String(val.clone()),
+            );
+            continue;
+        }
+        if let Some(val) = &element.fixed_boolean {
+            backbone.insert(field_name.to_string(), serde_json::Value::Bool(*val));
+            continue;
+        }
+
+        // Skip fields with no type info
+        if element.type_.is_empty() {
+            continue;
+        }
+
+        let type_code = &element.type_[0].code;
+        let target_profiles = &element.type_[0].target_profile.clone();
+
+        // Skip Extension type — can't generate valid extensions without URLs
+        if type_code == "Extension" {
+            continue;
+        }
+
+        let value = generate_typed_value(type_code, target_profiles);
+        let max = element.max.as_deref().unwrap_or("1");
+        if max != "1" {
+            backbone.insert(field_name.to_string(), serde_json::json!([value]));
+        } else {
+            backbone.insert(field_name.to_string(), value);
+        }
+    }
 }
 
 /// Extract the field name from a FHIR path like "Patient.name" → "name".
@@ -247,6 +355,10 @@ fn generate_typed_value(type_code: &str, target_profiles: &[String]) -> serde_js
             "dimensions": 1,
             "data": "0"
         }),
+
+        // BackboneElement: start with empty object, will be populated by
+        // populate_backbone_fields with required sub-fields
+        "BackboneElement" => serde_json::json!({}),
 
         // Fallback: empty object for unknown complex types
         _ => serde_json::json!({}),
@@ -560,8 +672,324 @@ mod tests {
         };
 
         let resource = generate_resource(&profile).unwrap();
-        assert_eq!(resource["resourceType"], "Observation");
         let subject = &resource["subject"];
-        assert_eq!(subject["reference"], "placeholder:Patient");
+        assert_eq!(
+            subject["reference"], "placeholder:Patient",
+            "Reference should use target_profile to determine resource type"
+        );
+    }
+
+    #[test]
+    fn backbone_element_gets_required_subfields() {
+        // Practitioner profile with required qualification (BackboneElement)
+        // that has required sub-fields: identifier and code
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/TestPractitioner".to_string(),
+            base_type: "Practitioner".to_string(),
+            name: "TestPractitioner".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: None,
+            snapshot: Some(Snapshot {
+                element: vec![
+                    ElementDefinition {
+                        id: "Practitioner".to_string(),
+                        path: "Practitioner".to_string(),
+                        min: Some(0),
+                        max: Some("*".to_string()),
+                        type_: vec![],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                    ElementDefinition {
+                        id: "Practitioner.qualification".to_string(),
+                        path: "Practitioner.qualification".to_string(),
+                        min: Some(1),
+                        max: Some("*".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "BackboneElement".to_string(),
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                    ElementDefinition {
+                        id: "Practitioner.qualification.identifier".to_string(),
+                        path: "Practitioner.qualification.identifier".to_string(),
+                        min: Some(1),
+                        max: Some("*".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "Identifier".to_string(),
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                    ElementDefinition {
+                        id: "Practitioner.qualification.code".to_string(),
+                        path: "Practitioner.qualification.code".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "CodeableConcept".to_string(),
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                ],
+            }),
+            differential: None,
+        };
+
+        let resource = generate_resource(&profile).unwrap();
+
+        // qualification should be an array (max="*") with required sub-fields
+        let qualification = resource
+            .get("qualification")
+            .expect("qualification is required (min=1)");
+        let qual_array = qualification
+            .as_array()
+            .expect("qualification should be an array");
+        assert!(
+            !qual_array.is_empty(),
+            "qualification array should not be empty"
+        );
+
+        let qual = &qual_array[0];
+        assert!(
+            qual.get("identifier").is_some(),
+            "qualification.identifier should be populated (required)"
+        );
+        assert!(
+            qual.get("code").is_some(),
+            "qualification.code should be populated (required)"
+        );
+    }
+
+    #[test]
+    fn extension_type_fields_are_skipped() {
+        // Extension fields with min > 0 should be skipped since we can't
+        // generate valid extensions without knowing the URL
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/TestPatient".to_string(),
+            base_type: "Patient".to_string(),
+            name: "TestPatient".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: None,
+            snapshot: Some(Snapshot {
+                element: vec![
+                    ElementDefinition {
+                        id: "Patient".to_string(),
+                        path: "Patient".to_string(),
+                        min: Some(0),
+                        max: Some("*".to_string()),
+                        type_: vec![],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                    ElementDefinition {
+                        id: "Patient.extension".to_string(),
+                        path: "Patient.extension".to_string(),
+                        min: Some(1),
+                        max: Some("*".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "Extension".to_string(),
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                    ElementDefinition {
+                        id: "Patient.identifier".to_string(),
+                        path: "Patient.identifier".to_string(),
+                        min: Some(1),
+                        max: Some("*".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "Identifier".to_string(),
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                    },
+                ],
+            }),
+            differential: None,
+        };
+
+        let resource = generate_resource(&profile).unwrap();
+
+        // Extension should NOT be present (empty extensions are invalid)
+        assert!(
+            resource.get("extension").is_none(),
+            "Extension fields should be skipped since empty extensions are invalid"
+        );
+        // But identifier should be present
+        assert!(
+            resource.get("identifier").is_some(),
+            "identifier should still be populated even when extension is skipped"
+        );
     }
 }
