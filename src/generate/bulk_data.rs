@@ -1,3 +1,5 @@
+use crate::generate::resource_generator::generate_resource;
+use crate::model::profile::StructureDefinition;
 use anyhow::Result;
 use fake::Fake;
 use rand::Rng;
@@ -18,6 +20,7 @@ pub type IdStore = HashMap<String, Vec<String>>;
 pub fn generate_bulk_data(
     counts: &HashMap<String, u64>,
     profile_urls: &HashMap<String, String>,
+    profiles: &[StructureDefinition],
     output_dir: &Path,
 ) -> Result<IdStore> {
     use std::io::BufWriter;
@@ -50,6 +53,11 @@ pub fn generate_bulk_data(
     let prac_ids = ids.get("Practitioner").cloned().unwrap_or_default();
     let loc_ids = ids.get("Location").cloned().unwrap_or_default();
 
+    // Build a lookup: resource_type → StructureDefinition so we can use
+    // profile-aware generation when available.
+    let profile_map: HashMap<&str, &StructureDefinition> =
+        profiles.iter().map(|p| (p.base_type.as_str(), p)).collect();
+
     // Second pass: generate and write resources with buffered I/O.
     for resource_type in &order {
         let count = counts.get(resource_type).copied().unwrap_or(0);
@@ -69,22 +77,45 @@ pub fn generate_bulk_data(
         });
 
         for id in type_ids.iter() {
-            let mut resource = match resource_type.as_str() {
-                "Organization" => gen_organization(id, &mut rng),
-                "Practitioner" => gen_practitioner(id, &mut rng),
-                "PractitionerRole" => {
-                    gen_practitioner_role(id, &org_ids, &prac_ids, &loc_ids, &mut rng)
+            let mut resource = if let Some(profile) = profile_map.get(resource_type.as_str()) {
+                // Use profile-aware generation: generates a conformant base from
+                // the StructureDefinition, then overlay cross-references.
+                let mut r = generate_resource(profile)?;
+                r["id"] = serde_json::Value::String(id.clone());
+                // Overlay cross-references for types that need them.
+                overlay_cross_references(
+                    &mut r,
+                    resource_type,
+                    id,
+                    &org_ids,
+                    &prac_ids,
+                    &loc_ids,
+                    &mut rng,
+                );
+                r
+            } else {
+                match resource_type.as_str() {
+                    "Organization" => gen_organization(id, &mut rng),
+                    "Practitioner" => gen_practitioner(id, &mut rng),
+                    "PractitionerRole" => {
+                        gen_practitioner_role(id, &org_ids, &prac_ids, &loc_ids, &mut rng)
+                    }
+                    "Location" => gen_location(id, &mut rng),
+                    "HealthcareService" => gen_healthcare_service(id, &org_ids, &loc_ids, &mut rng),
+                    "Endpoint" => gen_endpoint(id, &org_ids, &mut rng),
+                    // Generic fallback for any resource type not explicitly handled
+                    _ => gen_generic(resource_type, id, &mut rng),
                 }
-                "Location" => gen_location(id, &mut rng),
-                "HealthcareService" => gen_healthcare_service(id, &org_ids, &loc_ids, &mut rng),
-                "Endpoint" => gen_endpoint(id, &org_ids, &mut rng),
-                // Generic fallback for any resource type not explicitly handled
-                _ => gen_generic(resource_type, id, &mut rng),
             };
 
-            // Stamp the correct profile URL from the IG package, overriding
-            // the hardcoded Plan-Net defaults in the gen_* functions.
-            resource["meta"]["profile"] = serde_json::json!([profile_url]);
+            // When NOT using profile-aware generation (i.e. falling back to
+            // the hardcoded gen_* functions), stamp the profile URL from the
+            // IG package to override the hardcoded Plan-Net defaults.
+            // When using generate_resource(), the profile URL is already set
+            // correctly from the StructureDefinition, so skip the override.
+            if !profile_map.contains_key(resource_type.as_str()) {
+                resource["meta"]["profile"] = serde_json::json!([profile_url]);
+            }
 
             serde_json::to_writer(&mut writer, &resource)?;
             writeln!(writer)?;
@@ -146,6 +177,81 @@ pub fn bulk_data_creation_order(counts: &HashMap<String, u64>) -> Vec<String> {
 }
 
 /// Pick a random ID from a list, returning a FHIR reference string.
+/// Overlay cross-references onto a profile-generated resource.
+///
+/// When `generate_resource` produces a resource from a StructureDefinition,
+/// it creates required fields but cannot know about the IDs of other
+/// resources in the bulk data set. This function fills in cross-references
+/// (practitioner, organization, location, healthcareService) that the
+/// profile may require but which depend on other generated resources.
+fn overlay_cross_references(
+    resource: &mut serde_json::Value,
+    resource_type: &str,
+    _id: &str,
+    org_ids: &[String],
+    prac_ids: &[String],
+    loc_ids: &[String],
+    rng: &mut impl Rng,
+) {
+    let obj = match resource.as_object_mut() {
+        Some(o) => o,
+        None => return,
+    };
+
+    match resource_type {
+        "PractitionerRole" => {
+            // HCPD requires practitioner, organization, and healthcareService references.
+            // practitioner and organization are always required; healthcareService
+            // references depend on HealthcareService IDs which may not exist yet.
+            if !prac_ids.is_empty() {
+                let ref_str = random_ref("Practitioner", prac_ids, rng);
+                obj.insert(
+                    "practitioner".to_string(),
+                    serde_json::json!({ "reference": ref_str }),
+                );
+            }
+            if !org_ids.is_empty() {
+                let ref_str = random_ref("Organization", org_ids, rng);
+                obj.insert(
+                    "organization".to_string(),
+                    serde_json::json!({ "reference": ref_str }),
+                );
+            }
+            if !loc_ids.is_empty() {
+                let ref_str = random_ref("Location", loc_ids, rng);
+                obj.insert(
+                    "location".to_string(),
+                    serde_json::json!([{ "reference": ref_str }]),
+                );
+            }
+        }
+        "HealthcareService" => {
+            if !org_ids.is_empty() {
+                let ref_str = random_ref("Organization", org_ids, rng);
+                obj.insert(
+                    "providedBy".to_string(),
+                    serde_json::json!({ "reference": ref_str }),
+                );
+            }
+            if !loc_ids.is_empty() {
+                let ref_str = random_ref("Location", loc_ids, rng);
+                obj.insert(
+                    "location".to_string(),
+                    serde_json::json!({ "reference": ref_str }),
+                );
+            }
+        }
+        "Endpoint" if !org_ids.is_empty() => {
+            let ref_str = random_ref("Organization", org_ids, rng);
+            obj.insert(
+                "managingOrganization".to_string(),
+                serde_json::json!({ "reference": ref_str }),
+            );
+        }
+        _ => {}
+    }
+}
+
 fn random_ref(resource_type: &str, ids: &[String], rng: &mut impl Rng) -> String {
     if ids.is_empty() {
         // Fallback if no IDs exist for the referenced type
@@ -841,7 +947,7 @@ mod tests {
         counts.insert("HealthcareService".to_string(), 50);
 
         let profile_urls = HashMap::new();
-        let ids = generate_bulk_data(&counts, &profile_urls, dir.path()).unwrap();
+        let ids = generate_bulk_data(&counts, &profile_urls, &[], dir.path()).unwrap();
 
         // Each type should have the right number of IDs
         assert_eq!(ids.get("Organization").unwrap().len(), 10);
@@ -887,7 +993,7 @@ mod tests {
         counts.insert("HealthcareService".to_string(), 10);
 
         let profile_urls = HashMap::new();
-        let ids = generate_bulk_data(&counts, &profile_urls, dir.path()).unwrap();
+        let ids = generate_bulk_data(&counts, &profile_urls, &[], dir.path()).unwrap();
 
         // Check PractitionerRole references
         let pr_path = dir.path().join("data/PractitionerRole.ndjson");
@@ -932,7 +1038,7 @@ mod tests {
         let mut counts = HashMap::new();
         counts.insert("Location".to_string(), 100);
 
-        generate_bulk_data(&counts, &HashMap::new(), dir.path()).unwrap();
+        generate_bulk_data(&counts, &HashMap::new(), &[], dir.path()).unwrap();
 
         let loc_path = dir.path().join("data/Location.ndjson");
         let contents = std::fs::read_to_string(&loc_path).unwrap();
@@ -983,7 +1089,7 @@ mod tests {
         let mut counts = HashMap::new();
         counts.insert("Patient".to_string(), 5);
 
-        let ids = generate_bulk_data(&counts, &HashMap::new(), dir.path()).unwrap();
+        let ids = generate_bulk_data(&counts, &HashMap::new(), &[], dir.path()).unwrap();
         assert_eq!(ids.get("Patient").unwrap().len(), 5);
 
         let path = dir.path().join("data/Patient.ndjson");
@@ -1006,7 +1112,7 @@ mod tests {
             "http://example.org/fhir/StructureDefinition/MyOrg".to_string(),
         );
 
-        let ids = generate_bulk_data(&counts, &profile_urls, dir.path()).unwrap();
+        let ids = generate_bulk_data(&counts, &profile_urls, &[], dir.path()).unwrap();
         assert_eq!(ids.get("Organization").unwrap().len(), 3);
 
         let path = dir.path().join("data/Organization.ndjson");
@@ -1030,7 +1136,7 @@ mod tests {
 
         // No profile_urls provided — should fall back to base FHIR profile
         let profile_urls = HashMap::new();
-        let ids = generate_bulk_data(&counts, &profile_urls, dir.path()).unwrap();
+        let ids = generate_bulk_data(&counts, &profile_urls, &[], dir.path()).unwrap();
         assert_eq!(ids.get("Organization").unwrap().len(), 2);
 
         let path = dir.path().join("data/Organization.ndjson");
@@ -1042,6 +1148,45 @@ mod tests {
                 profiles[0].as_str().unwrap(),
                 "http://hl7.org/fhir/StructureDefinition/Organization",
                 "meta.profile should fall back to base FHIR profile when no IG profile is provided"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_aware_generation_uses_structure_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut counts = HashMap::new();
+        counts.insert("Patient".to_string(), 2);
+
+        // Create a minimal StructureDefinition for Patient
+        let profile = crate::model::profile::StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/fhir/StructureDefinition/MyPatient".to_string(),
+            name: "MyPatient".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            snapshot: None,
+            differential: None,
+            base_definition: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+        };
+
+        let ids = generate_bulk_data(&counts, &HashMap::new(), &[profile], dir.path()).unwrap();
+        assert_eq!(ids.get("Patient").unwrap().len(), 2);
+
+        // When a StructureDefinition is provided, resources should be generated
+        // via generate_resource (profile-aware) rather than gen_generic.
+        // The profile URL in meta.profile should match the StructureDefinition.
+        let path = dir.path().join("data/Patient.ndjson");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        for line in contents.lines().filter(|l| !l.is_empty()) {
+            let patient: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(patient["resourceType"], "Patient");
+            let profiles = patient["meta"]["profile"].as_array().unwrap();
+            assert_eq!(
+                profiles[0].as_str().unwrap(),
+                "http://example.org/fhir/StructureDefinition/MyPatient",
+                "Profile-aware generation should use the StructureDefinition URL"
             );
         }
     }

@@ -244,7 +244,12 @@ impl Orchestrator {
                 })
                 .collect();
 
-            let generated_ids = generate_bulk_data(&counts, &profile_urls, output_path)?;
+            let generated_ids = generate_bulk_data(
+                &counts,
+                &profile_urls,
+                &pkg.structure_definitions,
+                output_path,
+            )?;
             let data_creation_order = bulk_data_creation_order(&counts);
             let total_resources: u64 = counts.values().sum();
             println!(
