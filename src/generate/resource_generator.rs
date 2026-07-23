@@ -28,6 +28,9 @@ pub fn generate_resource(profile: &StructureDefinition) -> Result<serde_json::Va
 
     populate_required_fields(&mut resource, elements, &profile.base_type)?;
 
+    // Second pass: populate required slices (e.g., identifier:abn with patternUri)
+    populate_required_slices(&mut resource, elements, &profile.base_type)?;
+
     Ok(resource)
 }
 
@@ -552,6 +555,126 @@ fn generate_typed_value(type_code: &str, target_profiles: &[String]) -> serde_js
     }
 }
 
+/// Generate slice-aware elements for fields that have required slices.
+///
+/// For each field with slicing, check if any slice has min > 0.
+/// If so, generate an additional element that applies the slice's
+/// pattern values (e.g., patternUri on system for identifier slices).
+fn populate_required_slices(
+    resource: &mut serde_json::Value,
+    elements: &[ElementDefinition],
+    resource_type: &str,
+) -> Result<()> {
+    // Collect all fields that have slice definitions
+    let mut slice_fields: std::collections::HashMap<String, Vec<&ElementDefinition>> =
+        std::collections::HashMap::new();
+
+    for element in elements {
+        if let Some(ref _slice_name) = element.slice_name {
+            let field_name = match get_field_name(&element.path, resource_type) {
+                Some(name) => name,
+                None => continue,
+            };
+            slice_fields.entry(field_name).or_default().push(element);
+        }
+    }
+
+    for (field_name, slices) in &slice_fields {
+        // Check if any slice has min > 0 (required slice)
+        let required_slices: Vec<&&ElementDefinition> =
+            slices.iter().filter(|s| s.min.unwrap_or(0) > 0).collect();
+
+        if required_slices.is_empty() {
+            continue;
+        }
+
+        // Get the field value — if the field doesn't exist yet,
+        // it will be handled by the main populate_required_fields loop
+        let field_value = match resource.get(field_name) {
+            Some(val) => val.clone(),
+            None => continue,
+        };
+
+        // For each required slice, generate an element that matches
+        // the slice discriminator
+        let mut slice_values = Vec::new();
+
+        // Start with the existing value(s)
+        if let Some(arr) = field_value.as_array() {
+            slice_values.extend(arr.iter().cloned());
+        } else {
+            slice_values.push(field_value);
+        }
+
+        for slice in required_slices {
+            if let Some(val) = generate_slice_value(slice, resource_type) {
+                slice_values.push(val);
+            }
+        }
+
+        resource[field_name] = serde_json::json!(slice_values);
+    }
+
+    Ok(())
+}
+
+/// Generate a value that matches a slice's discriminator pattern.
+///
+/// Examines the slice element for pattern values (patternUri, patternCode, etc.)
+/// and creates a value that satisfies the discriminator.
+fn generate_slice_value(
+    slice: &ElementDefinition,
+    _resource_type: &str,
+) -> Option<serde_json::Value> {
+    // Determine the base type from the element's type
+    let type_code = slice.type_.first()?.code.clone();
+
+    // Start with a base value for the type
+    let mut value = generate_typed_value(&type_code, &[]);
+
+    // Apply pattern values from the slice definition
+    if let Some(val) = &slice.pattern_uri {
+        if let Some(obj) = value.as_object_mut() {
+            // For Identifier slices, patternUri on the slice typically
+            // constrains the `system` field
+            if type_code == "Identifier" {
+                obj.insert("system".to_string(), serde_json::json!(val));
+            } else {
+                obj.insert("value".to_string(), serde_json::json!(val));
+            }
+        }
+    }
+    if let Some(val) = &slice.pattern_code {
+        if let Some(obj) = value.as_object_mut() {
+            // For HumanName slices, patternCode on the slice constrains `use`
+            if type_code == "HumanName" {
+                obj.insert("use".to_string(), serde_json::json!(val));
+            }
+            // For Address slices, patternCode on the slice constrains `type`
+            if type_code == "Address" {
+                obj.insert("type".to_string(), serde_json::json!(val));
+            }
+        }
+    }
+    if let Some(val) = &slice.pattern_string {
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("value".to_string(), serde_json::json!(val));
+        }
+    }
+    if let Some(val) = &slice.pattern_coding {
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("coding".to_string(), val.clone());
+        }
+    }
+    if let Some(val) = &slice.pattern_codeable_concept {
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("coding".to_string(), val.clone());
+        }
+    }
+
+    Some(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,6 +720,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Patient.identifier".to_string(),
@@ -632,6 +757,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Patient.name".to_string(),
@@ -667,6 +794,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Patient.gender".to_string(),
@@ -702,6 +831,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                 ],
             }),
@@ -766,6 +897,8 @@ mod tests {
                 constraint: vec![],
                 is_modifier: false,
                 is_summary: false,
+                slice_name: None,
+                slicing: None,
             });
         }
 
@@ -815,6 +948,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Observation.subject".to_string(),
@@ -852,6 +987,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                 ],
             }),
@@ -910,6 +1047,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Practitioner.qualification".to_string(),
@@ -945,6 +1084,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Practitioner.qualification.identifier".to_string(),
@@ -980,6 +1121,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Practitioner.qualification.code".to_string(),
@@ -1015,6 +1158,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                 ],
             }),
@@ -1090,6 +1235,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Patient.extension".to_string(),
@@ -1125,6 +1272,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Patient.identifier".to_string(),
@@ -1160,6 +1309,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                 ],
             }),
@@ -1223,6 +1374,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Organization.identifier".to_string(),
@@ -1258,6 +1411,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Organization.name".to_string(),
@@ -1293,6 +1448,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Organization.address".to_string(),
@@ -1328,6 +1485,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                 ],
             }),
@@ -1401,6 +1560,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Practitioner.qualification".to_string(),
@@ -1436,6 +1597,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Practitioner.qualification.code".to_string(),
@@ -1471,6 +1634,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                     ElementDefinition {
                         id: "Practitioner.qualification.code.text".to_string(),
@@ -1506,6 +1671,8 @@ mod tests {
                         constraint: vec![],
                         is_modifier: false,
                         is_summary: false,
+                        slice_name: None,
+                        slicing: None,
                     },
                 ],
             }),

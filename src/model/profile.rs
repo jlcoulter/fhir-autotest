@@ -29,7 +29,7 @@ pub struct Differential {
     pub element: Vec<ElementDefinition>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ElementDefinition {
     pub id: String,
     pub path: String,
@@ -39,6 +39,10 @@ pub struct ElementDefinition {
     pub type_: Vec<ElementDefinitionType>,
     #[serde(rename = "fixedString")]
     pub fixed_string: Option<String>,
+    #[serde(rename = "sliceName", default)]
+    pub slice_name: Option<String>,
+    #[serde(default)]
+    pub slicing: Option<ElementSlicing>,
     #[serde(rename = "fixedUri")]
     pub fixed_uri: Option<String>,
     #[serde(rename = "fixedCode")]
@@ -109,6 +113,25 @@ pub struct ElementConstraint {
     pub severity: String,
     pub human: Option<String>,
     pub expression: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ElementSlicing {
+    #[serde(default)]
+    pub discriminator: Vec<SlicingDiscriminator>,
+    #[serde(default)]
+    pub rules: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub ordered: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SlicingDiscriminator {
+    #[serde(rename = "type")]
+    pub discriminator_type: String,
+    pub path: String,
 }
 
 #[cfg(test)]
