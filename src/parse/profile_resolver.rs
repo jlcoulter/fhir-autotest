@@ -2,16 +2,33 @@ use crate::model::*;
 use crate::parse::parse_package;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// Default cache directory for downloaded FHIR packages.
+fn cache_dir() -> PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    let mut dir = PathBuf::from(home);
+    dir.push(".cache");
+    dir.push("fhir-ig-testgen");
+    dir.push("packages");
+    dir
+}
 
 /// Cache of downloaded FHIR packages, keyed by package ID.
 struct PackageCache {
     packages: HashMap<String, Vec<StructureDefinition>>,
+    cache_dir: PathBuf,
 }
 
 impl PackageCache {
     fn new() -> Self {
+        let cache_dir = cache_dir();
+        std::fs::create_dir_all(&cache_dir).ok();
         Self {
             packages: HashMap::new(),
+            cache_dir,
         }
     }
 
@@ -27,8 +44,24 @@ impl PackageCache {
 
     /// Ensure a package is loaded, downloading it if not cached.
     fn ensure_package(&mut self, package_id: &str, version: &str) -> Result<()> {
-        let cache_key = format!("{}@{}", package_id, version);
+        let cache_key = format!("{}@{}\n", package_id, version);
         if self.packages.contains_key(&cache_key) {
+            return Ok(());
+        }
+
+        let tgz_filename = format!("{}-{}.tgz", package_id, version);
+        let tgz_path = self.cache_dir.join(&tgz_filename);
+
+        // Check local cache first
+        if tgz_path.exists() {
+            tracing::info!("Using cached FHIR package: {}@{}", package_id, version);
+            let pkg = parse_package(tgz_path.to_str().unwrap())?;
+            tracing::info!(
+                "Loaded package {}: {} StructureDefinitions",
+                package_id,
+                pkg.structure_definitions.len()
+            );
+            self.packages.insert(cache_key, pkg.structure_definitions);
             return Ok(());
         }
 
@@ -54,8 +87,6 @@ impl PackageCache {
         }
 
         let bytes = response.bytes()?;
-        let temp_dir = std::env::temp_dir();
-        let tgz_path = temp_dir.join(format!("{}.tgz", package_id));
         std::fs::write(&tgz_path, &bytes)?;
 
         let pkg = parse_package(tgz_path.to_str().unwrap())?;

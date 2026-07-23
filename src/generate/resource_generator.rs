@@ -705,31 +705,27 @@ fn generate_slice_value(
     if type_code == "Identifier" {
         if let Some(obj) = value.as_object_mut() {
             match discriminator_path {
-                Some("system") => {
+                Some("system") if !obj.contains_key("system") => {
                     // Set a unique system URI so the value matches a system-based slice
-                    if !obj.contains_key("system") {
-                        let profile_url = slice
-                            .type_
-                            .first()
-                            .and_then(|t| t.target_profile.first())
-                            .map(|s| s.as_str())
-                            .unwrap_or("http://example.org/identifier");
-                        obj.insert("system".to_string(), serde_json::json!(profile_url));
-                    }
+                    let profile_url = slice
+                        .type_
+                        .first()
+                        .and_then(|t| t.target_profile.first())
+                        .map(|s| s.as_str())
+                        .unwrap_or("http://example.org/identifier");
+                    obj.insert("system".to_string(), serde_json::json!(profile_url));
                 }
-                Some("type") => {
+                Some("type") if !obj.contains_key("type") => {
                     // Set a type coding so the value matches a type-based slice
-                    if !obj.contains_key("type") {
-                        obj.insert(
-                            "type".to_string(),
-                            serde_json::json!({
-                                "coding": [{
-                                    "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
-                                    "code": "XX"
-                                }]
-                            }),
-                        );
-                    }
+                    obj.insert(
+                        "type".to_string(),
+                        serde_json::json!({
+                            "coding": [{
+                                "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                                "code": "XX"
+                            }]
+                        }),
+                    );
                 }
                 _ => {}
             }
