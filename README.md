@@ -193,6 +193,30 @@ Responses are validated against the IG's StructureDefinitions:
                                                   └──────────────┘
 ```
 
+## Test Results
+
+After every test run, results are written to `{output}/results/`:
+
+```
+output/results/
+├── summary.json              # Overall totals and per-group breakdowns
+├── Patient.json              # Full results for Patient test group
+├── Observation.json          # Full results for Observation test group
+├── _conformance.json         # Full results for conformance tests
+└── ...                       # One file per resource type + conformance
+```
+
+**`summary.json`** contains:
+
+| Field | Description |
+|-------|-------------|
+| `total` | Total test count |
+| `passed` | Number of passed tests |
+| `failed` | Number of failed tests |
+| `groups` | Per-group breakdown (group name, total, passed, failed) |
+
+**Per-group files** contain the full `TestResult` array with request details, response bodies, status codes, and validation errors for every test in that group.
+
 ## Configuration
 
 See [`config.toml`](config.toml) for a complete example with comments.
@@ -202,8 +226,7 @@ Key settings:
 | Setting | Description | Default |
 |---------|-------------|---------|
 | `package` | Path to the IG package (.tgz) | Required (or `--package` flag) |
-| `output` | Directory for generated test plan and resources | `./output` |
-| `results` | Path to write detailed JSON test results | None |
+| `output` | Directory for generated test plan, resources, and results | `./output` |
 | `dry_run` | Print all test URLs without executing | `false` |
 | `mock` | Use built-in mock FHIR server | `false` |
 | `mock_port` | Port for mock server (0 = random) | `0` |

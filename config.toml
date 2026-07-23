@@ -3,7 +3,7 @@
 # The config file is the single source of truth. Once defined, running the tool
 # is as simple as: fhir-ig-testgen
 #
-# CLI flags (--package, --output, --results, --dry-run, --generate, --mock)
+# CLI flags (--package, --output, --dry-run, --generate, --mock)
 # override the corresponding config fields when provided.
 
 # ── Inputs / Outputs ────────────────────────────────────────────────────────
@@ -16,9 +16,9 @@ package = "./package/package.tgz"
 # profile in the IG, each stamped with meta.profile for the canonical URL.
 output = "./output"
 
-# Path to write detailed JSON test results after running (optional).
-# Uncomment to enable.
-# results = "./results.json"
+# Test results are written to {output}/results/ after every run:
+#   - summary.json: overall pass/fail totals and per-group breakdowns
+#   - {GroupName}.json: full test results for each group (Patient, Observation, _conformance, etc.)
 
 # Run in dry-run mode: print all test URLs without executing them.
 # Uncomment to enable, or pass --dry-run on the CLI.

@@ -624,7 +624,6 @@ async fn run_against_mock_fhir_server() {
     let config = TestConfig {
         package: Some(tgz_path.to_str().unwrap().to_string()),
         output: temp_dir.path().join("output").to_str().unwrap().to_string(),
-        results: None,
         dry_run: false,
         server: fhir_ig_testgen::config::models::ServerConfig {
             base_url: format!("{}/fhir", mock_url),

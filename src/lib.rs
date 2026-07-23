@@ -143,19 +143,17 @@ pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
 }
 
 /// Run tests against a FHIR server.
-/// If `config.results` is set, writes detailed JSON results to that file.
+/// Always writes per-group results and a summary into `{output}/results/`.
 pub async fn run_tests(package_path: &str, config: &TestConfig) -> Result<()> {
     let orchestrator = runner::Orchestrator::new(config.clone());
     let report = orchestrator.run(package_path).await?;
 
     println!("{}", report);
 
-    // Write JSON results if a results path is configured
-    if let Some(results_path) = &config.results {
-        let json = serde_json::to_string_pretty(&report)?;
-        std::fs::write(results_path, &json)?;
-        println!("\nResults written to: {}", results_path);
-    }
+    // Write per-group result files and summary into the output directory
+    let output_dir = std::path::Path::new(&config.output);
+    report.write_results(output_dir)?;
+    println!("\nResults written to: {}/results/", config.output);
 
     if report.failed > 0 {
         anyhow::bail!("{} test(s) failed", report.failed);

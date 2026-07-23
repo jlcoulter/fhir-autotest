@@ -25,10 +25,6 @@ struct Cli {
     #[arg(short, long)]
     output: Option<String>,
 
-    /// Override: path to write detailed JSON test results.
-    #[arg(long)]
-    results: Option<String>,
-
     /// Override: run in dry-run mode (print URLs without executing).
     #[arg(long)]
     dry_run: bool,
@@ -119,9 +115,6 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(output) = cli.output {
         config.output = output;
-    }
-    if let Some(results) = cli.results {
-        config.results = Some(results);
     }
     if cli.dry_run {
         config.dry_run = true;

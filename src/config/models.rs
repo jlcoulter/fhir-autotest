@@ -16,11 +16,6 @@ pub struct TestConfig {
     #[serde(default = "default_output")]
     pub output: String,
 
-    /// Path to write detailed JSON test results (optional).
-    /// When set, results are written to this file after running tests.
-    #[serde(default)]
-    pub results: Option<String>,
-
     /// Run in dry-run mode: print all test URLs without executing.
     #[serde(default)]
     pub dry_run: bool,

@@ -7,6 +7,8 @@ use crate::runner::response_assertions::assert_response;
 use crate::runner::validator::*;
 use crate::runner::value_resolver::extract_field_values;
 use anyhow::{Context, Result};
+use serde::Serialize;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 /// Orchestrates the full test pipeline:
@@ -77,6 +79,79 @@ impl std::fmt::Display for RunReport {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+/// Per-group summary for the results directory.
+#[derive(Debug, Serialize)]
+struct GroupSummary {
+    group: String,
+    total: usize,
+    passed: usize,
+    failed: usize,
+}
+
+/// Overall summary written to `summary.json`.
+#[derive(Debug, Serialize)]
+struct ResultsSummary {
+    total: usize,
+    passed: usize,
+    failed: usize,
+    groups: Vec<GroupSummary>,
+}
+
+impl RunReport {
+    /// Write per-group result files and a summary into `output_dir/results/`.
+    ///
+    /// Creates:
+    /// - `{output_dir}/results/{group}.json` — full test results for one group
+    /// - `{output_dir}/results/summary.json` — totals and per-group pass/fail counts
+    pub fn write_results(&self, output_dir: &std::path::Path) -> anyhow::Result<()> {
+        let results_dir = output_dir.join("results");
+        std::fs::create_dir_all(&results_dir)?;
+
+        // Group results by test_group
+        let mut groups: BTreeMap<String, Vec<&TestResult>> = BTreeMap::new();
+        for result in &self.results {
+            groups
+                .entry(result.test_group.clone())
+                .or_default()
+                .push(result);
+        }
+
+        // Write per-group files
+        for (group_name, group_results) in &groups {
+            let path = results_dir.join(format!("{}.json", group_name));
+            let json = serde_json::to_string_pretty(&group_results)?;
+            std::fs::write(&path, json)?;
+        }
+
+        // Build and write summary
+        let group_summaries: Vec<GroupSummary> = groups
+            .iter()
+            .map(|(name, results)| {
+                let passed = results.iter().filter(|r| r.passed).count();
+                GroupSummary {
+                    group: name.clone(),
+                    total: results.len(),
+                    passed,
+                    failed: results.len() - passed,
+                }
+            })
+            .collect();
+
+        let summary = ResultsSummary {
+            total: self.total,
+            passed: self.passed,
+            failed: self.failed,
+            groups: group_summaries,
+        };
+
+        let summary_path = results_dir.join("summary.json");
+        let json = serde_json::to_string_pretty(&summary)?;
+        std::fs::write(&summary_path, json)?;
+
         Ok(())
     }
 }
@@ -378,6 +453,7 @@ impl Orchestrator {
                         }
 
                         result.passed = result.passed && result.validation_errors.is_empty();
+                        result.test_group = group.resource_type.clone();
                         results.push(result);
                     }
                     Err(e) => {
@@ -394,6 +470,7 @@ impl Orchestrator {
                             ),
                             request_method: test.request.method.clone(),
                             request_body: test.request.body.clone(),
+                            test_group: group.resource_type.clone(),
                         });
                     }
                 }
