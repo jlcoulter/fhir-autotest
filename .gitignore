@@ -5,7 +5,6 @@ dist/
 
 # Output
 output/
-results.json
 package/
 
 # IDE

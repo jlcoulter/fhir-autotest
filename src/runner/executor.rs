@@ -35,6 +35,9 @@ pub struct TestResult {
     /// The request body (for POST/PUT).
     #[serde(default)]
     pub request_body: Option<serde_json::Value>,
+    /// The test group this result belongs to (e.g. "Patient", "_conformance").
+    #[serde(default)]
+    pub test_group: String,
 }
 
 impl TestExecutor {
@@ -151,6 +154,7 @@ impl TestExecutor {
             request_url: url,
             request_method: test.request.method.clone(),
             request_body: test.request.body.clone(),
+            test_group: String::new(), // stamped by orchestrator
         })
     }
 
