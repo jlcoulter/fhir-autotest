@@ -178,39 +178,46 @@ pub fn assert_response(
                     }
                 }
             }
-        } else if (assertion.bundle_type.is_some()
-            || assertion.min_entries.is_some()
-            || !assertion.resource_types.is_empty())
-            && body.get("resourceType").and_then(|v| v.as_str()) == Some("Bundle")
-        {
-            // Per FHIR spec, an empty search result Bundle (total: 0) may omit the
-            // `entry` array entirely.  Only flag this as an error when the test
-            // explicitly requires entries (min_entries > 0) or specific resource
-            // types, AND the Bundle actually reports total > 0.
-            let bundle_total = body.get("total").and_then(|v| v.as_i64()).unwrap_or(-1);
-
-            if bundle_total > 0 {
-                // Server claims results exist but didn't include entry — that's a bug.
+        } else if body.get("resourceType").and_then(|v| v.as_str()) == Some("Bundle") {
+            // No entry array on the Bundle.
+            // This is only an error if the assertion requires entries.
+            // A searchset Bundle with total=0 and no entries is valid when:
+            //   - min_entries is None or 0 (just checking Bundle structure)
+            //   - resource_types, include_types, field_values, required_fields are empty
+            //   - absent_fields, sort_by are irrelevant without entries
+            let requires_entries = assertion.min_entries.is_some_and(|min| min > 0)
+                || !assertion.resource_types.is_empty()
+                || !assertion.include_types.is_empty()
+                || !assertion.field_values.is_empty()
+                || !assertion.required_fields.is_empty();
+            if requires_entries {
                 errors.push("Bundle has no 'entry' array".to_string());
             }
-            // If total == 0 (or absent/unknown), the missing entry array is valid
-            // per spec.  The individual entry-level checks below (resource_types,
-            // field_values, required_fields, include_types, sort_by, absent_fields)
-            // will naturally produce no false positives because they short-circuit
-            // on an empty/absent entry array.
         }
     }
 
     // --- OperationOutcome severity ---
+    // Per FHIR spec, servers may ignore unknown search parameters and return
+    // a Bundle instead of an OperationOutcome. When the server returns a
+    // Bundle for a negative test, we accept it (the executor already passes
+    // 2xx+Bundle for expected_status==0). We only check OperationOutcome
+    // structure when the response IS an OperationOutcome.
     if let Some(expected_severity) = &assertion.outcome_severity {
         if let Some(body) = body {
             if body.get("resourceType").and_then(|v| v.as_str()) != Some("OperationOutcome") {
-                errors.push(format!(
-                    "Expected OperationOutcome, got resourceType '{}'",
-                    body.get("resourceType")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                ));
+                // Not an OperationOutcome — if it's a Bundle, that's acceptable
+                // for negative conformance tests (server chose to ignore the
+                // unknown param rather than reject it). Only flag as an error
+                // if it's some other resource type entirely.
+                if body.get("resourceType").and_then(|v| v.as_str()) != Some("Bundle") {
+                    errors.push(format!(
+                        "Expected OperationOutcome, got resourceType '{}'",
+                        body.get("resourceType")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                    ));
+                }
+                // Bundle is acceptable — skip OperationOutcome validation
             } else {
                 let issues = body.get("issue").and_then(|v| v.as_array());
                 match issues {

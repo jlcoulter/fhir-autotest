@@ -351,10 +351,12 @@ fn build_test_group(
     // --- _include / _revinclude tests from CS declarations ---
     for include_spec in &resource.search_include {
         // Format: "ResourceName:paramName" e.g. "Organization:partOf"
+        // FHIR search parameter codes are lowercase, so normalise the
+        // param portion (e.g. "partOf" → "partof") to match the server.
         if let Some((_res, param)) = include_spec.split_once(':') {
             tests.push(build_include_test(
                 &resource.resource_type,
-                param,
+                &param.to_lowercase(),
                 false,
                 profile_url,
             ));
@@ -366,7 +368,7 @@ fn build_test_group(
             tests.push(build_revinclude_test(
                 &resource.resource_type,
                 res,
-                param,
+                &param.to_lowercase(),
                 profile_url,
             ));
         }
@@ -512,7 +514,7 @@ fn sample_value(param_type: &str) -> &'static str {
         "quantity" => "5.0||http://unitsofmeasure.org|kg",
         "uri" => "http://example.org",
         "composite" => "test-value",
-        "special" => "-33.86:151.21:10:km", // FHIR near format: lat:lon:distance:units
+        "special" => "-33.86|151.21|10|km", // FHIR near format: lat|lon|distance|units
         _ => "test-value",
     }
 }
@@ -653,17 +655,15 @@ fn build_search_prefix_test(
 
 /// Build a proximity/near search test for FHIR special-type params (e.g. Location?near).
 ///
-/// FHIR near format: `?near=lat:lon[:distance[:units]]`
-/// e.g. `?near=-33.86:151.21:10` or `?near=-33.86:151.21:10:km`
+/// FHIR near format: `?near=lat|lon[|distance[|units]]`
+/// e.g. `?near=-33.86|151.21|10` or `?near=-33.86|151.21|10|km`
 fn build_search_near_test(
     resource_type: &str,
     param_name: &str,
     profile_url: &Option<String>,
 ) -> TestCase {
-    // Test with coordinates and 10km radius.
-    // FHIR R4 near parameter format: latitude|longitude|distance|units
-    // Pipe characters must be URL-encoded as %7C.
-    let url = format!("/{resource_type}?{param_name}=-33.86%7C151.21%7C10%7Ckm");
+    // Test with coordinates and 10km radius
+    let url = format!("/{resource_type}?{param_name}=-33.86|151.21|10|km");
 
     TestCase {
         name: format!(
@@ -1405,11 +1405,8 @@ mod tests {
         );
         let near_test = near_test.unwrap();
         assert!(
-            near_test
-                .request
-                .url
-                .contains("near=-33.86%7C151.21%7C10%7Ckm"),
-            "Near test URL should contain URL-encoded coordinate format, got {}",
+            near_test.request.url.contains("near=-33.86|151.21|10|km"),
+            "Near test URL should contain coordinate format, got {}",
             near_test.request.url
         );
         assert!(

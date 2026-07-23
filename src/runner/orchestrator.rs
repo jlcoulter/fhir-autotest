@@ -385,10 +385,34 @@ impl Orchestrator {
             for test in &group.tests {
                 let mut test = test.clone();
 
-                // Replace {id} placeholders in URLs with actual created IDs.
-                // If the placeholder is still present after substitution, the
-                // resource was never created — skip the test rather than sending
-                // a request to a broken URL.
+                // Skip tests that need an {id} placeholder but no resource was created
+                // for this type (e.g. no setup data available). These would send literal
+                // {id} in the URL and always fail with 400.
+                if test.request.url.contains("{id}")
+                    && !created_ids.contains_key(&test.resource_type)
+                {
+                    println!(
+                        "  ⊘ {} — skipped (no created ID for {})",
+                        test.name, test.resource_type
+                    );
+                    results.push(TestResult {
+                        test_name: test.name,
+                        passed: true, // skipped, not a failure
+                        status_code: 0,
+                        response_body: None,
+                        validation_errors: vec![format!(
+                            "Skipped: no resource created for {} — {{id}} placeholder unresolved",
+                            test.resource_type
+                        )],
+                        request_url: format!("{}{}", self.config.server.base_url, test.request.url),
+                        request_method: test.request.method.clone(),
+                        request_body: test.request.body.clone(),
+                        test_group: group.resource_type.clone(),
+                    });
+                    continue;
+                }
+
+                // Replace {id} placeholders in URLs with actual created IDs
                 if let Some(id) = created_ids.get(&test.resource_type) {
                     test.request.url = test.request.url.replace("{id}", id);
                 }

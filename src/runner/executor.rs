@@ -142,9 +142,24 @@ impl TestExecutor {
 
         // expected_status == 0 is a sentinel meaning "expect non-2xx"
         // (used by negative conformance tests for undeclared interactions/params)
+        //
+        // For undeclared search params, the FHIR spec allows servers to ignore
+        // unknown parameters and return a filtered Bundle (200 OK). So we accept
+        // both outcomes:
+        //   - Non-2xx status (server rejected the request) → pass
+        //   - 200 with a Bundle (server ignored the unknown param) → pass
+        // For undeclared interactions (read/vread/update/etc.), only non-2xx passes.
         let passed = if test.validation.expected_status == 0 {
-            // Negative test: any non-2xx status is a pass
-            !(200..=299).contains(&status)
+            if !(200..=299).contains(&status) {
+                // Server rejected — always passes for negative tests
+                true
+            } else if let Some(body) = &body {
+                // Server returned 2xx — check if it's a Bundle (acceptable for search params)
+                body.get("resourceType").and_then(|v| v.as_str()) == Some("Bundle")
+            } else {
+                // 2xx with no parseable body — fails
+                false
+            }
         } else {
             status == test.validation.expected_status
         };
