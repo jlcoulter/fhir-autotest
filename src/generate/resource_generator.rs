@@ -617,9 +617,12 @@ fn populate_required_slices(
         if !required_slices.is_empty() {
             // Add values for each required slice
             for slice in required_slices {
-                if let Some(val) =
-                    generate_slice_value(slice, resource_type, discriminator_path.as_deref())
-                {
+                if let Some(val) = generate_slice_value(
+                    slice,
+                    resource_type,
+                    discriminator_path.as_deref(),
+                    elements,
+                ) {
                     slice_values.push(val);
                 }
             }
@@ -627,9 +630,12 @@ fn populate_required_slices(
             // No slice is individually required, but the field has slicing.
             // Replace the generic value with one matching the first slice's
             // discriminator pattern so the resource passes validation.
-            if let Some(val) =
-                generate_slice_value(slices[0], resource_type, discriminator_path.as_deref())
-            {
+            if let Some(val) = generate_slice_value(
+                slices[0],
+                resource_type,
+                discriminator_path.as_deref(),
+                elements,
+            ) {
                 slice_values = vec![val];
             }
         }
@@ -646,13 +652,13 @@ fn populate_required_slices(
 /// and creates a value that satisfies the discriminator.
 ///
 /// If no pattern values are present but the slice has a type profile reference,
-/// uses the discriminator path to generate a matching value:
-/// - `system` discriminator: sets the `system` field to a URI derived from the profile
-/// - `type` discriminator: sets the `type` field with a coding matching the profile
+/// scans the full elements list for the profiled type's sub-elements to find
+/// fixedUri/patternCodeableConcept values that satisfy the discriminator.
 fn generate_slice_value(
     slice: &ElementDefinition,
     _resource_type: &str,
     discriminator_path: Option<&str>,
+    all_elements: &[ElementDefinition],
 ) -> Option<serde_json::Value> {
     // Determine the base type from the element's type
     let type_code = slice.type_.first()?.code.clone();
@@ -701,31 +707,85 @@ fn generate_slice_value(
     }
 
     // If no pattern values were applied but we have a discriminator path,
-    // generate a value that would match the slice
+    // look up the profiled type's sub-elements for fixed/pattern values
     if type_code == "Identifier" {
         if let Some(obj) = value.as_object_mut() {
             match discriminator_path {
                 Some("system") if !obj.contains_key("system") => {
-                    // Set a unique system URI so the value matches a system-based slice
+                    // Look for a profiled Identifier type's sub-elements
+                    // that have fixedUri on Identifier.system
                     let profile_url = slice
                         .type_
                         .first()
                         .and_then(|t| t.target_profile.first())
                         .map(|s| s.as_str())
-                        .unwrap_or("http://example.org/identifier");
-                    obj.insert("system".to_string(), serde_json::json!(profile_url));
+                        .unwrap_or("");
+                    if !profile_url.is_empty() {
+                        // Extract the type name from the profile URL
+                        let type_name = profile_url
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or("")
+                            .split('|')
+                            .next()
+                            .unwrap_or("");
+                        // Scan elements for this type's sub-elements
+                        for el in all_elements {
+                            if el.id == format!("{}.system", type_name) {
+                                if let Some(val) = &el.fixed_uri {
+                                    obj.insert("system".to_string(), serde_json::json!(val));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // Fallback: use the profile URL as the system value
+                    if !obj.contains_key("system") {
+                        obj.insert("system".to_string(), serde_json::json!(profile_url));
+                    }
                 }
                 Some("type") if !obj.contains_key("type") => {
-                    // Set a type coding so the value matches a type-based slice
-                    obj.insert(
-                        "type".to_string(),
-                        serde_json::json!({
-                            "coding": [{
-                                "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
-                                "code": "XX"
-                            }]
-                        }),
-                    );
+                    // Look for a profiled Identifier type's sub-elements
+                    // that have patternCodeableConcept on Identifier.type
+                    let profile_url = slice
+                        .type_
+                        .first()
+                        .and_then(|t| t.target_profile.first())
+                        .map(|s| s.as_str())
+                        .unwrap_or("");
+                    if !profile_url.is_empty() {
+                        let type_name = profile_url
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or("")
+                            .split('|')
+                            .next()
+                            .unwrap_or("");
+                        for el in all_elements {
+                            if el.id == format!("{}.type", type_name) {
+                                if let Some(val) = &el.pattern_codeable_concept {
+                                    obj.insert("type".to_string(), val.clone());
+                                    break;
+                                }
+                                if let Some(val) = &el.fixed_codeable_concept {
+                                    obj.insert("type".to_string(), val.clone());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // Fallback: use a generic v2-0203 coding
+                    if !obj.contains_key("type") {
+                        obj.insert(
+                            "type".to_string(),
+                            serde_json::json!({
+                                "coding": [{
+                                    "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                                    "code": "XX"
+                                }]
+                            }),
+                        );
+                    }
                 }
                 _ => {}
             }
