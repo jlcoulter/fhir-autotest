@@ -6,7 +6,10 @@ use anyhow::Result;
 /// Walks the snapshot elements, fills in required fields (min > 0) with appropriate
 /// sentinel values, and applies any fixed/pattern constraints. Also stamps
 /// `meta.profile` with the profile's canonical URL.
-pub fn generate_resource(profile: &StructureDefinition) -> Result<serde_json::Value> {
+pub fn generate_resource(
+    profile: &StructureDefinition,
+    all_profiles: &[StructureDefinition],
+) -> Result<serde_json::Value> {
     let mut resource = serde_json::json!({
         "resourceType": profile.base_type
     });
@@ -29,7 +32,7 @@ pub fn generate_resource(profile: &StructureDefinition) -> Result<serde_json::Va
     populate_required_fields(&mut resource, elements, &profile.base_type)?;
 
     // Second pass: populate required slices (e.g., identifier:abn with patternUri)
-    populate_required_slices(&mut resource, elements, &profile.base_type)?;
+    populate_required_slices(&mut resource, elements, &profile.base_type, all_profiles)?;
 
     Ok(resource)
 }
@@ -568,6 +571,7 @@ fn populate_required_slices(
     resource: &mut serde_json::Value,
     elements: &[ElementDefinition],
     resource_type: &str,
+    all_profiles: &[StructureDefinition],
 ) -> Result<()> {
     // Collect all fields that have slice definitions
     let mut slice_fields: std::collections::HashMap<String, Vec<&ElementDefinition>> =
@@ -621,7 +625,7 @@ fn populate_required_slices(
                     slice,
                     resource_type,
                     discriminator_path.as_deref(),
-                    elements,
+                    all_profiles,
                 ) {
                     slice_values.push(val);
                 }
@@ -634,7 +638,7 @@ fn populate_required_slices(
                 slices[0],
                 resource_type,
                 discriminator_path.as_deref(),
-                elements,
+                all_profiles,
             ) {
                 slice_values = vec![val];
             }
@@ -658,7 +662,7 @@ fn generate_slice_value(
     slice: &ElementDefinition,
     _resource_type: &str,
     discriminator_path: Option<&str>,
-    all_elements: &[ElementDefinition],
+    all_profiles: &[StructureDefinition],
 ) -> Option<serde_json::Value> {
     // Determine the base type from the element's type
     let type_code = slice.type_.first()?.code.clone();
@@ -721,20 +725,22 @@ fn generate_slice_value(
                         .map(|s| s.as_str())
                         .unwrap_or("");
                     if !profile_url.is_empty() {
-                        // Extract the type name from the profile URL
-                        let type_name = profile_url
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or("")
-                            .split('|')
-                            .next()
-                            .unwrap_or("");
-                        // Scan elements for this type's sub-elements
-                        for el in all_elements {
-                            if el.id == format!("{}.system", type_name) {
-                                if let Some(val) = &el.fixed_uri {
-                                    obj.insert("system".to_string(), serde_json::json!(val));
-                                    break;
+                        // Find the profiled type by URL (strip version suffix)
+                        let clean_url = profile_url.split('|').next().unwrap_or(profile_url);
+                        if let Some(profiled_type) =
+                            all_profiles.iter().find(|p| p.url == clean_url)
+                        {
+                            if let Some(snapshot) = &profiled_type.snapshot {
+                                for el in &snapshot.element {
+                                    if el.id == "Identifier.system" {
+                                        if let Some(val) = &el.fixed_uri {
+                                            obj.insert(
+                                                "system".to_string(),
+                                                serde_json::json!(val),
+                                            );
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -754,22 +760,22 @@ fn generate_slice_value(
                         .map(|s| s.as_str())
                         .unwrap_or("");
                     if !profile_url.is_empty() {
-                        let type_name = profile_url
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or("")
-                            .split('|')
-                            .next()
-                            .unwrap_or("");
-                        for el in all_elements {
-                            if el.id == format!("{}.type", type_name) {
-                                if let Some(val) = &el.pattern_codeable_concept {
-                                    obj.insert("type".to_string(), val.clone());
-                                    break;
-                                }
-                                if let Some(val) = &el.fixed_codeable_concept {
-                                    obj.insert("type".to_string(), val.clone());
-                                    break;
+                        let clean_url = profile_url.split('|').next().unwrap_or(profile_url);
+                        if let Some(profiled_type) =
+                            all_profiles.iter().find(|p| p.url == clean_url)
+                        {
+                            if let Some(snapshot) = &profiled_type.snapshot {
+                                for el in &snapshot.element {
+                                    if el.id == "Identifier.type" {
+                                        if let Some(val) = &el.pattern_codeable_concept {
+                                            obj.insert("type".to_string(), val.clone());
+                                            break;
+                                        }
+                                        if let Some(val) = &el.fixed_codeable_concept {
+                                            obj.insert("type".to_string(), val.clone());
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -963,7 +969,7 @@ mod tests {
     #[test]
     fn generate_patient_from_profile() {
         let profile = minimal_patient_profile();
-        let resource = generate_resource(&profile).unwrap();
+        let resource = generate_resource(&profile, &[]).unwrap();
 
         assert_eq!(resource["resourceType"], "Patient");
         assert!(resource.get("name").is_some(), "name is required (min=1)");
@@ -1022,7 +1028,7 @@ mod tests {
             });
         }
 
-        let resource = generate_resource(&profile).unwrap();
+        let resource = generate_resource(&profile, &[]).unwrap();
         assert_eq!(resource["gender"], "male");
     }
 
@@ -1115,7 +1121,7 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile).unwrap();
+        let resource = generate_resource(&profile, &[]).unwrap();
         let subject = &resource["subject"];
         assert_eq!(
             subject["reference"], "placeholder:Patient",
@@ -1286,7 +1292,7 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile).unwrap();
+        let resource = generate_resource(&profile, &[]).unwrap();
 
         // qualification should be an array (max="*") with required sub-fields
         let qualification = resource
@@ -1437,7 +1443,7 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile).unwrap();
+        let resource = generate_resource(&profile, &[]).unwrap();
 
         // Extension should NOT be present (empty extensions are invalid)
         assert!(
@@ -1613,7 +1619,7 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile).unwrap();
+        let resource = generate_resource(&profile, &[]).unwrap();
 
         // identifier (max="*") should be an array
         let identifier = resource.get("identifier").unwrap();
@@ -1799,7 +1805,7 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile).unwrap();
+        let resource = generate_resource(&profile, &[]).unwrap();
 
         let qualification = resource.get("qualification").unwrap();
         let qual_array = qualification.as_array().unwrap();
