@@ -88,7 +88,7 @@ pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
         }
 
         for profile in profiles_for_type {
-            let generated = generate_resource(profile)?;
+            let generated = generate_resource(profile, &profiles)?;
             // Use the profile name as the unique key (e.g. "TestPatient", "HcpdPractitioner")
             let profile_name = profile.name.clone();
             profile_resources.push((profile_name.clone(), resource_type.clone(), generated));
@@ -206,7 +206,7 @@ pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
             // Use first profile for each type
             let profile = profiles.iter().find(|sd| sd.base_type == *resource_type);
             if let Some(profile) = profile {
-                let generated = generate_resource(profile)?;
+                let generated = generate_resource(profile, &profiles)?;
                 resources.insert(resource_type.clone(), generated);
             }
         }

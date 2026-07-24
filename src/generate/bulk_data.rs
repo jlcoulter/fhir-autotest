@@ -80,7 +80,7 @@ pub fn generate_bulk_data(
             let mut resource = if let Some(profile) = profile_map.get(resource_type.as_str()) {
                 // Use profile-aware generation: generates a conformant base from
                 // the StructureDefinition, then overlay cross-references.
-                let mut r = generate_resource(profile)?;
+                let mut r = generate_resource(profile, profiles)?;
                 r["id"] = serde_json::Value::String(id.clone());
                 // Overlay cross-references for types that need them.
                 overlay_cross_references(

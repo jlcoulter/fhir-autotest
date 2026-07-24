@@ -303,7 +303,7 @@ impl Orchestrator {
                         .iter()
                         .find(|sd| sd.base_type == *resource_type);
                     if let Some(profile) = profile {
-                        let generated = generate_resource(profile)?;
+                        let generated = generate_resource(profile, &pkg.structure_definitions)?;
                         tracing::info!("Generated resource for {}", resource_type);
                         resources.insert(resource_type.clone(), generated);
                     } else {
