@@ -177,6 +177,84 @@ pub fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Result<(
         i += 1;
     }
 
+    // Second pass: resolve profiled types referenced by slice elements.
+    // HCPD profiles define slices that reference profiled Identifier types
+    // (e.g. hcpd-hpio, hcpd-local-identifier, au-hpii, au-australianbusinessnumber).
+    // These are referenced via the `type[].profile` field on slice elements.
+    // They may be in the IG package itself (digitalhealth.gov.au) or in
+    // downloaded packages (hl7.org.au).
+    let mut failed_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut resolved_any = true;
+    while resolved_any {
+        resolved_any = false;
+        // Collect all profiled type URLs referenced by any profile's elements
+        let referenced_urls: Vec<String> = profiles
+            .iter()
+            .flat_map(|p| {
+                p.snapshot
+                    .as_ref()
+                    .map(|s| &s.element)
+                    .into_iter()
+                    .flatten()
+            })
+            .flat_map(|e| {
+                e.type_.iter().flat_map(|t| {
+                    // Check both `profile` and `targetProfile` fields
+                    t.profile
+                        .iter()
+                        .chain(t.target_profile.iter())
+                        .map(|s| s.split('|').next().unwrap_or(s).to_string())
+                })
+            })
+            .filter(|url| !url_map.contains_key(url) && !failed_urls.contains(url))
+            .collect();
+
+        for url in &referenced_urls {
+            // Skip base FHIR types — they're always available from the base spec
+            // and don't need to be resolved as profiles.
+            if url.starts_with("http://hl7.org/fhir/StructureDefinition/") {
+                failed_urls.insert(url.clone());
+                continue;
+            }
+
+            // Check if it's already in the profiles list (e.g. HCPD profiled types)
+            if url_map.contains_key(url) {
+                continue;
+            }
+
+            // Check the package cache first
+            if let Some(cached) = package_cache.get_profile(url) {
+                url_map.insert(cached.url.clone(), profiles.len());
+                profiles.push(cached.clone());
+                resolved_any = true;
+                continue;
+            }
+
+            // Try downloading the individual profile
+            match download_profile(url) {
+                Ok(p) => {
+                    url_map.insert(p.url.clone(), profiles.len());
+                    profiles.push(p);
+                    resolved_any = true;
+                }
+                Err(_) => {
+                    // Try downloading the parent's FHIR package
+                    match resolve_via_package(url, &mut package_cache) {
+                        Ok(p) => {
+                            url_map.insert(p.url.clone(), profiles.len());
+                            profiles.push(p);
+                            resolved_any = true;
+                        }
+                        Err(e) => {
+                            tracing::debug!("Could not resolve profiled type {}: {}", url, e);
+                            failed_urls.insert(url.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -204,6 +282,8 @@ fn resolve_via_package(url: &str, cache: &mut PackageCache) -> Result<StructureD
 ///     → hl7.fhir.au.core
 ///   http://hl7.org.au/fhir/StructureDefinition/au-hpio
 ///     → hl7.fhir.au.base
+///   http://digitalhealth.gov.au/fhir/hcpd/StructureDefinition/hcpd-hpio
+///     → (None — these are in the IG package itself)
 fn url_to_package_id(url: &str) -> Option<String> {
     if url.contains("hl7.org.au/fhir/core") {
         Some("hl7.fhir.au.core".to_string())

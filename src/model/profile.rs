@@ -95,6 +95,11 @@ pub struct ElementDefinitionType {
     pub code: String,
     #[serde(rename = "targetProfile", default)]
     pub target_profile: Vec<String>,
+    /// Profiles that the type must conform to (e.g. Identifier → hcpd-hpio).
+    /// This is the `profile` field in the FHIR JSON, distinct from `targetProfile`
+    /// which is used for reference targets.
+    #[serde(default)]
+    pub profile: Vec<String>,
     #[serde(rename = "versioning", default)]
     pub versioning: Option<String>,
 }

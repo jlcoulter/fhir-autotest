@@ -619,8 +619,26 @@ fn populate_required_slices(
         }
 
         if !required_slices.is_empty() {
-            // Add values for each required slice
-            for slice in required_slices {
+            // Replace the first generic value with a value matching the first
+            // required slice, then add values for remaining required slices.
+            // This avoids having a non-slice-matching generic value in the array.
+            if let Some(first_slice) = required_slices.first() {
+                if let Some(val) = generate_slice_value(
+                    first_slice,
+                    resource_type,
+                    discriminator_path.as_deref(),
+                    all_profiles,
+                ) {
+                    // Replace the first generic value
+                    if slice_values.is_empty() {
+                        slice_values.push(val);
+                    } else {
+                        slice_values[0] = val;
+                    }
+                }
+            }
+            // Add values for remaining required slices
+            for slice in required_slices.iter().skip(1) {
                 if let Some(val) = generate_slice_value(
                     slice,
                     resource_type,
@@ -711,87 +729,72 @@ fn generate_slice_value(
     }
 
     // If no pattern values were applied but we have a discriminator path,
-    // look up the profiled type's sub-elements for fixed/pattern values
+    // look up the profiled type's sub-elements for fixed/pattern values.
+    // The profiled type URL comes from the `profile` field on the type
+    // (e.g. "http://hl7.org.au/fhir/StructureDefinition/au-hpii|6.0.0"),
+    // NOT from `targetProfile` which is for reference targets.
     if type_code == "Identifier" {
         if let Some(obj) = value.as_object_mut() {
-            match discriminator_path {
-                Some("system") if !obj.contains_key("system") => {
-                    // Look for a profiled Identifier type's sub-elements
-                    // that have fixedUri on Identifier.system
-                    let profile_url = slice
-                        .type_
-                        .first()
-                        .and_then(|t| t.target_profile.first())
-                        .map(|s| s.as_str())
-                        .unwrap_or("");
-                    if !profile_url.is_empty() {
-                        // Find the profiled type by URL (strip version suffix)
-                        let clean_url = profile_url.split('|').next().unwrap_or(profile_url);
-                        if let Some(profiled_type) =
-                            all_profiles.iter().find(|p| p.url == clean_url)
-                        {
-                            if let Some(snapshot) = &profiled_type.snapshot {
-                                for el in &snapshot.element {
-                                    if el.id == "Identifier.system" {
-                                        if let Some(val) = &el.fixed_uri {
-                                            obj.insert(
-                                                "system".to_string(),
-                                                serde_json::json!(val),
-                                            );
-                                            break;
-                                        }
-                                    }
+            // Resolve the profiled type URL from the slice's type definition
+            let profile_url = slice
+                .type_
+                .first()
+                .and_then(|t| {
+                    if !t.profile.is_empty() {
+                        t.profile.first().map(|s| s.as_str())
+                    } else {
+                        t.target_profile.first().map(|s| s.as_str())
+                    }
+                })
+                .unwrap_or("");
+
+            // If we have a profiled type, look up its sub-elements to find
+            // fixedUri on Identifier.system and patternCodeableConcept on
+            // Identifier.type. Apply both regardless of which discriminator
+            // path we're matching — the profiled type constrains both fields.
+            if !profile_url.is_empty() {
+                let clean_url = profile_url.split('|').next().unwrap_or(profile_url);
+                if let Some(profiled_type) = all_profiles.iter().find(|p| p.url == clean_url) {
+                    if let Some(snapshot) = &profiled_type.snapshot {
+                        for el in &snapshot.element {
+                            if el.id == "Identifier.system" {
+                                if let Some(val) = &el.fixed_uri {
+                                    obj.insert("system".to_string(), serde_json::json!(val));
+                                }
+                            }
+                            if el.id == "Identifier.type" {
+                                if let Some(val) = &el.pattern_codeable_concept {
+                                    obj.insert("type".to_string(), val.clone());
+                                } else if let Some(val) = &el.fixed_codeable_concept {
+                                    obj.insert("type".to_string(), val.clone());
                                 }
                             }
                         }
                     }
+                }
+            }
+
+            // Apply discriminator-specific fallbacks
+            match discriminator_path {
+                Some("system") => {
                     // Fallback: use the profile URL as the system value
-                    if !obj.contains_key("system") {
+                    if !obj.contains_key("system")
+                        || obj["system"] == "http://example.org/identifier"
+                    {
                         obj.insert("system".to_string(), serde_json::json!(profile_url));
                     }
                 }
                 Some("type") if !obj.contains_key("type") => {
-                    // Look for a profiled Identifier type's sub-elements
-                    // that have patternCodeableConcept on Identifier.type
-                    let profile_url = slice
-                        .type_
-                        .first()
-                        .and_then(|t| t.target_profile.first())
-                        .map(|s| s.as_str())
-                        .unwrap_or("");
-                    if !profile_url.is_empty() {
-                        let clean_url = profile_url.split('|').next().unwrap_or(profile_url);
-                        if let Some(profiled_type) =
-                            all_profiles.iter().find(|p| p.url == clean_url)
-                        {
-                            if let Some(snapshot) = &profiled_type.snapshot {
-                                for el in &snapshot.element {
-                                    if el.id == "Identifier.type" {
-                                        if let Some(val) = &el.pattern_codeable_concept {
-                                            obj.insert("type".to_string(), val.clone());
-                                            break;
-                                        }
-                                        if let Some(val) = &el.fixed_codeable_concept {
-                                            obj.insert("type".to_string(), val.clone());
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
                     // Fallback: use a generic v2-0203 coding
-                    if !obj.contains_key("type") {
-                        obj.insert(
-                            "type".to_string(),
-                            serde_json::json!({
-                                "coding": [{
-                                    "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
-                                    "code": "XX"
-                                }]
-                            }),
-                        );
-                    }
+                    obj.insert(
+                        "type".to_string(),
+                        serde_json::json!({
+                            "coding": [{
+                                "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                                "code": "XX"
+                            }]
+                        }),
+                    );
                 }
                 _ => {}
             }
@@ -857,6 +860,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "Identifier".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -894,6 +898,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "HumanName".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -931,6 +936,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "code".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -997,6 +1003,7 @@ mod tests {
                 type_: vec![ElementDefinitionType {
                     code: "code".to_string(),
                     target_profile: vec![],
+                    profile: vec![],
                     versioning: None,
                 }],
                 fixed_code: Some("male".to_string()),
@@ -1087,6 +1094,7 @@ mod tests {
                             target_profile: vec![
                                 "http://hl7.org/fhir/StructureDefinition/Patient".to_string()
                             ],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -1184,6 +1192,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "BackboneElement".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -1221,6 +1230,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "Identifier".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -1258,6 +1268,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "CodeableConcept".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -1372,6 +1383,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "Extension".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -1409,6 +1421,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "Identifier".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -1511,6 +1524,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "Identifier".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -1548,6 +1562,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "string".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -1585,6 +1600,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "Address".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -1697,6 +1713,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "BackboneElement".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -1734,6 +1751,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "CodeableConcept".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -1771,6 +1789,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "string".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,

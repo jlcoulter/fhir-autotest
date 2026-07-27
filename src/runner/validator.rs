@@ -208,6 +208,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "HumanName".to_string(),
                             target_profile: vec![],
+                            profile: vec![],
                             versioning: None,
                         }],
                         fixed_string: None,
@@ -289,6 +290,7 @@ mod tests {
                 type_: vec![ElementDefinitionType {
                     code: "code".to_string(),
                     target_profile: vec![],
+                    profile: vec![],
                     versioning: None,
                 }],
                 fixed_code: Some("male".to_string()),
