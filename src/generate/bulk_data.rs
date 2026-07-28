@@ -1,6 +1,7 @@
 use crate::generate::resource_generator::generate_resource_with_value_sets;
 use crate::model::profile::StructureDefinition;
 use anyhow::Result;
+use chrono::{Duration, Utc};
 use fake::Fake;
 use rand::Rng;
 use serde::Serialize;
@@ -146,6 +147,9 @@ pub fn generate_bulk_data(
             if selected_profile.is_none() {
                 resource["meta"]["profile"] = serde_json::json!([profile_url]);
             }
+
+            // Stamp a random created date within the last 12 months
+            stamp_created_date(&mut resource, &mut rng);
 
             serde_json::to_writer(&mut writer, &resource)?;
             writeln!(writer)?;
@@ -1489,6 +1493,15 @@ fn gen_generic(resource_type: &str, id: &str, _rng: &mut impl Rng) -> serde_json
         resource["name"] = serde_json::json!(fake::faker::name::en::Name().fake::<String>());
     }
     resource
+}
+
+/// Stamp a random `meta.lastUpdated` date on a resource, within the last 12 months.
+fn stamp_created_date(resource: &mut serde_json::Value, rng: &mut impl Rng) {
+    let now = Utc::now();
+    let days_ago = rng.random_range(0..365);
+    let created = now - Duration::days(days_ago);
+    let date_str = created.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    resource["meta"]["lastUpdated"] = serde_json::Value::String(date_str);
 }
 
 #[cfg(test)]
