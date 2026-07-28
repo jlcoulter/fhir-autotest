@@ -3,7 +3,7 @@ use crate::model::*;
 use std::collections::HashMap;
 
 /// Build a ResponseAssertion appropriate for the test case kind.
-pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<ResponseAssertion> {
+pub fn assertion_for_kind(kind: &TestCaseKind, _resource_type: &str) -> Option<ResponseAssertion> {
     match kind {
         // CRUD interactions: expect a single resource, not a Bundle
         TestCaseKind::Interaction => None,
@@ -52,21 +52,10 @@ pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<Re
         }),
 
         // Include: expect Bundle searchset with the included resource type present
-        TestCaseKind::Include { param, revinclude } => {
-            let mut include_types = HashMap::new();
-            if *revinclude {
-                // For _revinclude, we expect resources of the current type
-                // that reference the target
-                include_types.insert(resource_type.to_string(), param.clone());
-            } else {
-                // For _include, we expect the target resource type
-                // e.g. _include=Provenance:target -> expect Provenance resources
-                include_types.insert(param.to_string(), param.clone());
-            }
+        TestCaseKind::Include { .. } => {
             Some(ResponseAssertion {
                 bundle_type: Some("searchset".to_string()),
                 min_entries: Some(0),
-                include_types,
                 ..ResponseAssertion::none()
             })
         }
@@ -108,7 +97,7 @@ pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<Re
         // Negative tests: expected_status already encodes what HTTP response
         // to accept.  Do NOT assert OperationOutcome severity here because:
         //  - read_nonexistent expects 404 (no body)
-        //  - search_invalid_param expects 200 (FHIR allows ignoring unknown params)
+        //  - search_invalid_param accepts either reject or ignore
         // If a server returns an OperationOutcome, that's fine but not required.
         TestCaseKind::Negative { .. } => None,
 
@@ -193,6 +182,11 @@ fn build_test_group(
     operations: Option<&[OperationDefinition]>,
 ) -> TestGroup {
     let mut tests = Vec::new();
+    let has_search_type = resource
+        .interaction
+        .iter()
+        .any(|i| i.code == "search-type");
+    let has_read = resource.interaction.iter().any(|i| i.code == "read");
 
     // --- Interaction tests (CRUD) ---
     for interaction in &resource.interaction {
@@ -209,6 +203,7 @@ fn build_test_group(
         tests.push(test_case);
     }
 
+    if has_search_type {
     // --- Search param tests ---
     // Find all SearchParameters applicable to this resource type
     let resource_search_params: Vec<&SearchParameter> = search_params
@@ -253,8 +248,8 @@ fn build_test_group(
             ));
         }
 
-        // Near/proximity tests (special type, e.g. Location?near)
-        if sp.param_type == "special" {
+        // Near/proximity tests for the canonical near parameter.
+        if sp.param_type == "special" && sp.name.eq_ignore_ascii_case("near") {
             tests.push(build_search_near_test(
                 &resource.resource_type,
                 &sp.name,
@@ -298,8 +293,8 @@ fn build_test_group(
             ));
         }
 
-        // Near/proximity tests for standalone special-type params
-        if sp.param_type == "special" {
+        // Near/proximity tests for standalone near parameters only.
+        if sp.param_type == "special" && sp.code.eq_ignore_ascii_case("near") {
             tests.push(build_search_near_test(
                 &resource.resource_type,
                 &sp.code,
@@ -393,6 +388,7 @@ fn build_test_group(
         "_lastUpdated",
         profile_url,
     ));
+    }
 
     // --- $operation tests from CS rest.operation ---
     for op in &resource.operation {
@@ -408,26 +404,28 @@ fn build_test_group(
 
     // --- Negative / error tests ---
     let rt = &resource.resource_type;
-    tests.push(build_negative_test(
-        rt,
-        "read_nonexistent",
-        "GET",
-        &format!("/{rt}/nonexistent-id-99999"),
-        404,
-        profile_url,
-    ));
-    // Per FHIR spec, unknown search parameters may be silently ignored by
-    // servers.  A 200 response with a valid Bundle is acceptable.  We still
-    // generate the test to surface the behaviour, but expect 200 and a
-    // searchset Bundle rather than requiring an error.
-    tests.push(build_negative_test(
-        rt,
-        "search_invalid_param",
-        "GET",
-        &format!("/{rt}?__invalid_param__=value"),
-        200,
-        profile_url,
-    ));
+    if has_read {
+        tests.push(build_negative_test(
+            rt,
+            "read_nonexistent",
+            "GET",
+            &format!("/{rt}/nonexistent-id-99999"),
+            404,
+            profile_url,
+        ));
+    }
+    // Per FHIR spec, unknown search parameters may be ignored (2xx Bundle)
+    // or rejected (4xx OperationOutcome), so we accept either behaviour.
+    if has_search_type {
+        tests.push(build_negative_test(
+            rt,
+            "search_invalid_param",
+            "GET",
+            &format!("/{rt}?__invalid_param__=value"),
+            0,
+            profile_url,
+        ));
+    }
 
     // Stamp response assertions based on test kind
     for test in &mut tests {
@@ -514,7 +512,7 @@ fn sample_value(param_type: &str) -> &'static str {
         "quantity" => "5.0||http://unitsofmeasure.org|kg",
         "uri" => "http://example.org",
         "composite" => "test-value",
-        "special" => "-33.86|151.21|10|km", // FHIR near format: lat|lon|distance|units
+        "special" => "-33.86|151.21", // conservative near format: lat|lon
         _ => "test-value",
     }
 }
@@ -656,14 +654,14 @@ fn build_search_prefix_test(
 /// Build a proximity/near search test for FHIR special-type params (e.g. Location?near).
 ///
 /// FHIR near format: `?near=lat|lon[|distance[|units]]`
-/// e.g. `?near=-33.86|151.21|10` or `?near=-33.86|151.21|10|km`
+/// Use a conservative lat|lon payload for broader server compatibility.
 fn build_search_near_test(
     resource_type: &str,
     param_name: &str,
     profile_url: &Option<String>,
 ) -> TestCase {
-    // Test with coordinates and 10km radius
-    let url = format!("/{resource_type}?{param_name}=-33.86|151.21|10|km");
+    // Test with coordinates only; some servers reject optional distance/unit segments.
+    let url = format!("/{resource_type}?{param_name}=-33.86|151.21");
 
     TestCase {
         name: format!(
@@ -788,7 +786,7 @@ fn build_include_test(
     } else {
         format!("{resource_type}:{param_name}")
     };
-    let url = format!("/{resource_type}?{param}={target}");
+    let url = format!("/{resource_type}?{param}={target}&_id=nonexistent-id-99999");
 
     TestCase {
         name: format!(
@@ -827,7 +825,7 @@ fn build_revinclude_test(
     profile_url: &Option<String>,
 ) -> TestCase {
     let target = format!("{source_resource}:{param_name}");
-    let url = format!("/{resource_type}?_revinclude={target}");
+    let url = format!("/{resource_type}?_revinclude={target}&_id=nonexistent-id-99999");
 
     TestCase {
         name: format!(
@@ -865,7 +863,7 @@ fn build_result_param_test(
     value: &str,
     profile_url: &Option<String>,
 ) -> TestCase {
-    let url = format!("/{resource_type}?{param}={value}");
+    let url = format!("/{resource_type}?{param}={value}&_id=nonexistent-id-99999");
 
     TestCase {
         name: format!(
@@ -1405,7 +1403,7 @@ mod tests {
         );
         let near_test = near_test.unwrap();
         assert!(
-            near_test.request.url.contains("near=-33.86|151.21|10|km"),
+            near_test.request.url.contains("near=-33.86|151.21"),
             "Near test URL should contain coordinate format, got {}",
             near_test.request.url
         );

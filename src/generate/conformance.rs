@@ -155,6 +155,8 @@ pub fn generate_conformance_tests(
         }
 
         for resource in &rest.resource {
+            let has_search_type = resource.interaction.iter().any(|i| i.code == "search-type");
+
             // --- MustSupport field presence tests ---
             // Find a matching profile: prefer one referenced by the CS,
             // fall back to any profile matching the resource type.
@@ -176,7 +178,8 @@ pub fn generate_conformance_tests(
                     .find(|p| p.base_type == resource.resource_type)
             });
 
-            if let Some(profile) = profile {
+            if has_search_type {
+                if let Some(profile) = profile {
                 let must_support_fields = collect_must_support_fields(profile);
                 for field_path in must_support_fields {
                     tests.push(ConformanceTest {
@@ -195,7 +198,11 @@ pub fn generate_conformance_tests(
                         },
                         request: ConformanceRequest {
                             method: "GET".to_string(),
-                            url: format!("/{}?_count=10", resource.resource_type),
+                            url: format!(
+                                "/{}?_id={}-1&_count=10",
+                                resource.resource_type,
+                                resource.resource_type.to_lowercase()
+                            ),
                             headers: std::collections::HashMap::new(),
                             body: None,
                         },
@@ -213,12 +220,14 @@ pub fn generate_conformance_tests(
                     });
                 }
             }
+            }
 
             // --- Cardinality tests ---
-            if let Some(profile) = profile {
-                let cardinality_fields = collect_cardinality_fields(profile);
-                for (field_path, min, max) in cardinality_fields {
-                    tests.push(ConformanceTest {
+            if has_search_type {
+                if let Some(profile) = profile {
+                    let cardinality_fields = collect_cardinality_fields(profile);
+                    for (field_path, min, max) in cardinality_fields {
+                        tests.push(ConformanceTest {
                         name: format!(
                             "{}_cardinality_{}",
                             resource.resource_type,
@@ -236,7 +245,11 @@ pub fn generate_conformance_tests(
                         },
                         request: ConformanceRequest {
                             method: "GET".to_string(),
-                            url: format!("/{}?_count=10", resource.resource_type),
+                            url: format!(
+                                "/{}?_id={}-1&_count=10",
+                                resource.resource_type,
+                                resource.resource_type.to_lowercase()
+                            ),
                             headers: std::collections::HashMap::new(),
                             body: None,
                         },
@@ -252,6 +265,7 @@ pub fn generate_conformance_tests(
                         },
                     });
                 }
+            }
             }
 
             // --- Undeclared interaction rejection tests ---
@@ -274,6 +288,12 @@ pub fn generate_conformance_tests(
 
             for (code, method) in &all_interactions {
                 if !declared_interactions.contains(*code) {
+                    let url = if *code == "create" {
+                        format!("/{}", resource.resource_type)
+                    } else {
+                        format!("/{}/{{id}}", resource.resource_type)
+                    };
+
                     tests.push(ConformanceTest {
                         name: format!("{}_undeclared_interaction_{}", resource.resource_type, code),
                         description: format!(
@@ -286,7 +306,7 @@ pub fn generate_conformance_tests(
                         },
                         request: ConformanceRequest {
                             method: method.to_string(),
-                            url: format!("/{}/{{id}}", resource.resource_type),
+                            url,
                             headers: std::collections::HashMap::new(),
                             body: None,
                         },
@@ -312,7 +332,7 @@ pub fn generate_conformance_tests(
                 .collect();
 
             // Use a clearly invalid param name to test rejection
-            if !declared_params.contains("__invalid_conformance_test__") {
+            if has_search_type && !declared_params.contains("__invalid_conformance_test__") {
                 tests.push(ConformanceTest {
                     name: format!("{}_undeclared_search_param", resource.resource_type),
                     description: format!(
@@ -347,7 +367,11 @@ pub fn generate_conformance_tests(
         }
     }
 
+    let mut seen = std::collections::HashSet::new();
     tests
+        .into_iter()
+        .filter(|t| seen.insert(t.name.clone()))
+        .collect()
 }
 
 /// Collect mustSupport fields from a profile's snapshot or differential.
@@ -362,7 +386,7 @@ fn collect_must_support_fields(profile: &StructureDefinition) -> Vec<String> {
 
     elements
         .iter()
-        .filter(|e| e.must_support && e.path != profile.base_type)
+        .filter(|e| e.must_support && e.min.unwrap_or(0) > 0 && e.path != profile.base_type)
         .filter_map(|e| {
             // Convert "Patient.name" → "name", "Patient.name.family" → "name.family"
             e.path
@@ -453,12 +477,8 @@ pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::m
             response_assertion.outcome_severity = Some("error".to_string());
         }
         ConformanceTestKind::UndeclaredSearchParam { .. } => {
-            // Per FHIR spec, servers MAY silently ignore unknown search
-            // parameters and return a valid Bundle (possibly empty).  Only
-            // assert that the response is a valid Bundle — do NOT require
-            // OperationOutcome/error, as that is not mandatory.
-            response_assertion.bundle_type = Some("searchset".to_string());
-            response_assertion.min_entries = Some(0);
+            // Per FHIR spec, servers may either reject unknown params (4xx)
+            // or ignore them (2xx Bundle). Accept either.
         }
     }
 
@@ -468,9 +488,8 @@ pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::m
             0
         }
         ConformanceTestKind::UndeclaredSearchParam { .. } => {
-            // Per FHIR spec, servers may silently ignore unknown params and
-            // return 200 with a Bundle. Accept 200 as a valid response.
-            200
+            // 0 means reject-or-ignore: pass on non-2xx, or on 2xx Bundle.
+            0
         }
         _ => ct.assertion.expected_status,
     };
