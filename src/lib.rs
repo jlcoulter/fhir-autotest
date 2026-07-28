@@ -89,11 +89,8 @@ pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
         }
 
         for profile in profiles_for_type {
-            let generated = generate_resource_with_value_sets(
-                profile,
-                &profiles,
-                &value_set_systems,
-            )?;
+            let generated =
+                generate_resource_with_value_sets(profile, &profiles, &value_set_systems)?;
             // Use the profile name as the unique key (e.g. "TestPatient", "HcpdPractitioner")
             let profile_name = profile.name.clone();
             profile_resources.push((profile_name.clone(), resource_type.clone(), generated));

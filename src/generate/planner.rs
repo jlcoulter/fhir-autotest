@@ -52,13 +52,11 @@ pub fn assertion_for_kind(kind: &TestCaseKind, _resource_type: &str) -> Option<R
         }),
 
         // Include: expect Bundle searchset with the included resource type present
-        TestCaseKind::Include { .. } => {
-            Some(ResponseAssertion {
-                bundle_type: Some("searchset".to_string()),
-                min_entries: Some(0),
-                ..ResponseAssertion::none()
-            })
-        }
+        TestCaseKind::Include { .. } => Some(ResponseAssertion {
+            bundle_type: Some("searchset".to_string()),
+            min_entries: Some(0),
+            ..ResponseAssertion::none()
+        }),
 
         // _summary: expect Bundle searchset, resources should lack text field
         TestCaseKind::ResultParam { param } => match param.as_str() {
@@ -182,10 +180,7 @@ fn build_test_group(
     operations: Option<&[OperationDefinition]>,
 ) -> TestGroup {
     let mut tests = Vec::new();
-    let has_search_type = resource
-        .interaction
-        .iter()
-        .any(|i| i.code == "search-type");
+    let has_search_type = resource.interaction.iter().any(|i| i.code == "search-type");
     let has_read = resource.interaction.iter().any(|i| i.code == "read");
 
     // --- Interaction tests (CRUD) ---
@@ -204,190 +199,190 @@ fn build_test_group(
     }
 
     if has_search_type {
-    // --- Search param tests ---
-    // Find all SearchParameters applicable to this resource type
-    let resource_search_params: Vec<&SearchParameter> = search_params
-        .iter()
-        .filter(|sp| sp.base.contains(&resource.resource_type))
-        .collect();
+        // --- Search param tests ---
+        // Find all SearchParameters applicable to this resource type
+        let resource_search_params: Vec<&SearchParameter> = search_params
+            .iter()
+            .filter(|sp| sp.base.contains(&resource.resource_type))
+            .collect();
 
-    // Also include inline search params from the CapabilityStatement
-    let inline_params: Vec<RestSearchParam> = resource.search_param.clone();
+        // Also include inline search params from the CapabilityStatement
+        let inline_params: Vec<RestSearchParam> = resource.search_param.clone();
 
-    // --- Single param tests (from inline CS params) ---
-    for sp in &inline_params {
-        // Basic single-param test
-        tests.push(build_search_single_test(
-            &resource.resource_type,
-            &sp.name,
-            &sp.param_type,
-            profile_url,
-        ));
-
-        // Modifier tests
-        let modifiers = SearchModifier::applicable_to(&sp.param_type);
-        for modifier in modifiers {
-            tests.push(build_search_modifier_test(
+        // --- Single param tests (from inline CS params) ---
+        for sp in &inline_params {
+            // Basic single-param test
+            tests.push(build_search_single_test(
                 &resource.resource_type,
                 &sp.name,
                 &sp.param_type,
-                &modifier,
                 profile_url,
             ));
-        }
 
-        // Prefix tests (number, date, quantity)
-        let prefixes = SearchPrefix::applicable_to(&sp.param_type);
-        for prefix in prefixes {
-            tests.push(build_search_prefix_test(
-                &resource.resource_type,
-                &sp.name,
-                &sp.param_type,
-                &prefix,
-                profile_url,
-            ));
-        }
-
-        // Near/proximity tests for the canonical near parameter.
-        if sp.param_type == "special" && sp.name.eq_ignore_ascii_case("near") {
-            tests.push(build_search_near_test(
-                &resource.resource_type,
-                &sp.name,
-                profile_url,
-            ));
-        }
-    }
-
-    // Also generate tests from standalone SearchParameter resources
-    for sp in &resource_search_params {
-        // Avoid duplicates with inline params
-        if inline_params.iter().any(|ip| ip.name == sp.code) {
-            continue;
-        }
-        tests.push(build_search_single_from_sp(
-            &resource.resource_type,
-            sp,
-            profile_url,
-        ));
-
-        // Modifier + prefix tests for standalone params too
-        let modifiers = SearchModifier::applicable_to(&sp.param_type);
-        for modifier in modifiers {
-            tests.push(build_search_modifier_test(
-                &resource.resource_type,
-                &sp.code,
-                &sp.param_type,
-                &modifier,
-                profile_url,
-            ));
-        }
-
-        let prefixes = SearchPrefix::applicable_to(&sp.param_type);
-        for prefix in prefixes {
-            tests.push(build_search_prefix_test(
-                &resource.resource_type,
-                &sp.code,
-                &sp.param_type,
-                &prefix,
-                profile_url,
-            ));
-        }
-
-        // Near/proximity tests for standalone near parameters only.
-        if sp.param_type == "special" && sp.code.eq_ignore_ascii_case("near") {
-            tests.push(build_search_near_test(
-                &resource.resource_type,
-                &sp.code,
-                profile_url,
-            ));
-        }
-    }
-
-    // --- Combinatorial search tests (2-combinations) ---
-    if inline_params.len() >= 2 {
-        for i in 0..inline_params.len() {
-            for j in (i + 1)..inline_params.len() {
-                tests.push(build_search_combo_test(
+            // Modifier tests
+            let modifiers = SearchModifier::applicable_to(&sp.param_type);
+            for modifier in modifiers {
+                tests.push(build_search_modifier_test(
                     &resource.resource_type,
-                    &[
-                        (&inline_params[i].name, &inline_params[i].param_type),
-                        (&inline_params[j].name, &inline_params[j].param_type),
-                    ],
+                    &sp.name,
+                    &sp.param_type,
+                    &modifier,
+                    profile_url,
+                ));
+            }
+
+            // Prefix tests (number, date, quantity)
+            let prefixes = SearchPrefix::applicable_to(&sp.param_type);
+            for prefix in prefixes {
+                tests.push(build_search_prefix_test(
+                    &resource.resource_type,
+                    &sp.name,
+                    &sp.param_type,
+                    &prefix,
+                    profile_url,
+                ));
+            }
+
+            // Near/proximity tests for the canonical near parameter.
+            if sp.param_type == "special" && sp.name.eq_ignore_ascii_case("near") {
+                tests.push(build_search_near_test(
+                    &resource.resource_type,
+                    &sp.name,
                     profile_url,
                 ));
             }
         }
-    }
 
-    // --- Chained search tests (reference params → target param) ---
-    for sp in &inline_params {
-        if sp.param_type == "reference" {
-            // Try to find target resource search params to chain into
-            if let Some(target_type) = infer_reference_target(&sp.name) {
-                // Find search params for the target resource
-                let target_params: Vec<&SearchParameter> = search_params
-                    .iter()
-                    .filter(|tsp| tsp.base.contains(&target_type) && tsp.param_type == "string")
-                    .take(2) // limit to 2 to avoid explosion
-                    .collect();
+        // Also generate tests from standalone SearchParameter resources
+        for sp in &resource_search_params {
+            // Avoid duplicates with inline params
+            if inline_params.iter().any(|ip| ip.name == sp.code) {
+                continue;
+            }
+            tests.push(build_search_single_from_sp(
+                &resource.resource_type,
+                sp,
+                profile_url,
+            ));
 
-                for target_sp in target_params {
-                    tests.push(build_chained_search_test(
+            // Modifier + prefix tests for standalone params too
+            let modifiers = SearchModifier::applicable_to(&sp.param_type);
+            for modifier in modifiers {
+                tests.push(build_search_modifier_test(
+                    &resource.resource_type,
+                    &sp.code,
+                    &sp.param_type,
+                    &modifier,
+                    profile_url,
+                ));
+            }
+
+            let prefixes = SearchPrefix::applicable_to(&sp.param_type);
+            for prefix in prefixes {
+                tests.push(build_search_prefix_test(
+                    &resource.resource_type,
+                    &sp.code,
+                    &sp.param_type,
+                    &prefix,
+                    profile_url,
+                ));
+            }
+
+            // Near/proximity tests for standalone near parameters only.
+            if sp.param_type == "special" && sp.code.eq_ignore_ascii_case("near") {
+                tests.push(build_search_near_test(
+                    &resource.resource_type,
+                    &sp.code,
+                    profile_url,
+                ));
+            }
+        }
+
+        // --- Combinatorial search tests (2-combinations) ---
+        if inline_params.len() >= 2 {
+            for i in 0..inline_params.len() {
+                for j in (i + 1)..inline_params.len() {
+                    tests.push(build_search_combo_test(
                         &resource.resource_type,
-                        &sp.name,
-                        &target_sp.code,
+                        &[
+                            (&inline_params[i].name, &inline_params[i].param_type),
+                            (&inline_params[j].name, &inline_params[j].param_type),
+                        ],
                         profile_url,
                     ));
                 }
             }
         }
-    }
 
-    // --- _include / _revinclude tests from CS declarations ---
-    for include_spec in &resource.search_include {
-        // Format: "ResourceName:paramName" e.g. "Organization:partOf"
-        // FHIR search parameter codes are lowercase, so normalise the
-        // param portion (e.g. "partOf" → "partof") to match the server.
-        if let Some((_res, param)) = include_spec.split_once(':') {
-            tests.push(build_include_test(
-                &resource.resource_type,
-                &param.to_lowercase(),
-                false,
-                profile_url,
-            ));
-        }
-    }
-    for revinclude_spec in &resource.search_revinclude {
-        // Format: "ResourceName:paramName" e.g. "Location:organization"
-        if let Some((res, param)) = revinclude_spec.split_once(':') {
-            tests.push(build_revinclude_test(
-                &resource.resource_type,
-                res,
-                &param.to_lowercase(),
-                profile_url,
-            ));
-        }
-    }
+        // --- Chained search tests (reference params → target param) ---
+        for sp in &inline_params {
+            if sp.param_type == "reference" {
+                // Try to find target resource search params to chain into
+                if let Some(target_type) = infer_reference_target(&sp.name) {
+                    // Find search params for the target resource
+                    let target_params: Vec<&SearchParameter> = search_params
+                        .iter()
+                        .filter(|tsp| tsp.base.contains(&target_type) && tsp.param_type == "string")
+                        .take(2) // limit to 2 to avoid explosion
+                        .collect();
 
-    // --- Result parameter tests ---
-    tests.push(build_result_param_test(
-        &resource.resource_type,
-        "_summary",
-        "true",
-        profile_url,
-    ));
-    tests.push(build_result_param_test(
-        &resource.resource_type,
-        "_count",
-        "1",
-        profile_url,
-    ));
-    tests.push(build_result_param_test(
-        &resource.resource_type,
-        "_sort",
-        "_lastUpdated",
-        profile_url,
-    ));
+                    for target_sp in target_params {
+                        tests.push(build_chained_search_test(
+                            &resource.resource_type,
+                            &sp.name,
+                            &target_sp.code,
+                            profile_url,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // --- _include / _revinclude tests from CS declarations ---
+        for include_spec in &resource.search_include {
+            // Format: "ResourceName:paramName" e.g. "Organization:partOf"
+            // FHIR search parameter codes are lowercase, so normalise the
+            // param portion (e.g. "partOf" → "partof") to match the server.
+            if let Some((_res, param)) = include_spec.split_once(':') {
+                tests.push(build_include_test(
+                    &resource.resource_type,
+                    &param.to_lowercase(),
+                    false,
+                    profile_url,
+                ));
+            }
+        }
+        for revinclude_spec in &resource.search_revinclude {
+            // Format: "ResourceName:paramName" e.g. "Location:organization"
+            if let Some((res, param)) = revinclude_spec.split_once(':') {
+                tests.push(build_revinclude_test(
+                    &resource.resource_type,
+                    res,
+                    &param.to_lowercase(),
+                    profile_url,
+                ));
+            }
+        }
+
+        // --- Result parameter tests ---
+        tests.push(build_result_param_test(
+            &resource.resource_type,
+            "_summary",
+            "true",
+            profile_url,
+        ));
+        tests.push(build_result_param_test(
+            &resource.resource_type,
+            "_count",
+            "1",
+            profile_url,
+        ));
+        tests.push(build_result_param_test(
+            &resource.resource_type,
+            "_sort",
+            "_lastUpdated",
+            profile_url,
+        ));
     }
 
     // --- $operation tests from CS rest.operation ---
