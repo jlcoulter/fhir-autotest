@@ -180,46 +180,46 @@ pub fn generate_conformance_tests(
 
             if has_search_type {
                 if let Some(profile) = profile {
-                let must_support_fields = collect_must_support_fields(profile);
-                for field_path in must_support_fields {
-                    tests.push(ConformanceTest {
-                        name: format!(
-                            "{}_must_support_{}",
-                            resource.resource_type,
-                            field_path.replace('.', "_")
-                        ),
-                        description: format!(
-                            "Verify that mustSupport field '{}' is present in {} responses",
-                            field_path, resource.resource_type
-                        ),
-                        resource_type: resource.resource_type.clone(),
-                        kind: ConformanceTestKind::MustSupportPresence {
-                            field_path: field_path.clone(),
-                        },
-                        request: ConformanceRequest {
-                            method: "GET".to_string(),
-                            url: format!(
-                                "/{}?_id={}-1&_count=10",
+                    let must_support_fields = collect_must_support_fields(profile);
+                    for field_path in must_support_fields {
+                        tests.push(ConformanceTest {
+                            name: format!(
+                                "{}_must_support_{}",
                                 resource.resource_type,
-                                resource.resource_type.to_lowercase()
+                                field_path.replace('.', "_")
                             ),
-                            headers: std::collections::HashMap::new(),
-                            body: None,
-                        },
-                        assertion: ConformanceAssertion {
-                            expected_status: 200,
-                            must_contain_fields: vec![field_path],
-                            must_not_contain_fields: vec![],
-                            // min_entries=0: an empty search result Bundle (total=0)
-                            // is valid per FHIR spec; field presence is only checked
-                            // when entries actually exist.
-                            min_entries: Some(0),
-                            bundle_type: Some("searchset".to_string()),
-                            expect_operation_outcome: false,
-                        },
-                    });
+                            description: format!(
+                                "Verify that mustSupport field '{}' is present in {} responses",
+                                field_path, resource.resource_type
+                            ),
+                            resource_type: resource.resource_type.clone(),
+                            kind: ConformanceTestKind::MustSupportPresence {
+                                field_path: field_path.clone(),
+                            },
+                            request: ConformanceRequest {
+                                method: "GET".to_string(),
+                                url: format!(
+                                    "/{}?_id={}-1&_count=10",
+                                    resource.resource_type,
+                                    resource.resource_type.to_lowercase()
+                                ),
+                                headers: std::collections::HashMap::new(),
+                                body: None,
+                            },
+                            assertion: ConformanceAssertion {
+                                expected_status: 200,
+                                must_contain_fields: vec![field_path],
+                                must_not_contain_fields: vec![],
+                                // min_entries=0: an empty search result Bundle (total=0)
+                                // is valid per FHIR spec; field presence is only checked
+                                // when entries actually exist.
+                                min_entries: Some(0),
+                                bundle_type: Some("searchset".to_string()),
+                                expect_operation_outcome: false,
+                            },
+                        });
+                    }
                 }
-            }
             }
 
             // --- Cardinality tests ---
@@ -228,44 +228,44 @@ pub fn generate_conformance_tests(
                     let cardinality_fields = collect_cardinality_fields(profile);
                     for (field_path, min, max) in cardinality_fields {
                         tests.push(ConformanceTest {
-                        name: format!(
-                            "{}_cardinality_{}",
-                            resource.resource_type,
-                            field_path.replace('.', "_")
-                        ),
-                        description: format!(
-                            "Verify cardinality [{min}..{max}] on field '{}' in {} responses",
-                            field_path, resource.resource_type
-                        ),
-                        resource_type: resource.resource_type.clone(),
-                        kind: ConformanceTestKind::Cardinality {
-                            field_path: field_path.clone(),
-                            min,
-                            max: max.clone(),
-                        },
-                        request: ConformanceRequest {
-                            method: "GET".to_string(),
-                            url: format!(
-                                "/{}?_id={}-1&_count=10",
+                            name: format!(
+                                "{}_cardinality_{}",
                                 resource.resource_type,
-                                resource.resource_type.to_lowercase()
+                                field_path.replace('.', "_")
                             ),
-                            headers: std::collections::HashMap::new(),
-                            body: None,
-                        },
-                        assertion: ConformanceAssertion {
-                            expected_status: 200,
-                            must_contain_fields: vec![],
-                            must_not_contain_fields: vec![],
-                            // min_entries=0: empty search results are valid; cardinality
-                            // is only meaningful when entries exist.
-                            min_entries: Some(0),
-                            bundle_type: Some("searchset".to_string()),
-                            expect_operation_outcome: false,
-                        },
-                    });
+                            description: format!(
+                                "Verify cardinality [{min}..{max}] on field '{}' in {} responses",
+                                field_path, resource.resource_type
+                            ),
+                            resource_type: resource.resource_type.clone(),
+                            kind: ConformanceTestKind::Cardinality {
+                                field_path: field_path.clone(),
+                                min,
+                                max: max.clone(),
+                            },
+                            request: ConformanceRequest {
+                                method: "GET".to_string(),
+                                url: format!(
+                                    "/{}?_id={}-1&_count=10",
+                                    resource.resource_type,
+                                    resource.resource_type.to_lowercase()
+                                ),
+                                headers: std::collections::HashMap::new(),
+                                body: None,
+                            },
+                            assertion: ConformanceAssertion {
+                                expected_status: 200,
+                                must_contain_fields: vec![],
+                                must_not_contain_fields: vec![],
+                                // min_entries=0: empty search results are valid; cardinality
+                                // is only meaningful when entries exist.
+                                min_entries: Some(0),
+                                bundle_type: Some("searchset".to_string()),
+                                expect_operation_outcome: false,
+                            },
+                        });
+                    }
                 }
-            }
             }
 
             // --- Undeclared interaction rejection tests ---

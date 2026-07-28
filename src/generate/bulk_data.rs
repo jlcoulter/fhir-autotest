@@ -14,7 +14,9 @@ pub type IdStore = HashMap<String, Vec<String>>;
 
 /// Generate bulk FHIR resources as NDJSON files.
 ///
-/// Writes one `.ndjson` file per resource type under `output_dir/data/`.
+/// Writes one `.ndjson` file per resource type under `output_dir/data/`,
+/// plus a `combined.ndjson` containing all resources in dependency order
+/// (suitable for bulk import where linked items must resolve).
 /// Returns an `IdStore` mapping each resource type to its generated IDs,
 /// which is used to resolve cross-references during generation.
 pub fn generate_bulk_data(
@@ -67,6 +69,11 @@ pub fn generate_bulk_data(
     // the referenced practitioner's registration identifier.
     let mut practitioner_registration_by_id: HashMap<String, String> = HashMap::new();
 
+    // Open combined.ndjson to collect all resources in import order.
+    let combined_path = data_dir.join("combined.ndjson");
+    let combined_file = std::fs::File::create(&combined_path)?;
+    let mut combined_writer = BufWriter::new(combined_file);
+
     // Second pass: generate and write resources with buffered I/O.
     for resource_type in &order {
         let count = counts.get(resource_type).copied().unwrap_or(0);
@@ -94,11 +101,8 @@ pub fn generate_bulk_data(
             let mut resource = if let Some(profile) = selected_profile {
                 // Use profile-aware generation: generates a conformant base from
                 // the StructureDefinition, then overlay cross-references.
-                let mut r = generate_resource_with_value_sets(
-                    profile,
-                    profiles,
-                    value_set_systems,
-                )?;
+                let mut r =
+                    generate_resource_with_value_sets(profile, profiles, value_set_systems)?;
                 r["id"] = serde_json::Value::String(id.clone());
                 // Overlay cross-references for types that need them.
                 overlay_cross_references(
@@ -145,6 +149,9 @@ pub fn generate_bulk_data(
 
             serde_json::to_writer(&mut writer, &resource)?;
             writeln!(writer)?;
+            // Also write to combined.ndjson in import order.
+            serde_json::to_writer(&mut combined_writer, &resource)?;
+            writeln!(combined_writer)?;
             written += 1;
             if written.is_multiple_of(10_000) {
                 // Flush progress to disk so external observers see the file growing.
@@ -165,6 +172,9 @@ pub fn generate_bulk_data(
             path.display()
         );
     }
+
+    combined_writer.flush()?;
+    tracing::info!("Wrote all resources to {}", combined_path.display());
 
     Ok(ids)
 }
@@ -460,6 +470,7 @@ pub fn bulk_data_creation_order(counts: &HashMap<String, u64>) -> Vec<String> {
 /// resources in the bulk data set. This function fills in cross-references
 /// (practitioner, organization, location, healthcareService) that the
 /// profile may require but which depend on other generated resources.
+#[allow(clippy::too_many_arguments)]
 fn overlay_cross_references(
     resource: &mut serde_json::Value,
     resource_type: &str,
@@ -1383,8 +1394,7 @@ mod tests {
         counts.insert("Patient".to_string(), 5);
 
         let ids =
-            generate_bulk_data(&counts, &HashMap::new(), &[], &HashMap::new(), dir.path())
-                .unwrap();
+            generate_bulk_data(&counts, &HashMap::new(), &[], &HashMap::new(), dir.path()).unwrap();
         assert_eq!(ids.get("Patient").unwrap().len(), 5);
 
         let path = dir.path().join("data/Patient.ndjson");

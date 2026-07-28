@@ -8,11 +8,7 @@ pub fn build_value_set_system_map(
     let mut map = HashMap::new();
 
     for resource in raw_resources.values() {
-        if resource
-            .get("resourceType")
-            .and_then(|v| v.as_str())
-            != Some("ValueSet")
-        {
+        if resource.get("resourceType").and_then(|v| v.as_str()) != Some("ValueSet") {
             continue;
         }
 
@@ -139,7 +135,8 @@ fn populate_required_fields(
 
         let target_profiles = &type_def.target_profile;
 
-        let mut value = generate_typed_value(type_code, target_profiles, element, value_set_systems);
+        let mut value =
+            generate_typed_value(type_code, target_profiles, element, value_set_systems);
 
         if type_code == "Identifier" {
             apply_identifier_profile_constraints(&mut value, type_def, all_profiles);
@@ -241,7 +238,8 @@ fn populate_backbone_fields(
             continue;
         }
 
-        let mut value = generate_typed_value(type_code, target_profiles, element, value_set_systems);
+        let mut value =
+            generate_typed_value(type_code, target_profiles, element, value_set_systems);
 
         if type_code == "Identifier" {
             apply_identifier_profile_constraints(&mut value, type_def, all_profiles);
@@ -1094,6 +1092,173 @@ fn generate_slice_value(
 
     Some(value)
 }
+
+fn find_identifier_system(
+    profile_url: &str,
+    all_profiles: &[StructureDefinition],
+) -> Option<String> {
+    let clean_url = profile_url.split('|').next().unwrap_or(profile_url);
+
+    let profile = all_profiles.iter().find(|p| p.url == clean_url)?;
+
+    let elements = match (&profile.snapshot, &profile.differential) {
+        (Some(snapshot), _) => &snapshot.element,
+        (None, Some(diff)) => &diff.element,
+        _ => return None,
+    };
+
+    for el in elements {
+        if el.id.ends_with(".system") || el.path.ends_with(".system") {
+            if let Some(v) = &el.fixed_uri {
+                return Some(v.clone());
+            }
+
+            if let Some(v) = &el.pattern_uri {
+                return Some(v.clone());
+            }
+        }
+    }
+
+    None
+}
+
+fn find_slice_system(slice_name: &str, elements: &[ElementDefinition]) -> Option<String> {
+    for el in elements {
+        let matches_slice = el.path.contains(&format!(":{}.\"", slice_name))
+            || el.id.contains(&format!(":{}.\"", slice_name));
+
+        if !matches_slice {
+            continue;
+        }
+
+        if el.id.ends_with(".system") || el.path.ends_with(".system") {
+            if let Some(v) = &el.fixed_uri {
+                return Some(v.clone());
+            }
+
+            if let Some(v) = &el.pattern_uri {
+                return Some(v.clone());
+            }
+        }
+    }
+
+    None
+}
+
+fn apply_identifier_profile_constraints(
+    value: &mut serde_json::Value,
+    type_def: &ElementDefinitionType,
+    all_profiles: &[StructureDefinition],
+) {
+    if let Some(obj) = value.as_object_mut() {
+        for profile_url in type_def
+            .profile
+            .iter()
+            .chain(type_def.target_profile.iter())
+        {
+            if obj.get("system").is_none()
+                || obj
+                    .get("system")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(is_generic_identifier_system)
+            {
+                if let Some(system) = find_identifier_system(profile_url, all_profiles) {
+                    obj.insert("system".to_string(), serde_json::json!(system));
+                }
+            }
+
+            if !obj.contains_key("type") {
+                if let Some(identifier_type) = find_identifier_type(profile_url, all_profiles) {
+                    obj.insert("type".to_string(), identifier_type);
+                }
+            }
+
+            if obj.contains_key("system") && obj.contains_key("type") {
+                break;
+            }
+        }
+    }
+}
+
+fn resolve_slice_type_code(
+    slice: &ElementDefinition,
+    elements: &[ElementDefinition],
+) -> Option<String> {
+    if let Some(type_def) = slice.type_.first() {
+        return Some(type_def.code.clone());
+    }
+
+    elements
+        .iter()
+        .find(|el| {
+            el.path == slice.path
+                && el.slice_name.is_none()
+                && !el.type_.is_empty()
+                && !el.id.contains(':')
+        })
+        .and_then(|el| el.type_.first())
+        .map(|t| t.code.clone())
+}
+
+fn is_generic_identifier_system(system: &str) -> bool {
+    matches!(
+        system,
+        "http://example.org/identifier" | "urn:ietf:rfc:3986"
+    )
+}
+
+fn find_identifier_type(
+    profile_url: &str,
+    all_profiles: &[StructureDefinition],
+) -> Option<serde_json::Value> {
+    let clean_url = profile_url.split('|').next().unwrap_or(profile_url);
+
+    let profile = all_profiles.iter().find(|p| p.url == clean_url)?;
+
+    let elements = match (&profile.snapshot, &profile.differential) {
+        (Some(snapshot), _) => &snapshot.element,
+        (None, Some(diff)) => &diff.element,
+        _ => return None,
+    };
+
+    for el in elements {
+        if el.id.ends_with(".type") || el.path.ends_with(".type") {
+            if let Some(v) = &el.pattern_codeable_concept {
+                return Some(v.clone());
+            }
+
+            if let Some(v) = &el.fixed_codeable_concept {
+                return Some(v.clone());
+            }
+        }
+    }
+
+    None
+}
+
+fn find_human_name_use(slice_name: &str, elements: &[ElementDefinition]) -> Option<String> {
+    for el in elements {
+        let matches_slice = el.path.contains(&format!(":{}.\"", slice_name))
+            || el.id.contains(&format!(":{}.\"", slice_name));
+
+        if !matches_slice {
+            continue;
+        }
+
+        if el.path.ends_with(".use") || el.id.ends_with(".use") {
+            if let Some(v) = &el.fixed_code {
+                return Some(v.clone());
+            }
+
+            if let Some(v) = &el.pattern_code {
+                return Some(v.clone());
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2172,7 +2337,8 @@ mod tests {
             "http://example.org/fhir/CodeSystem/service-type".to_string(),
         );
 
-        let resource = generate_resource_with_value_sets(&profile, &[], &value_set_systems).unwrap();
+        let resource =
+            generate_resource_with_value_sets(&profile, &[], &value_set_systems).unwrap();
 
         let coding = resource["type"][0]["coding"][0].clone();
         assert_eq!(
@@ -2220,165 +2386,4 @@ mod tests {
         );
         assert_eq!(coding["code"].as_str().unwrap(), "a-specialty");
     }
-}
-
-fn find_identifier_system(
-    profile_url: &str,
-    all_profiles: &[StructureDefinition],
-) -> Option<String> {
-    let clean_url = profile_url.split('|').next().unwrap_or(profile_url);
-
-    let profile = all_profiles.iter().find(|p| p.url == clean_url)?;
-
-    let elements = match (&profile.snapshot, &profile.differential) {
-        (Some(snapshot), _) => &snapshot.element,
-        (None, Some(diff)) => &diff.element,
-        _ => return None,
-    };
-
-    for el in elements {
-        if el.id.ends_with(".system") || el.path.ends_with(".system") {
-            if let Some(v) = &el.fixed_uri {
-                return Some(v.clone());
-            }
-
-            if let Some(v) = &el.pattern_uri {
-                return Some(v.clone());
-            }
-        }
-    }
-
-    None
-}
-fn find_slice_system(slice_name: &str, elements: &[ElementDefinition]) -> Option<String> {
-    for el in elements {
-        let matches_slice = el.path.contains(&format!(":{}.", slice_name))
-            || el.id.contains(&format!(":{}.", slice_name));
-
-        if !matches_slice {
-            continue;
-        }
-
-        if el.id.ends_with(".system") || el.path.ends_with(".system") {
-            if let Some(v) = &el.fixed_uri {
-                return Some(v.clone());
-            }
-
-            if let Some(v) = &el.pattern_uri {
-                return Some(v.clone());
-            }
-        }
-    }
-
-    None
-}
-
-fn apply_identifier_profile_constraints(
-    value: &mut serde_json::Value,
-    type_def: &ElementDefinitionType,
-    all_profiles: &[StructureDefinition],
-) {
-    if let Some(obj) = value.as_object_mut() {
-        for profile_url in type_def.profile.iter().chain(type_def.target_profile.iter()) {
-            if obj.get("system").is_none()
-                || obj
-                    .get("system")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(is_generic_identifier_system)
-            {
-                if let Some(system) = find_identifier_system(profile_url, all_profiles) {
-                    obj.insert("system".to_string(), serde_json::json!(system));
-                }
-            }
-
-            if !obj.contains_key("type") {
-                if let Some(identifier_type) = find_identifier_type(profile_url, all_profiles) {
-                    obj.insert("type".to_string(), identifier_type);
-                }
-            }
-
-            if obj.contains_key("system") && obj.contains_key("type") {
-                break;
-            }
-        }
-    }
-}
-
-fn resolve_slice_type_code(
-    slice: &ElementDefinition,
-    elements: &[ElementDefinition],
-) -> Option<String> {
-    if let Some(type_def) = slice.type_.first() {
-        return Some(type_def.code.clone());
-    }
-
-    elements
-        .iter()
-        .find(|el| {
-            el.path == slice.path
-                && el.slice_name.is_none()
-                && !el.type_.is_empty()
-                && !el.id.contains(':')
-        })
-        .and_then(|el| el.type_.first())
-        .map(|t| t.code.clone())
-}
-
-fn is_generic_identifier_system(system: &str) -> bool {
-    matches!(
-        system,
-        "http://example.org/identifier" | "urn:ietf:rfc:3986"
-    )
-}
-
-fn find_identifier_type(
-    profile_url: &str,
-    all_profiles: &[StructureDefinition],
-) -> Option<serde_json::Value> {
-    let clean_url = profile_url.split('|').next().unwrap_or(profile_url);
-
-    let profile = all_profiles.iter().find(|p| p.url == clean_url)?;
-
-    let elements = match (&profile.snapshot, &profile.differential) {
-        (Some(snapshot), _) => &snapshot.element,
-        (None, Some(diff)) => &diff.element,
-        _ => return None,
-    };
-
-    for el in elements {
-        if el.id.ends_with(".type") || el.path.ends_with(".type") {
-            if let Some(v) = &el.pattern_codeable_concept {
-                return Some(v.clone());
-            }
-
-            if let Some(v) = &el.fixed_codeable_concept {
-                return Some(v.clone());
-            }
-        }
-    }
-
-    None
-}
-
-fn find_human_name_use(slice_name: &str, elements: &[ElementDefinition]) -> Option<String> {
-    for el in elements {
-        let matches_slice = el.path.contains(&format!(":{}.", slice_name))
-            || el.id.contains(&format!(":{}.", slice_name));
-
-        if !matches_slice {
-            continue;
-        }
-
-        if el.path.ends_with(".use") || el.id.ends_with(".use") {
-            if let Some(v) = &el.fixed_code {
-                return Some(v.clone());
-            }
-
-            if let Some(v) = &el.pattern_code {
-                return Some(v.clone());
-            }
-        }
-    }
-
-    None
 }
