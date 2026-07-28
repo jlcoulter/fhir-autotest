@@ -43,7 +43,7 @@ output = "./output"
 # Used for test queries (GET/search). In development, also used for writes
 # when no repository is configured.
 [server]
-base_url = "http://localhost:8091/fhir"
+base_url = "http://localhost:8888/api/v1/fhir"
 
 # Optional HTTP headers sent with every request (e.g. auth tokens).
 # Uncomment and set as needed.
@@ -58,14 +58,14 @@ base_url = "http://localhost:8091/fhir"
 # This is useful when the public API only allows search/read.
 # Uncomment and configure as needed.
 #
-# [repository]
-# base_url = "http://repo.internal:8080/fhir"
-# username = "admin"
-# password = "admin123"
-# upload_method = "PUT"
+[repository]
+base_url = "http://localhost:8080/fhir"
+username = "admin"
+password = "admin123"
+upload_method = "PUT"
 # Concurrency for upload/delete operations. 1 = sequential, safe for most
 # repositories. Increase if the repository can handle parallel requests.
-# concurrency = 1
+concurrency = 1
 
 # ── Overrides ────────────────────────────────────────────────────────────────
 

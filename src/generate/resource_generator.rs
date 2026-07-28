@@ -1,5 +1,32 @@
 use crate::model::*;
 use anyhow::Result;
+use std::collections::HashMap;
+
+pub fn build_value_set_system_map(
+    raw_resources: &HashMap<String, serde_json::Value>,
+) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+
+    for resource in raw_resources.values() {
+        if resource
+            .get("resourceType")
+            .and_then(|v| v.as_str())
+            != Some("ValueSet")
+        {
+            continue;
+        }
+
+        let Some(url) = resource.get("url").and_then(|v| v.as_str()) else {
+            continue;
+        };
+
+        if let Some(system) = extract_valueset_system(resource) {
+            map.insert(url.to_string(), system);
+        }
+    }
+
+    map
+}
 
 /// Generate a synthetic FHIR resource that conforms to a StructureDefinition profile.
 ///
@@ -9,6 +36,14 @@ use anyhow::Result;
 pub fn generate_resource(
     profile: &StructureDefinition,
     all_profiles: &[StructureDefinition],
+) -> Result<serde_json::Value> {
+    generate_resource_with_value_sets(profile, all_profiles, &HashMap::new())
+}
+
+pub fn generate_resource_with_value_sets(
+    profile: &StructureDefinition,
+    all_profiles: &[StructureDefinition],
+    value_set_systems: &HashMap<String, String>,
 ) -> Result<serde_json::Value> {
     let mut resource = serde_json::json!({
         "resourceType": profile.base_type
@@ -29,10 +64,22 @@ pub fn generate_resource(
             .unwrap_or(&empty),
     };
 
-    populate_required_fields(&mut resource, elements, &profile.base_type)?;
+    populate_required_fields(
+        &mut resource,
+        elements,
+        &profile.base_type,
+        all_profiles,
+        value_set_systems,
+    )?;
 
     // Second pass: populate required slices (e.g., identifier:abn with patternUri)
-    populate_required_slices(&mut resource, elements, &profile.base_type, all_profiles)?;
+    populate_required_slices(
+        &mut resource,
+        elements,
+        &profile.base_type,
+        all_profiles,
+        value_set_systems,
+    )?;
 
     Ok(resource)
 }
@@ -41,6 +88,8 @@ fn populate_required_fields(
     resource: &mut serde_json::Value,
     elements: &[ElementDefinition],
     resource_type: &str,
+    all_profiles: &[StructureDefinition],
+    value_set_systems: &HashMap<String, String>,
 ) -> Result<()> {
     // First pass: populate direct required children (depth 1 fields)
     for element in elements {
@@ -63,43 +112,13 @@ fn populate_required_fields(
             continue;
         }
 
-        // Apply fixed values first
-        if let Some(val) = &element.fixed_string {
-            resource[&field_name] = serde_json::Value::String(val.clone());
-            continue;
-        }
-        if let Some(val) = &element.fixed_code {
-            resource[&field_name] = serde_json::Value::String(val.clone());
-            continue;
-        }
-        if let Some(val) = &element.fixed_uri {
-            resource[&field_name] = serde_json::Value::String(val.clone());
-            continue;
-        }
-        if let Some(val) = &element.fixed_boolean {
-            resource[&field_name] = serde_json::Value::Bool(*val);
-            continue;
-        }
-        if let Some(val) = &element.fixed_integer {
-            resource[&field_name] = serde_json::Value::Number((*val).into());
-            continue;
-        }
-
-        // Apply pattern values
-        if let Some(val) = &element.pattern_string {
-            resource[&field_name] = serde_json::Value::String(val.clone());
-            continue;
-        }
-        if let Some(val) = &element.pattern_code {
-            resource[&field_name] = serde_json::Value::String(val.clone());
-            continue;
-        }
-        if let Some(val) = &element.pattern_uri {
-            resource[&field_name] = serde_json::Value::String(val.clone());
-            continue;
-        }
-        if let Some(val) = &element.pattern_boolean {
-            resource[&field_name] = serde_json::Value::Bool(*val);
+        if let Some(val) = direct_fixed_or_pattern_value(element) {
+            let max = element.max.as_deref().unwrap_or("1");
+            if max != "1" || is_base_spec_repeatable(resource_type, &field_name) {
+                resource[&field_name] = serde_json::json!([val]);
+            } else {
+                resource[&field_name] = val;
+            }
             continue;
         }
 
@@ -108,7 +127,8 @@ fn populate_required_fields(
             continue;
         }
 
-        let type_code = &element.type_[0].code;
+        let type_def = &element.type_[0];
+        let type_code = &type_def.code;
 
         // Skip Extension type — empty extensions are always invalid (violates ext-1:
         // "Must have either extensions or value[x], not both"). Without knowing the
@@ -117,13 +137,25 @@ fn populate_required_fields(
             continue;
         }
 
-        let target_profiles = &element.type_[0].target_profile;
-        let value = generate_typed_value(type_code, target_profiles);
+        let target_profiles = &type_def.target_profile;
+
+        let mut value = generate_typed_value(type_code, target_profiles, element, value_set_systems);
+
+        if type_code == "Identifier" {
+            apply_identifier_profile_constraints(&mut value, type_def, all_profiles);
+        }
 
         // For BackboneElement, populate required sub-fields from nested elements
         if type_code == "BackboneElement" {
             let mut backbone = value.as_object().cloned().unwrap_or_default();
-            populate_backbone_fields(&mut backbone, &element.path, elements, resource_type);
+            populate_backbone_fields(
+                &mut backbone,
+                &element.path,
+                elements,
+                resource_type,
+                all_profiles,
+                value_set_systems,
+            );
             let max = element.max.as_deref().unwrap_or("1");
             if max != "1" {
                 resource[&field_name] = serde_json::json!([backbone]);
@@ -158,6 +190,8 @@ fn populate_backbone_fields(
     parent_path: &str,
     elements: &[ElementDefinition],
     resource_type: &str,
+    all_profiles: &[StructureDefinition],
+    value_set_systems: &HashMap<String, String>,
 ) {
     // First pass: populate direct children (depth 1)
     for element in elements {
@@ -185,30 +219,13 @@ fn populate_backbone_fields(
             continue;
         }
 
-        // Apply fixed/pattern values
-        if let Some(val) = &element.fixed_string {
-            backbone.insert(
-                field_name.to_string(),
-                serde_json::Value::String(val.clone()),
-            );
-            continue;
-        }
-        if let Some(val) = &element.fixed_code {
-            backbone.insert(
-                field_name.to_string(),
-                serde_json::Value::String(val.clone()),
-            );
-            continue;
-        }
-        if let Some(val) = &element.fixed_uri {
-            backbone.insert(
-                field_name.to_string(),
-                serde_json::Value::String(val.clone()),
-            );
-            continue;
-        }
-        if let Some(val) = &element.fixed_boolean {
-            backbone.insert(field_name.to_string(), serde_json::Value::Bool(*val));
+        if let Some(val) = direct_fixed_or_pattern_value(element) {
+            let max = element.max.as_deref().unwrap_or("1");
+            if max != "1" || is_base_spec_repeatable(resource_type, field_name) {
+                backbone.insert(field_name.to_string(), serde_json::json!([val]));
+            } else {
+                backbone.insert(field_name.to_string(), val);
+            }
             continue;
         }
 
@@ -216,24 +233,52 @@ fn populate_backbone_fields(
             continue;
         }
 
-        let type_code = &element.type_[0].code;
-        let target_profiles = &element.type_[0].target_profile.clone();
+        let type_def = &element.type_[0];
+        let type_code = &type_def.code;
+        let target_profiles = &type_def.target_profile;
 
         if type_code == "Extension" {
             continue;
         }
 
-        let mut value = generate_typed_value(type_code, target_profiles);
+        let mut value = generate_typed_value(type_code, target_profiles, element, value_set_systems);
+
+        if type_code == "Identifier" {
+            apply_identifier_profile_constraints(&mut value, type_def, all_profiles);
+        }
+
+        let mut value_prewrapped_by_slices = false;
 
         // For complex types inside a backbone, check for required sub-fields
         // at depth 2 (e.g. qualification.code.text)
         if is_complex_type(type_code) {
             let child_path = format!("{}.{}", parent_path, field_name);
-            populate_nested_required_fields(&mut value, &child_path, elements);
+            populate_nested_required_fields(
+                &mut value,
+                &child_path,
+                elements,
+                all_profiles,
+                value_set_systems,
+            );
+
+            if has_slices_for_path(elements, &child_path) {
+                value = apply_slices_for_path(
+                    value,
+                    &child_path,
+                    elements,
+                    all_profiles,
+                    value_set_systems,
+                );
+                value_prewrapped_by_slices = true;
+            }
         }
 
         let max = element.max.as_deref().unwrap_or("1");
         if max != "1" || is_base_spec_repeatable(resource_type, field_name) {
+            if value_prewrapped_by_slices {
+                backbone.insert(field_name.to_string(), value);
+                continue;
+            }
             backbone.insert(field_name.to_string(), serde_json::json!([value]));
         } else {
             backbone.insert(field_name.to_string(), value);
@@ -248,6 +293,8 @@ fn populate_nested_required_fields(
     value: &mut serde_json::Value,
     parent_path: &str,
     elements: &[ElementDefinition],
+    all_profiles: &[StructureDefinition],
+    value_set_systems: &HashMap<String, String>,
 ) {
     let obj = match value.as_object_mut() {
         Some(o) => o,
@@ -276,30 +323,13 @@ fn populate_nested_required_fields(
             continue;
         }
 
-        // Apply fixed/pattern values
-        if let Some(val) = &element.fixed_string {
-            obj.insert(
-                field_name.to_string(),
-                serde_json::Value::String(val.clone()),
-            );
-            continue;
-        }
-        if let Some(val) = &element.fixed_code {
-            obj.insert(
-                field_name.to_string(),
-                serde_json::Value::String(val.clone()),
-            );
-            continue;
-        }
-        if let Some(val) = &element.fixed_uri {
-            obj.insert(
-                field_name.to_string(),
-                serde_json::Value::String(val.clone()),
-            );
-            continue;
-        }
-        if let Some(val) = &element.fixed_boolean {
-            obj.insert(field_name.to_string(), serde_json::Value::Bool(*val));
+        if let Some(val) = direct_fixed_or_pattern_value(element) {
+            let max = element.max.as_deref().unwrap_or("1");
+            if max != "1" {
+                obj.insert(field_name.to_string(), serde_json::json!([val]));
+            } else {
+                obj.insert(field_name.to_string(), val);
+            }
             continue;
         }
 
@@ -307,14 +337,20 @@ fn populate_nested_required_fields(
             continue;
         }
 
-        let type_code = &element.type_[0].code;
-        let target_profiles = &element.type_[0].target_profile.clone();
+        let type_def = &element.type_[0];
+        let type_code = &type_def.code;
+        let target_profiles = &type_def.target_profile;
 
         if type_code == "Extension" {
             continue;
         }
 
-        let child_value = generate_typed_value(type_code, target_profiles);
+        let mut child_value =
+            generate_typed_value(type_code, target_profiles, element, value_set_systems);
+
+        if type_code == "Identifier" {
+            apply_identifier_profile_constraints(&mut child_value, type_def, all_profiles);
+        }
         let max = element.max.as_deref().unwrap_or("1");
         if max != "1" {
             obj.insert(field_name.to_string(), serde_json::json!([child_value]));
@@ -447,15 +483,223 @@ fn get_field_name(path: &str, resource_type: &str) -> Option<String> {
     Some(field_name.to_string())
 }
 
+fn has_slices_for_path(elements: &[ElementDefinition], field_path: &str) -> bool {
+    elements
+        .iter()
+        .any(|e| e.path == field_path && e.slice_name.is_some())
+}
+
+fn reference_type_from_target(target: &str) -> String {
+    let clean = target.split('|').next().unwrap_or(target);
+    let tail = clean.rsplit('/').next().unwrap_or(clean).to_lowercase();
+
+    if tail.contains("practitionerrole") {
+        "PractitionerRole".to_string()
+    } else if tail.contains("practitioner") {
+        "Practitioner".to_string()
+    } else if tail.contains("healthcareservice") {
+        "HealthcareService".to_string()
+    } else if tail.contains("organization") {
+        "Organization".to_string()
+    } else if tail.contains("location") {
+        "Location".to_string()
+    } else if tail.contains("endpoint") {
+        "Endpoint".to_string()
+    } else if tail.contains("provenance") {
+        "Provenance".to_string()
+    } else if tail.contains("parameters") {
+        "Parameters".to_string()
+    } else if let Some(first) = clean.rsplit('/').next() {
+        first.to_string()
+    } else {
+        "Resource".to_string()
+    }
+}
+
+fn apply_slices_for_path(
+    value: serde_json::Value,
+    field_path: &str,
+    elements: &[ElementDefinition],
+    all_profiles: &[StructureDefinition],
+    value_set_systems: &HashMap<String, String>,
+) -> serde_json::Value {
+    let slices: Vec<&ElementDefinition> = elements
+        .iter()
+        .filter(|e| e.path == field_path && e.slice_name.is_some())
+        .collect();
+
+    if slices.is_empty() {
+        return value;
+    }
+
+    let discriminator_path = elements
+        .iter()
+        .find(|e| e.path == field_path && e.slicing.is_some())
+        .and_then(|e| e.slicing.as_ref())
+        .and_then(|s| s.discriminator.first().map(|d| d.path.clone()));
+
+    let required_slices: Vec<&&ElementDefinition> =
+        slices.iter().filter(|s| s.min.unwrap_or(0) > 0).collect();
+
+    let mut slice_values = Vec::new();
+    if let Some(arr) = value.as_array() {
+        slice_values.extend(arr.iter().cloned());
+    } else {
+        slice_values.push(value);
+    }
+
+    if !required_slices.is_empty() {
+        if let Some(first_slice) = required_slices.first() {
+            if let Some(v) = generate_slice_value(
+                first_slice,
+                "",
+                discriminator_path.as_deref(),
+                all_profiles,
+                elements,
+                value_set_systems,
+            ) {
+                if slice_values.is_empty() {
+                    slice_values.push(v);
+                } else {
+                    slice_values[0] = v;
+                }
+            }
+        }
+
+        for slice in required_slices.iter().skip(1) {
+            if let Some(v) = generate_slice_value(
+                slice,
+                "",
+                discriminator_path.as_deref(),
+                all_profiles,
+                elements,
+                value_set_systems,
+            ) {
+                slice_values.push(v);
+            }
+        }
+    } else if let Some(v) = generate_slice_value(
+        slices[0],
+        "",
+        discriminator_path.as_deref(),
+        all_profiles,
+        elements,
+        value_set_systems,
+    ) {
+        slice_values = vec![v];
+    }
+
+    serde_json::json!(slice_values)
+}
+
+fn direct_fixed_or_pattern_value(element: &ElementDefinition) -> Option<serde_json::Value> {
+    if let Some(val) = &element.fixed_string {
+        return Some(serde_json::Value::String(val.clone()));
+    }
+    if let Some(val) = &element.fixed_code {
+        return Some(serde_json::Value::String(val.clone()));
+    }
+    if let Some(val) = &element.fixed_uri {
+        return Some(serde_json::Value::String(val.clone()));
+    }
+    if let Some(val) = &element.fixed_boolean {
+        return Some(serde_json::Value::Bool(*val));
+    }
+    if let Some(val) = &element.fixed_integer {
+        return Some(serde_json::Value::Number((*val).into()));
+    }
+    if let Some(val) = &element.fixed_quantity {
+        return Some(val.clone());
+    }
+    if let Some(val) = &element.fixed_coding {
+        return Some(val.clone());
+    }
+    if let Some(val) = &element.fixed_codeable_concept {
+        return Some(val.clone());
+    }
+
+    if let Some(val) = &element.pattern_string {
+        return Some(serde_json::Value::String(val.clone()));
+    }
+    if let Some(val) = &element.pattern_code {
+        return Some(serde_json::Value::String(val.clone()));
+    }
+    if let Some(val) = &element.pattern_uri {
+        return Some(serde_json::Value::String(val.clone()));
+    }
+    if let Some(val) = &element.pattern_boolean {
+        return Some(serde_json::Value::Bool(*val));
+    }
+    if let Some(val) = &element.pattern_quantity {
+        return Some(val.clone());
+    }
+    if let Some(val) = &element.pattern_coding {
+        return Some(val.clone());
+    }
+    if let Some(val) = &element.pattern_codeable_concept {
+        return Some(val.clone());
+    }
+
+    None
+}
+
+fn bound_system_for_element(
+    element: &ElementDefinition,
+    value_set_systems: &HashMap<String, String>,
+) -> Option<String> {
+    let binding = element.binding.as_ref()?;
+    let value_set_url = binding.value_set.as_ref()?.split('|').next()?;
+    value_set_systems.get(value_set_url).cloned()
+}
+
+fn extract_valueset_system(resource: &serde_json::Value) -> Option<String> {
+    // Prefer compose.include.system because it is canonical terminology metadata.
+    if let Some(include) = resource
+        .get("compose")
+        .and_then(|v| v.get("include"))
+        .and_then(|v| v.as_array())
+    {
+        for item in include {
+            if let Some(system) = item.get("system").and_then(|v| v.as_str()) {
+                return Some(system.to_string());
+            }
+        }
+    }
+
+    // Fallback to expansion.contains[*].system when compose is unavailable.
+    if let Some(contains) = resource
+        .get("expansion")
+        .and_then(|v| v.get("contains"))
+        .and_then(|v| v.as_array())
+    {
+        for item in contains {
+            if let Some(system) = item.get("system").and_then(|v| v.as_str()) {
+                return Some(system.to_string());
+            }
+        }
+    }
+
+    None
+}
+
 /// Generate a minimal valid value for a given FHIR type code.
-fn generate_typed_value(type_code: &str, target_profiles: &[String]) -> serde_json::Value {
+fn generate_typed_value(
+    type_code: &str,
+    target_profiles: &[String],
+    element: &ElementDefinition,
+    value_set_systems: &HashMap<String, String>,
+) -> serde_json::Value {
+    let bound_system = bound_system_for_element(element, value_set_systems);
+
     match type_code {
         // Primitive types
-        "string" => serde_json::json!("generated-string"),
-        "uri" => serde_json::json!("http://example.org/generated-uri"),
-        "url" => serde_json::json!("http://example.org/generated-url"),
-        "canonical" => serde_json::json!("http://example.org/generated-canonical"),
-        "code" => serde_json::json!("generated-code"),
+        "string" => serde_json::json!("Acme Health Service"),
+        "uri" => serde_json::json!("urn:ietf:rfc:3986"),
+        "url" => serde_json::json!("https://digitalhealth.gov.au/fhir/resource"),
+        "canonical" => {
+            serde_json::json!("https://digitalhealth.gov.au/fhir/StructureDefinition/sample")
+        }
+        "code" => serde_json::json!("active"),
         "id" => serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
         "boolean" => serde_json::json!(true),
         "integer" => serde_json::json!(1),
@@ -467,22 +711,22 @@ fn generate_typed_value(type_code: &str, target_profiles: &[String]) -> serde_js
         "unsignedInt" => serde_json::json!(1),
         "positiveInt" => serde_json::json!(1),
         "base64Binary" => serde_json::json!(""),
-        "markdown" => serde_json::json!("generated-markdown"),
+        "markdown" => serde_json::json!("Clinical note"),
         "oid" => serde_json::json!("urn:oid:2.16.840.1.113883.19.5"),
         "uuid" => serde_json::Value::String(format!("urn:uuid:{}", uuid::Uuid::new_v4())),
 
         // Complex types
         "Identifier" => serde_json::json!({
-            "system": "http://example.org/identifier",
-            "value": format!("generated-{}", uuid::Uuid::new_v4())
+            "system": "urn:ietf:rfc:3986",
+            "value": uuid::Uuid::new_v4().to_string()
         }),
         "HumanName" => serde_json::json!({
-            "family": "GeneratedFamily",
-            "given": ["GeneratedGiven"]
+            "family": "Smith",
+            "given": ["Alex"]
         }),
         "Address" => serde_json::json!({
-            "line": ["123 Generated St"],
-            "city": "GeneratedCity",
+            "line": ["100 George St"],
+            "city": "Sydney",
             "state": "NSW",
             "postalCode": "2000",
             "country": "AU"
@@ -491,32 +735,55 @@ fn generate_typed_value(type_code: &str, target_profiles: &[String]) -> serde_js
             "system": "phone",
             "value": "555-0000"
         }),
-        "CodeableConcept" => serde_json::json!({
-            "coding": [{
-                "system": "http://example.org/code-system",
-                "code": "generated-code"
-            }]
-        }),
-        "Coding" => serde_json::json!({
-            "system": "http://example.org/code-system",
-            "code": "generated-code"
-        }),
+        "CodeableConcept" => {
+            if let Some(system) = bound_system {
+                serde_json::json!({
+                    "coding": [{
+                        "system": system,
+                        "code": "unknown"
+                    }],
+                    "text": "General practice"
+                })
+            } else {
+                serde_json::json!({
+                    "text": "General practice"
+                })
+            }
+        }
+        "Coding" => {
+            if let Some(system) = bound_system {
+                serde_json::json!({
+                    "system": system,
+                    "code": "unknown"
+                })
+            } else if element.path.ends_with("Endpoint.connectionType") {
+                serde_json::json!({
+                    "system": "http://terminology.hl7.org/CodeSystem/endpoint-connection-type",
+                    "code": "hl7-fhir-rest"
+                })
+            } else {
+                serde_json::json!({
+                    "system": "http://terminology.hl7.org/CodeSystem/v3-NullFlavor",
+                    "code": "UNK"
+                })
+            }
+        }
         "Quantity" => serde_json::json!({
             "value": 1.0,
-            "unit": "generated-unit",
-            "system": "http://example.org/unit-system",
-            "code": "generated-unit"
+            "unit": "1",
+            "system": "http://unitsofmeasure.org",
+            "code": "1"
         }),
         "Reference" => {
             if let Some(profile) = target_profiles.first() {
                 // Extract resource type from profile URL
                 let ref_type = profile.rsplit('/').next().unwrap_or("Resource");
                 serde_json::json!({
-                    "reference": format!("placeholder:{}", ref_type)
+                    "reference": format!("{}/{}", reference_type_from_target(ref_type), uuid::Uuid::new_v4())
                 })
             } else {
                 serde_json::json!({
-                    "reference": "placeholder:Resource"
+                    "reference": format!("Resource/{}", uuid::Uuid::new_v4())
                 })
             }
         }
@@ -572,6 +839,7 @@ fn populate_required_slices(
     elements: &[ElementDefinition],
     resource_type: &str,
     all_profiles: &[StructureDefinition],
+    value_set_systems: &HashMap<String, String>,
 ) -> Result<()> {
     // Collect all fields that have slice definitions
     let mut slice_fields: std::collections::HashMap<String, Vec<&ElementDefinition>> =
@@ -628,6 +896,8 @@ fn populate_required_slices(
                     resource_type,
                     discriminator_path.as_deref(),
                     all_profiles,
+                    elements,
+                    value_set_systems,
                 ) {
                     // Replace the first generic value
                     if slice_values.is_empty() {
@@ -644,6 +914,8 @@ fn populate_required_slices(
                     resource_type,
                     discriminator_path.as_deref(),
                     all_profiles,
+                    elements,
+                    value_set_systems,
                 ) {
                     slice_values.push(val);
                 }
@@ -657,6 +929,8 @@ fn populate_required_slices(
                 resource_type,
                 discriminator_path.as_deref(),
                 all_profiles,
+                elements,
+                value_set_systems,
             ) {
                 slice_values = vec![val];
             }
@@ -681,18 +955,30 @@ fn generate_slice_value(
     _resource_type: &str,
     discriminator_path: Option<&str>,
     all_profiles: &[StructureDefinition],
+    elements: &[ElementDefinition],
+    value_set_systems: &HashMap<String, String>,
 ) -> Option<serde_json::Value> {
-    // Determine the base type from the element's type
-    let type_code = slice.type_.first()?.code.clone();
+    // Determine the base type from the slice's own type, or from the
+    // unsliced base element when the slice relies on inherited typing.
+    let type_code = resolve_slice_type_code(slice, elements)?;
 
     // Start with a base value for the type
-    let mut value = generate_typed_value(&type_code, &[]);
+    let mut value = generate_typed_value(&type_code, &[], slice, value_set_systems);
+
+    // HumanName slice support
+    if type_code == "HumanName" {
+        if let Some(slice_name) = &slice.slice_name {
+            if let Some(use_code) = find_human_name_use(slice_name, elements) {
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert("use".to_string(), serde_json::json!(use_code));
+                }
+            }
+        }
+    }
 
     // Apply pattern values from the slice definition
     if let Some(val) = &slice.pattern_uri {
         if let Some(obj) = value.as_object_mut() {
-            // For Identifier slices, patternUri on the slice typically
-            // constrains the `system` field
             if type_code == "Identifier" {
                 obj.insert("system".to_string(), serde_json::json!(val));
             } else {
@@ -700,102 +986,107 @@ fn generate_slice_value(
             }
         }
     }
+
     if let Some(val) = &slice.pattern_code {
         if let Some(obj) = value.as_object_mut() {
-            // For HumanName slices, patternCode on the slice constrains `use`
-            if type_code == "HumanName" {
-                obj.insert("use".to_string(), serde_json::json!(val));
-            }
-            // For Address slices, patternCode on the slice constrains `type`
-            if type_code == "Address" {
-                obj.insert("type".to_string(), serde_json::json!(val));
+            match type_code.as_str() {
+                "HumanName" => {
+                    obj.insert("use".to_string(), serde_json::json!(val));
+                }
+                "Address" => {
+                    obj.insert("type".to_string(), serde_json::json!(val));
+                }
+                _ => {}
             }
         }
     }
+
     if let Some(val) = &slice.pattern_string {
         if let Some(obj) = value.as_object_mut() {
             obj.insert("value".to_string(), serde_json::json!(val));
         }
     }
+
     if let Some(val) = &slice.pattern_coding {
         if let Some(obj) = value.as_object_mut() {
             obj.insert("coding".to_string(), val.clone());
         }
     }
+
     if let Some(val) = &slice.pattern_codeable_concept {
         if let Some(obj) = value.as_object_mut() {
             obj.insert("coding".to_string(), val.clone());
         }
     }
 
-    // If no pattern values were applied but we have a discriminator path,
-    // look up the profiled type's sub-elements for fixed/pattern values.
-    // The profiled type URL comes from the `profile` field on the type
-    // (e.g. "http://hl7.org.au/fhir/StructureDefinition/au-hpii|6.0.0"),
-    // NOT from `targetProfile` which is for reference targets.
+    // Identifier slice handling
     if type_code == "Identifier" {
         if let Some(obj) = value.as_object_mut() {
-            // Resolve the profiled type URL from the slice's type definition
             let profile_url = slice
                 .type_
                 .first()
                 .and_then(|t| {
-                    if !t.profile.is_empty() {
-                        t.profile.first().map(|s| s.as_str())
-                    } else {
-                        t.target_profile.first().map(|s| s.as_str())
-                    }
+                    t.profile
+                        .first()
+                        .or_else(|| t.target_profile.first())
+                        .map(|s| s.as_str())
                 })
                 .unwrap_or("");
 
-            // If we have a profiled type, look up its sub-elements to find
-            // fixedUri on Identifier.system and patternCodeableConcept on
-            // Identifier.type. Apply both regardless of which discriminator
-            // path we're matching — the profiled type constrains both fields.
-            if !profile_url.is_empty() {
-                let clean_url = profile_url.split('|').next().unwrap_or(profile_url);
-                if let Some(profiled_type) = all_profiles.iter().find(|p| p.url == clean_url) {
-                    if let Some(snapshot) = &profiled_type.snapshot {
-                        for el in &snapshot.element {
-                            if el.id == "Identifier.system" {
-                                if let Some(val) = &el.fixed_uri {
-                                    obj.insert("system".to_string(), serde_json::json!(val));
-                                }
-                            }
-                            if el.id == "Identifier.type" {
-                                if let Some(val) = &el.pattern_codeable_concept {
-                                    obj.insert("type".to_string(), val.clone());
-                                } else if let Some(val) = &el.fixed_codeable_concept {
-                                    obj.insert("type".to_string(), val.clone());
-                                }
-                            }
-                        }
-                    }
+            if let Some(system) = find_identifier_system(profile_url, all_profiles) {
+                if !obj.contains_key("system")
+                    || obj
+                        .get("system")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(is_generic_identifier_system)
+                {
+                    obj.insert("system".to_string(), serde_json::json!(system));
                 }
             }
 
-            // Apply discriminator-specific fallbacks
+            // Some IG slices define Identifier.system at nested paths without
+            // repeating a discriminator. Use slice-specific nested constraints
+            // as a direct source of truth when available.
+            if let Some(slice_name) = &slice.slice_name {
+                if let Some(system) = find_slice_system(slice_name, elements) {
+                    obj.insert("system".to_string(), serde_json::json!(system));
+                }
+            }
+
+            if let Some(identifier_type) = find_identifier_type(profile_url, all_profiles) {
+                if !obj.contains_key("type") {
+                    obj.insert("type".to_string(), identifier_type);
+                }
+            }
+
             match discriminator_path {
                 Some("system") => {
-                    // Fallback: use the profile URL as the system value
-                    if !obj.contains_key("system")
-                        || obj["system"] == "http://example.org/identifier"
-                    {
-                        obj.insert("system".to_string(), serde_json::json!(profile_url));
+                    if let Some(slice_name) = &slice.slice_name {
+                        if let Some(system) = find_slice_system(slice_name, elements) {
+                            obj.insert("system".to_string(), serde_json::json!(system));
+                            return Some(value);
+                        }
                     }
                 }
-                Some("type") if !obj.contains_key("type") => {
-                    // Fallback: use a generic v2-0203 coding
-                    obj.insert(
-                        "type".to_string(),
-                        serde_json::json!({
-                            "coding": [{
-                                "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
-                                "code": "XX"
-                            }]
-                        }),
-                    );
+
+                Some(path) if path.starts_with("type") && !obj.contains_key("type") => {
+                    if let Some(identifier_type) = find_identifier_type(profile_url, all_profiles) {
+                        obj.insert("type".to_string(), identifier_type);
+                    }
+
+                    if !obj.contains_key("type") {
+                        obj.insert(
+                            "type".to_string(),
+                            serde_json::json!({
+                                "coding": [{
+                                    "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                                    "code": "XX"
+                                }]
+                            }),
+                        );
+                    }
                 }
+
                 _ => {}
             }
         }
@@ -803,7 +1094,6 @@ fn generate_slice_value(
 
     Some(value)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1131,8 +1421,9 @@ mod tests {
 
         let resource = generate_resource(&profile, &[]).unwrap();
         let subject = &resource["subject"];
-        assert_eq!(
-            subject["reference"], "placeholder:Patient",
+        let reference = subject["reference"].as_str().unwrap_or("");
+        assert!(
+            reference.starts_with("Patient/"),
             "Reference should use target_profile to determine resource type"
         );
     }
@@ -1842,8 +2133,252 @@ mod tests {
         let text = code.get("text").unwrap();
         assert_eq!(
             text.as_str().unwrap(),
-            "generated-string",
+            "General practice",
             "code.text should be populated (required at depth 2)"
         );
     }
+
+    #[test]
+    fn uses_valueset_system_for_bound_codeable_concept() {
+        let profile_json = serde_json::json!({
+            "resourceType": "StructureDefinition",
+            "url": "http://example.org/StructureDefinition/TestService",
+            "name": "TestService",
+            "type": "HealthcareService",
+            "kind": "resource",
+            "derivation": "constraint",
+            "snapshot": {
+                "element": [
+                    { "id": "HealthcareService", "path": "HealthcareService", "min": 0, "max": "*" },
+                    {
+                        "id": "HealthcareService.type",
+                        "path": "HealthcareService.type",
+                        "min": 1,
+                        "max": "*",
+                        "type": [{ "code": "CodeableConcept" }],
+                        "binding": {
+                            "strength": "required",
+                            "valueSet": "http://example.org/fhir/ValueSet/service-type|1.0.0"
+                        }
+                    }
+                ]
+            }
+        });
+        let profile: StructureDefinition = serde_json::from_value(profile_json).unwrap();
+
+        let mut value_set_systems = std::collections::HashMap::new();
+        value_set_systems.insert(
+            "http://example.org/fhir/ValueSet/service-type".to_string(),
+            "http://example.org/fhir/CodeSystem/service-type".to_string(),
+        );
+
+        let resource = generate_resource_with_value_sets(&profile, &[], &value_set_systems).unwrap();
+
+        let coding = resource["type"][0]["coding"][0].clone();
+        assert_eq!(
+            coding["system"].as_str().unwrap(),
+            "http://example.org/fhir/CodeSystem/service-type"
+        );
+    }
+
+    #[test]
+    fn honors_pattern_codeable_concept_before_default_generation() {
+        let profile_json = serde_json::json!({
+            "resourceType": "StructureDefinition",
+            "url": "http://example.org/StructureDefinition/TestPractitionerRole",
+            "name": "TestPractitionerRole",
+            "type": "PractitionerRole",
+            "kind": "resource",
+            "derivation": "constraint",
+            "snapshot": {
+                "element": [
+                    { "id": "PractitionerRole", "path": "PractitionerRole", "min": 0, "max": "*" },
+                    {
+                        "id": "PractitionerRole.code",
+                        "path": "PractitionerRole.code",
+                        "min": 1,
+                        "max": "*",
+                        "type": [{ "code": "CodeableConcept" }],
+                        "patternCodeableConcept": {
+                            "coding": [{
+                                "system": "http://example.org/fhir/CodeSystem/practitioner-role",
+                                "code": "a-specialty"
+                            }]
+                        }
+                    }
+                ]
+            }
+        });
+        let profile: StructureDefinition = serde_json::from_value(profile_json).unwrap();
+
+        let resource = generate_resource(&profile, &[]).unwrap();
+        let coding = resource["code"][0]["coding"][0].clone();
+
+        assert_eq!(
+            coding["system"].as_str().unwrap(),
+            "http://example.org/fhir/CodeSystem/practitioner-role"
+        );
+        assert_eq!(coding["code"].as_str().unwrap(), "a-specialty");
+    }
+}
+
+fn find_identifier_system(
+    profile_url: &str,
+    all_profiles: &[StructureDefinition],
+) -> Option<String> {
+    let clean_url = profile_url.split('|').next().unwrap_or(profile_url);
+
+    let profile = all_profiles.iter().find(|p| p.url == clean_url)?;
+
+    let elements = match (&profile.snapshot, &profile.differential) {
+        (Some(snapshot), _) => &snapshot.element,
+        (None, Some(diff)) => &diff.element,
+        _ => return None,
+    };
+
+    for el in elements {
+        if el.id.ends_with(".system") || el.path.ends_with(".system") {
+            if let Some(v) = &el.fixed_uri {
+                return Some(v.clone());
+            }
+
+            if let Some(v) = &el.pattern_uri {
+                return Some(v.clone());
+            }
+        }
+    }
+
+    None
+}
+fn find_slice_system(slice_name: &str, elements: &[ElementDefinition]) -> Option<String> {
+    for el in elements {
+        let matches_slice = el.path.contains(&format!(":{}.", slice_name))
+            || el.id.contains(&format!(":{}.", slice_name));
+
+        if !matches_slice {
+            continue;
+        }
+
+        if el.id.ends_with(".system") || el.path.ends_with(".system") {
+            if let Some(v) = &el.fixed_uri {
+                return Some(v.clone());
+            }
+
+            if let Some(v) = &el.pattern_uri {
+                return Some(v.clone());
+            }
+        }
+    }
+
+    None
+}
+
+fn apply_identifier_profile_constraints(
+    value: &mut serde_json::Value,
+    type_def: &ElementDefinitionType,
+    all_profiles: &[StructureDefinition],
+) {
+    if let Some(obj) = value.as_object_mut() {
+        for profile_url in type_def.profile.iter().chain(type_def.target_profile.iter()) {
+            if obj.get("system").is_none()
+                || obj
+                    .get("system")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(is_generic_identifier_system)
+            {
+                if let Some(system) = find_identifier_system(profile_url, all_profiles) {
+                    obj.insert("system".to_string(), serde_json::json!(system));
+                }
+            }
+
+            if !obj.contains_key("type") {
+                if let Some(identifier_type) = find_identifier_type(profile_url, all_profiles) {
+                    obj.insert("type".to_string(), identifier_type);
+                }
+            }
+
+            if obj.contains_key("system") && obj.contains_key("type") {
+                break;
+            }
+        }
+    }
+}
+
+fn resolve_slice_type_code(
+    slice: &ElementDefinition,
+    elements: &[ElementDefinition],
+) -> Option<String> {
+    if let Some(type_def) = slice.type_.first() {
+        return Some(type_def.code.clone());
+    }
+
+    elements
+        .iter()
+        .find(|el| {
+            el.path == slice.path
+                && el.slice_name.is_none()
+                && !el.type_.is_empty()
+                && !el.id.contains(':')
+        })
+        .and_then(|el| el.type_.first())
+        .map(|t| t.code.clone())
+}
+
+fn is_generic_identifier_system(system: &str) -> bool {
+    matches!(
+        system,
+        "http://example.org/identifier" | "urn:ietf:rfc:3986"
+    )
+}
+
+fn find_identifier_type(
+    profile_url: &str,
+    all_profiles: &[StructureDefinition],
+) -> Option<serde_json::Value> {
+    let clean_url = profile_url.split('|').next().unwrap_or(profile_url);
+
+    let profile = all_profiles.iter().find(|p| p.url == clean_url)?;
+
+    let elements = match (&profile.snapshot, &profile.differential) {
+        (Some(snapshot), _) => &snapshot.element,
+        (None, Some(diff)) => &diff.element,
+        _ => return None,
+    };
+
+    for el in elements {
+        if el.id.ends_with(".type") || el.path.ends_with(".type") {
+            if let Some(v) = &el.pattern_codeable_concept {
+                return Some(v.clone());
+            }
+
+            if let Some(v) = &el.fixed_codeable_concept {
+                return Some(v.clone());
+            }
+        }
+    }
+
+    None
+}
+
+fn find_human_name_use(slice_name: &str, elements: &[ElementDefinition]) -> Option<String> {
+    for el in elements {
+        let matches_slice = el.path.contains(&format!(":{}.", slice_name))
+            || el.id.contains(&format!(":{}.", slice_name));
+
+        if !matches_slice {
+            continue;
+        }
+
+        if el.path.ends_with(".use") || el.id.ends_with(".use") {
+            if let Some(v) = &el.fixed_code {
+                return Some(v.clone());
+            }
+
+            if let Some(v) = &el.pattern_code {
+                return Some(v.clone());
+            }
+        }
+    }
+
+    None
 }

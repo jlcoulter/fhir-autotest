@@ -165,6 +165,7 @@ impl Orchestrator {
     pub async fn run(&self, ig_package_path: &str) -> Result<RunReport> {
         // 1. Parse the IG package
         let pkg = parse_package(ig_package_path)?;
+        let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
 
         // Prefer a server-mode CapabilityStatement; fall back to first if none found
         let cs = pkg
@@ -248,6 +249,7 @@ impl Orchestrator {
                 &counts,
                 &profile_urls,
                 &pkg.structure_definitions,
+                &value_set_systems,
                 output_path,
             )?;
             let data_creation_order = bulk_data_creation_order(&counts);
@@ -303,7 +305,11 @@ impl Orchestrator {
                         .iter()
                         .find(|sd| sd.base_type == *resource_type);
                     if let Some(profile) = profile {
-                        let generated = generate_resource(profile, &pkg.structure_definitions)?;
+                        let generated = generate_resource_with_value_sets(
+                            profile,
+                            &pkg.structure_definitions,
+                            &value_set_systems,
+                        )?;
                         tracing::info!("Generated resource for {}", resource_type);
                         resources.insert(resource_type.clone(), generated);
                     } else {

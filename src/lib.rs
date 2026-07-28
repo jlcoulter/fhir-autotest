@@ -22,6 +22,7 @@ use std::path::Path;
 /// `TestPatient.json`), and includes `meta.profile` with the profile URL.
 pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
     let pkg = parse_package(package_path)?;
+    let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
 
     // Resolve parent profile chains — download missing parent profiles
     // from the FHIR package registry and merge their snapshots so that
@@ -88,7 +89,11 @@ pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
         }
 
         for profile in profiles_for_type {
-            let generated = generate_resource(profile, &profiles)?;
+            let generated = generate_resource_with_value_sets(
+                profile,
+                &profiles,
+                &value_set_systems,
+            )?;
             // Use the profile name as the unique key (e.g. "TestPatient", "HcpdPractitioner")
             let profile_name = profile.name.clone();
             profile_resources.push((profile_name.clone(), resource_type.clone(), generated));
@@ -170,6 +175,7 @@ pub async fn run_tests(package_path: &str, config: &TestConfig) -> Result<()> {
 /// Dry-run: generate the test plan and print all test URLs without executing them.
 pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
     let pkg = parse_package(package_path)?;
+    let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
 
     // Resolve parent profile chains
     let mut profiles = pkg.structure_definitions;
@@ -206,7 +212,8 @@ pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
             // Use first profile for each type
             let profile = profiles.iter().find(|sd| sd.base_type == *resource_type);
             if let Some(profile) = profile {
-                let generated = generate_resource(profile, &profiles)?;
+                let generated =
+                    generate_resource_with_value_sets(profile, &profiles, &value_set_systems)?;
                 resources.insert(resource_type.clone(), generated);
             }
         }

@@ -1,4 +1,4 @@
-use crate::generate::resource_generator::generate_resource;
+use crate::generate::resource_generator::generate_resource_with_value_sets;
 use crate::model::profile::StructureDefinition;
 use anyhow::Result;
 use fake::Fake;
@@ -21,6 +21,7 @@ pub fn generate_bulk_data(
     counts: &HashMap<String, u64>,
     profile_urls: &HashMap<String, String>,
     profiles: &[StructureDefinition],
+    value_set_systems: &HashMap<String, String>,
     output_dir: &Path,
 ) -> Result<IdStore> {
     use std::io::BufWriter;
@@ -52,11 +53,19 @@ pub fn generate_bulk_data(
     let org_ids = ids.get("Organization").cloned().unwrap_or_default();
     let prac_ids = ids.get("Practitioner").cloned().unwrap_or_default();
     let loc_ids = ids.get("Location").cloned().unwrap_or_default();
+    let hs_ids = ids.get("HealthcareService").cloned().unwrap_or_default();
 
-    // Build a lookup: resource_type → StructureDefinition so we can use
-    // profile-aware generation when available.
-    let profile_map: HashMap<&str, &StructureDefinition> =
+    // Build lookups so generation can prefer the exact profile URL from the
+    // CapabilityStatement instead of an arbitrary StructureDefinition that
+    // happens to share the same base type.
+    let profile_by_url: HashMap<&str, &StructureDefinition> =
+        profiles.iter().map(|p| (p.url.as_str(), p)).collect();
+    let profile_by_base_type: HashMap<&str, &StructureDefinition> =
         profiles.iter().map(|p| (p.base_type.as_str(), p)).collect();
+
+    // Track practitioner registration numbers so PractitionerRole can re-use
+    // the referenced practitioner's registration identifier.
+    let mut practitioner_registration_by_id: HashMap<String, String> = HashMap::new();
 
     // Second pass: generate and write resources with buffered I/O.
     for resource_type in &order {
@@ -77,10 +86,19 @@ pub fn generate_bulk_data(
         });
 
         for id in type_ids.iter() {
-            let mut resource = if let Some(profile) = profile_map.get(resource_type.as_str()) {
+            let selected_profile = profile_urls
+                .get(resource_type)
+                .and_then(|url| profile_by_url.get(url.as_str()).copied())
+                .or_else(|| profile_by_base_type.get(resource_type.as_str()).copied());
+
+            let mut resource = if let Some(profile) = selected_profile {
                 // Use profile-aware generation: generates a conformant base from
                 // the StructureDefinition, then overlay cross-references.
-                let mut r = generate_resource(profile, profiles)?;
+                let mut r = generate_resource_with_value_sets(
+                    profile,
+                    profiles,
+                    value_set_systems,
+                )?;
                 r["id"] = serde_json::Value::String(id.clone());
                 // Overlay cross-references for types that need them.
                 overlay_cross_references(
@@ -90,6 +108,14 @@ pub fn generate_bulk_data(
                     &org_ids,
                     &prac_ids,
                     &loc_ids,
+                    &hs_ids,
+                    &mut rng,
+                );
+                apply_hcpd_bulk_fixes(
+                    &mut r,
+                    resource_type,
+                    id,
+                    &mut practitioner_registration_by_id,
                     &mut rng,
                 );
                 r
@@ -113,7 +139,7 @@ pub fn generate_bulk_data(
             // IG package to override the hardcoded Plan-Net defaults.
             // When using generate_resource(), the profile URL is already set
             // correctly from the StructureDefinition, so skip the override.
-            if !profile_map.contains_key(resource_type.as_str()) {
+            if selected_profile.is_none() {
                 resource["meta"]["profile"] = serde_json::json!([profile_url]);
             }
 
@@ -143,6 +169,256 @@ pub fn generate_bulk_data(
     Ok(ids)
 }
 
+fn apply_hcpd_bulk_fixes(
+    resource: &mut serde_json::Value,
+    resource_type: &str,
+    id: &str,
+    practitioner_registration_by_id: &mut HashMap<String, String>,
+    rng: &mut impl Rng,
+) {
+    match resource_type {
+        "Organization" => {
+            resource["identifier"] = serde_json::json!([
+                {
+                    "system": "http://hl7.org.au/id/abn",
+                    "type": {
+                        "coding": [
+                            {
+                                "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                                "code": "TAX"
+                            }
+                        ]
+                    },
+                    "value": random_digits(11, rng)
+                },
+                {
+                    "system": "http://ns.electronichealth.net.au/id/hi/hpio/1.0",
+                    "type": {
+                        "coding": [
+                            {
+                                "system": "http://terminology.hl7.org.au/CodeSystem/v2-0203",
+                                "code": "NOI"
+                            }
+                        ]
+                    },
+                    "extension": [
+                        {
+                            "url": "http://digitalhealth.gov.au/fhir/hcpd/StructureDefinition/hi-org-classification",
+                            "valueCodeableConcept": {
+                                "coding": [
+                                    {
+                                        "system": "http://digitalhealth.gov.au/fhir/hcpd/CodeSystem/hi-org-classification-cs",
+                                        "code": "seed",
+                                        "display": "Seed"
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                    "value": luhn_with_prefix("800362", 16, rng)
+                }
+            ]);
+
+            if resource.get("address").is_none() || !resource["address"].is_array() {
+                resource["address"] = serde_json::json!([{}]);
+            }
+            if let Some(first_addr) = resource
+                .get_mut("address")
+                .and_then(|a| a.as_array_mut())
+                .and_then(|a| a.first_mut())
+            {
+                if first_addr.get("type").is_none() {
+                    first_addr["type"] = serde_json::Value::String("physical".to_string());
+                }
+                if first_addr.get("line").is_none() {
+                    first_addr["line"] = serde_json::json!(["100 George St"]);
+                }
+                if first_addr.get("city").is_none() {
+                    first_addr["city"] = serde_json::Value::String("Sydney".to_string());
+                }
+                if first_addr.get("state").is_none() {
+                    first_addr["state"] = serde_json::Value::String("NSW".to_string());
+                }
+                if first_addr.get("postalCode").is_none() {
+                    first_addr["postalCode"] = serde_json::Value::String("2000".to_string());
+                }
+                if first_addr.get("country").is_none() {
+                    first_addr["country"] = serde_json::Value::String("AU".to_string());
+                }
+            }
+        }
+        "Practitioner" => {
+            resource["identifier"] = serde_json::json!([
+                {
+                    "system": "http://ns.electronichealth.net.au/id/hi/hpii/1.0",
+                    "type": {
+                        "coding": [
+                            {
+                                "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                                "code": "NPI"
+                            }
+                        ]
+                    },
+                    "value": luhn_with_prefix("800361", 16, rng)
+                }
+            ]);
+
+            let registration_number = format!("MED{}", random_digits(10, rng));
+            resource["qualification"] = serde_json::json!([
+                {
+                    "code": {
+                        "text": "General practice"
+                    },
+                    "identifier": [
+                        {
+                            "system": "http://hl7.org.au/id/ahpra-registration-number",
+                            "type": {
+                                "coding": [
+                                    {
+                                        "system": "http://terminology.hl7.org.au/CodeSystem/v2-0203",
+                                        "code": "AHPRA"
+                                    }
+                                ]
+                            },
+                            "value": registration_number
+                        }
+                    ]
+                }
+            ]);
+
+            resource["extension"] = serde_json::json!([
+                {
+                    "url": "http://hl7.org/fhir/StructureDefinition/individual-recordedSexOrGender",
+                    "extension": [
+                        {
+                            "url": "value",
+                            "valueCodeableConcept": {
+                                "coding": [
+                                    {
+                                        "system": "http://hl7.org/fhir/administrative-gender",
+                                        "code": "male",
+                                        "display": "Male"
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]);
+
+            practitioner_registration_by_id.insert(id.to_string(), registration_number);
+        }
+        "HealthcareService" => {
+            if resource.get("type").is_none() || !resource["type"].is_array() {
+                resource["type"] = serde_json::json!([{}]);
+            }
+            if let Some(first_type) = resource
+                .get_mut("type")
+                .and_then(|a| a.as_array_mut())
+                .and_then(|a| a.first_mut())
+            {
+                if first_type.get("coding").is_none() {
+                    first_type["coding"] = serde_json::json!([
+                        {
+                            "system": "http://snomed.info/sct",
+                            "code": "408443003",
+                            "display": "General medical practice"
+                        }
+                    ]);
+                }
+            }
+        }
+        "Location" => {
+            resource["type"] = serde_json::json!([
+                {
+                    "text": "Healthcare service location"
+                }
+            ]);
+        }
+        "PractitionerRole" => {
+            let practitioner_id = resource
+                .get("practitioner")
+                .and_then(|p| p.get("reference"))
+                .and_then(|r| r.as_str())
+                .and_then(extract_reference_id);
+
+            let registration_number = practitioner_id
+                .and_then(|pid| practitioner_registration_by_id.get(pid).cloned())
+                .unwrap_or_else(|| format!("MED{}", random_digits(10, rng)));
+
+            resource["identifier"] = serde_json::json!([
+                {
+                    "system": "http://digitalhealth.gov.au/fhir/hcpd/id/hcpd-local-identifier",
+                    "type": {
+                        "coding": [
+                            {
+                                "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                                "code": "XX"
+                            }
+                        ]
+                    },
+                    "value": random_digits(12, rng)
+                },
+                {
+                    "system": "http://hl7.org.au/id/ahpra-registration-number",
+                    "type": {
+                        "coding": [
+                            {
+                                "system": "http://terminology.hl7.org.au/CodeSystem/v2-0203",
+                                "code": "AHPRA"
+                            }
+                        ]
+                    },
+                    "value": registration_number
+                }
+            ]);
+        }
+        _ => {}
+    }
+}
+
+fn extract_reference_id(reference: &str) -> Option<&str> {
+    reference.split_once('/').map(|(_, id)| id)
+}
+
+fn random_digits(len: usize, rng: &mut impl Rng) -> String {
+    let mut out = String::with_capacity(len);
+    for i in 0..len {
+        let d: u8 = if i == 0 {
+            rng.random_range(1..10)
+        } else {
+            rng.random_range(0..10)
+        };
+        out.push(char::from(b'0' + d));
+    }
+    out
+}
+
+fn luhn_with_prefix(prefix: &str, total_len: usize, rng: &mut impl Rng) -> String {
+    let payload_len = total_len.saturating_sub(1);
+    let mut base = prefix.to_string();
+    while base.len() < payload_len {
+        base.push(char::from(b'0' + rng.random_range(0..10)));
+    }
+    base.truncate(payload_len);
+
+    let mut sum = 0u32;
+    let mut double = true;
+    for ch in base.chars().rev() {
+        let mut n = ch.to_digit(10).unwrap_or(0);
+        if double {
+            n *= 2;
+            if n > 9 {
+                n -= 9;
+            }
+        }
+        sum += n;
+        double = !double;
+    }
+    let check = (10 - (sum % 10)) % 10;
+    format!("{}{}", base, check)
+}
+
 /// Return a creation order that respects dependencies.
 /// Organizations and Locations first, then Practitioners, then
 /// PractitionerRoles and HealthcareServices, then everything else.
@@ -162,7 +438,7 @@ pub fn bulk_data_creation_order(counts: &HashMap<String, u64>) -> Vec<String> {
         }
     }
     // Tier 3: depends on tiers 1–2
-    for t in &["PractitionerRole", "HealthcareService"] {
+    for t in &["HealthcareService", "PractitionerRole"] {
         if counts.contains_key(*t) {
             order.push((*t).to_string());
         }
@@ -191,6 +467,7 @@ fn overlay_cross_references(
     org_ids: &[String],
     prac_ids: &[String],
     loc_ids: &[String],
+    hs_ids: &[String],
     rng: &mut impl Rng,
 ) {
     let obj = match resource.as_object_mut() {
@@ -224,6 +501,20 @@ fn overlay_cross_references(
                     serde_json::json!([{ "reference": ref_str }]),
                 );
             }
+            if !hs_ids.is_empty() {
+                let ref_str = random_ref("HealthcareService", hs_ids, rng);
+                obj.insert(
+                    "healthcareService".to_string(),
+                    serde_json::json!([{ "reference": ref_str }]),
+                );
+            }
+        }
+        "Location" if !org_ids.is_empty() => {
+            let ref_str = random_ref("Organization", org_ids, rng);
+            obj.insert(
+                "managingOrganization".to_string(),
+                serde_json::json!({ "reference": ref_str }),
+            );
         }
         "HealthcareService" => {
             if !org_ids.is_empty() {
@@ -947,7 +1238,8 @@ mod tests {
         counts.insert("HealthcareService".to_string(), 50);
 
         let profile_urls = HashMap::new();
-        let ids = generate_bulk_data(&counts, &profile_urls, &[], dir.path()).unwrap();
+        let ids =
+            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), dir.path()).unwrap();
 
         // Each type should have the right number of IDs
         assert_eq!(ids.get("Organization").unwrap().len(), 10);
@@ -993,7 +1285,8 @@ mod tests {
         counts.insert("HealthcareService".to_string(), 10);
 
         let profile_urls = HashMap::new();
-        let ids = generate_bulk_data(&counts, &profile_urls, &[], dir.path()).unwrap();
+        let ids =
+            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), dir.path()).unwrap();
 
         // Check PractitionerRole references
         let pr_path = dir.path().join("data/PractitionerRole.ndjson");
@@ -1038,7 +1331,7 @@ mod tests {
         let mut counts = HashMap::new();
         counts.insert("Location".to_string(), 100);
 
-        generate_bulk_data(&counts, &HashMap::new(), &[], dir.path()).unwrap();
+        generate_bulk_data(&counts, &HashMap::new(), &[], &HashMap::new(), dir.path()).unwrap();
 
         let loc_path = dir.path().join("data/Location.ndjson");
         let contents = std::fs::read_to_string(&loc_path).unwrap();
@@ -1089,7 +1382,9 @@ mod tests {
         let mut counts = HashMap::new();
         counts.insert("Patient".to_string(), 5);
 
-        let ids = generate_bulk_data(&counts, &HashMap::new(), &[], dir.path()).unwrap();
+        let ids =
+            generate_bulk_data(&counts, &HashMap::new(), &[], &HashMap::new(), dir.path())
+                .unwrap();
         assert_eq!(ids.get("Patient").unwrap().len(), 5);
 
         let path = dir.path().join("data/Patient.ndjson");
@@ -1112,7 +1407,8 @@ mod tests {
             "http://example.org/fhir/StructureDefinition/MyOrg".to_string(),
         );
 
-        let ids = generate_bulk_data(&counts, &profile_urls, &[], dir.path()).unwrap();
+        let ids =
+            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), dir.path()).unwrap();
         assert_eq!(ids.get("Organization").unwrap().len(), 3);
 
         let path = dir.path().join("data/Organization.ndjson");
@@ -1136,7 +1432,8 @@ mod tests {
 
         // No profile_urls provided — should fall back to base FHIR profile
         let profile_urls = HashMap::new();
-        let ids = generate_bulk_data(&counts, &profile_urls, &[], dir.path()).unwrap();
+        let ids =
+            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), dir.path()).unwrap();
         assert_eq!(ids.get("Organization").unwrap().len(), 2);
 
         let path = dir.path().join("data/Organization.ndjson");
@@ -1171,7 +1468,14 @@ mod tests {
             base_definition: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
         };
 
-        let ids = generate_bulk_data(&counts, &HashMap::new(), &[profile], dir.path()).unwrap();
+        let ids = generate_bulk_data(
+            &counts,
+            &HashMap::new(),
+            &[profile],
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
         assert_eq!(ids.get("Patient").unwrap().len(), 2);
 
         // When a StructureDefinition is provided, resources should be generated
