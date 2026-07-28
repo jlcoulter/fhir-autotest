@@ -1379,6 +1379,7 @@ fn find_human_name_use(slice_name: &str, elements: &[ElementDefinition]) -> Opti
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
