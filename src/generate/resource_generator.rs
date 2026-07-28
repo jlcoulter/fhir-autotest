@@ -1108,8 +1108,9 @@ fn generate_slice_value(
 /// Profiles can define slices on the `extension` field (e.g.
 /// `HealthcareService.extension:active-period`). Each slice references a
 /// StructureDefinition of type `Extension` that defines the extension URL
-/// (via `fixedUri` on `Extension.url`) and the value type (via
-/// `Extension.value[x]`).
+/// (via `fixedUri` on `Extension.url`) and either a direct value type (via
+/// `Extension.value[x]`) or nested sub-extensions (when `value[x]` is
+/// prohibited with `max=0`).
 ///
 /// This function scans the profile's snapshot for extension slice elements,
 /// looks up the referenced extension definitions, and generates valid
@@ -1184,24 +1185,86 @@ fn populate_extension_slices(
             .unwrap_or(profile_url);
 
         // Find the value type from Extension.value[x]
-        let value_type = ext_elements
+        let value_x_elem = ext_elements
             .iter()
-            .find(|e| e.id == "Extension.value[x]" || e.path == "Extension.value[x]")
-            .and_then(|e| e.type_.first())
-            .map(|t| t.code.as_str());
+            .find(|e| e.id == "Extension.value[x]" || e.path == "Extension.value[x]");
 
-        // Generate the extension value
+        // Determine if this is a complex extension (value[x] prohibited, uses nested extensions)
+        let is_complex = value_x_elem
+            .and_then(|e| e.max.as_deref())
+            .map(|m| m == "0")
+            .unwrap_or(false);
+
         let mut ext_entry = serde_json::json!({
             "url": ext_url
         });
 
-        if let Some(vt) = value_type {
-            // Use generate_typed_value to create a value for the extension's value type
-            let value = generate_typed_value(vt, &[], slice, value_set_systems);
-            // The key is "value[x]" in the extension definition, but in the instance
-            // it becomes the concrete type name, e.g. "valuePeriod", "valueCodeableConcept"
-            let value_key = format!("value{}", vt);
-            ext_entry[value_key] = value;
+        if is_complex {
+            // Complex extension: generate nested sub-extensions from the extension
+            // definition's Extension.extension slices (e.g. suppressedBy, includeSelf).
+            let sub_ext_slices: Vec<&ElementDefinition> = ext_elements
+                .iter()
+                .filter(|e| {
+                    e.slice_name.is_some()
+                        && e.path == "Extension.extension"
+                        && !e.type_.is_empty()
+                        && e.type_[0].code == "Extension"
+                })
+                .collect();
+
+            let mut sub_extensions: Vec<serde_json::Value> = Vec::new();
+
+            for sub_slice in &sub_ext_slices {
+                let min = sub_slice.min.unwrap_or(0);
+                if min == 0 {
+                    continue; // Optional sub-extension, skip
+                }
+
+                // Find the fixed URL for this sub-extension (e.g. "suppressedBy")
+                let sub_url = ext_elements
+                    .iter()
+                    .find(|e| e.id == format!("{}.url", sub_slice.id))
+                    .and_then(|e| e.fixed_uri.as_deref())
+                    .unwrap_or("");
+
+                // Find the value[x] element for this sub-extension to get type + binding
+                let sub_value_elem = ext_elements
+                    .iter()
+                    .find(|e| e.id == format!("{}.value[x]", sub_slice.id));
+
+                let sub_value_type = sub_value_elem
+                    .and_then(|e| e.type_.first())
+                    .map(|t| t.code.as_str());
+
+                let mut sub_entry = serde_json::json!({
+                    "url": sub_url
+                });
+
+                if let (Some(vt), Some(value_elem)) = (sub_value_type, sub_value_elem) {
+                    let value = generate_typed_value(vt, &[], value_elem, value_set_systems);
+                    let value_key = format!("value{}", vt);
+                    sub_entry[value_key] = value;
+                }
+
+                sub_extensions.push(sub_entry);
+            }
+
+            if !sub_extensions.is_empty() {
+                ext_entry["extension"] = serde_json::json!(sub_extensions);
+            }
+        } else {
+            // Simple extension: generate a direct value[x] entry
+            let value_type = value_x_elem
+                .and_then(|e| e.type_.first())
+                .map(|t| t.code.as_str());
+
+            if let Some(vt) = value_type {
+                let value = generate_typed_value(vt, &[], slice, value_set_systems);
+                // The key is "value[x]" in the extension definition, but in the instance
+                // it becomes the concrete type name, e.g. "valuePeriod", "valueCodeableConcept"
+                let value_key = format!("value{}", vt);
+                ext_entry[value_key] = value;
+            }
         }
 
         extensions.push(ext_entry);
