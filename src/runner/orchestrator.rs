@@ -263,6 +263,11 @@ impl Orchestrator {
                 println!("    {}: {} resources", rt, ids.len());
             }
 
+            // Generate update.ndjson with the same resources but 1-2
+            // randomly updated parameters per resource (same IDs).
+            generate_update_ndjson(&generated_ids, output_path)?;
+            println!("  Generated update.ndjson with updated resources");
+
             if self.config.data_generation.generate_only {
                 // Skip upload — NDJSON files are left in {output}/data/ for manual use
                 println!("\n  generate_only = true: skipping upload and deletion");
