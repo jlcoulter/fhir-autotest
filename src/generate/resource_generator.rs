@@ -77,6 +77,16 @@ pub fn generate_resource_with_value_sets(
         value_set_systems,
     )?;
 
+    // Third pass: populate extension slices defined by the profile
+    // (e.g., HealthcareService.extension:active-period, Location.extension:amenity)
+    populate_extension_slices(
+        &mut resource,
+        elements,
+        &profile.base_type,
+        all_profiles,
+        value_set_systems,
+    );
+
     Ok(resource)
 }
 
@@ -1091,6 +1101,115 @@ fn generate_slice_value(
     }
 
     Some(value)
+}
+
+/// Populate extension slices defined by a profile.
+///
+/// Profiles can define slices on the `extension` field (e.g.
+/// `HealthcareService.extension:active-period`). Each slice references a
+/// StructureDefinition of type `Extension` that defines the extension URL
+/// (via `fixedUri` on `Extension.url`) and the value type (via
+/// `Extension.value[x]`).
+///
+/// This function scans the profile's snapshot for extension slice elements,
+/// looks up the referenced extension definitions, and generates valid
+/// extension entries with the correct URL and a generated value.
+///
+/// Only top-level extension slices (e.g. `ResourceType.extension:sliceName`)
+/// are handled — nested extensions on sub-fields are not covered here.
+fn populate_extension_slices(
+    resource: &mut serde_json::Value,
+    elements: &[ElementDefinition],
+    resource_type: &str,
+    all_profiles: &[StructureDefinition],
+    value_set_systems: &HashMap<String, String>,
+) {
+    // Collect extension slice elements (sliceName set on ResourceType.extension)
+    let extension_slices: Vec<&ElementDefinition> = elements
+        .iter()
+        .filter(|e| {
+            e.slice_name.is_some()
+                && e.path == format!("{}.extension", resource_type)
+                && !e.type_.is_empty()
+                && e.type_[0].code == "Extension"
+        })
+        .collect();
+
+    if extension_slices.is_empty() {
+        return;
+    }
+
+    // Build a URL → StructureDefinition map for quick lookup of extension definitions
+    let ext_def_map: std::collections::HashMap<&str, &StructureDefinition> = all_profiles
+        .iter()
+        .filter(|p| p.base_type == "Extension")
+        .map(|p| (p.url.as_str(), p))
+        .collect();
+
+    let mut extensions: Vec<serde_json::Value> = Vec::new();
+
+    for slice in &extension_slices {
+        // Get the profile URL from the slice's type reference
+        let profile_url = slice.type_[0]
+            .profile
+            .first()
+            .map(|s| s.split('|').next().unwrap_or(s))
+            .or_else(|| {
+                slice.type_[0]
+                    .target_profile
+                    .first()
+                    .map(|s| s.split('|').next().unwrap_or(s))
+            });
+
+        let Some(profile_url) = profile_url else {
+            continue;
+        };
+
+        // Look up the extension definition
+        let Some(ext_def) = ext_def_map.get(profile_url) else {
+            continue;
+        };
+
+        // Extract the fixed URL from the extension definition's snapshot
+        let ext_elements = match &ext_def.snapshot {
+            Some(s) => &s.element,
+            None => continue,
+        };
+
+        // Find the fixedUri on Extension.url
+        let ext_url = ext_elements
+            .iter()
+            .find(|e| e.id == "Extension.url" || e.path == "Extension.url")
+            .and_then(|e| e.fixed_uri.as_deref())
+            .unwrap_or(profile_url);
+
+        // Find the value type from Extension.value[x]
+        let value_type = ext_elements
+            .iter()
+            .find(|e| e.id == "Extension.value[x]" || e.path == "Extension.value[x]")
+            .and_then(|e| e.type_.first())
+            .map(|t| t.code.as_str());
+
+        // Generate the extension value
+        let mut ext_entry = serde_json::json!({
+            "url": ext_url
+        });
+
+        if let Some(vt) = value_type {
+            // Use generate_typed_value to create a value for the extension's value type
+            let value = generate_typed_value(vt, &[], slice, value_set_systems);
+            // The key is "value[x]" in the extension definition, but in the instance
+            // it becomes the concrete type name, e.g. "valuePeriod", "valueCodeableConcept"
+            let value_key = format!("value{}", vt);
+            ext_entry[value_key] = value;
+        }
+
+        extensions.push(ext_entry);
+    }
+
+    if !extensions.is_empty() {
+        resource["extension"] = serde_json::json!(extensions);
+    }
 }
 
 fn find_identifier_system(
