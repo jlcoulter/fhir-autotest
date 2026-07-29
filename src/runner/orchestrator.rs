@@ -152,6 +152,17 @@ impl RunReport {
         let json = serde_json::to_string_pretty(&summary)?;
         std::fs::write(&summary_path, json)?;
 
+        // Write failed.json — all failing tests across every group in one file,
+        // ordered by group then test name, for easy review.
+        let failed_results: Vec<&TestResult> = self
+            .results
+            .iter()
+            .filter(|r| !r.passed)
+            .collect();
+        let failed_path = results_dir.join("failed.json");
+        let json = serde_json::to_string_pretty(&failed_results)?;
+        std::fs::write(&failed_path, json)?;
+
         Ok(())
     }
 }
