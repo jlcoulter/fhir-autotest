@@ -553,19 +553,752 @@ fn add_write_auth(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn creation_order_determines_upload_order() {
-        // Verify that the upload function respects creation order
-        // This is implicitly tested by the integration tests
-        // but we verify the ordering logic here
-        let order = [
-            "Organization".to_string(),
-            "Location".to_string(),
-            "Practitioner".to_string(),
-            "PractitionerRole".to_string(),
-        ];
-        // Just verifying the logic compiles and order is preserved
-        assert_eq!(order[0], "Organization");
-        assert_eq!(order[3], "PractitionerRole");
+    use super::*;
+    use axum::{body::Body, extract::Request, http::StatusCode, routing::any, Router};
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default, Debug)]
+    struct RequestLog {
+        requests: Vec<(String, String, Option<serde_json::Value>)>, // (method, url, body)
+    }
+
+    async fn setup_test_server() -> (String, Arc<Mutex<RequestLog>>) {
+        let log: Arc<Mutex<RequestLog>> = Arc::default();
+        let log_clone = log.clone();
+
+        let app = Router::new().route("/{*path}", any(move |req: Request<Body>| {
+            let log = log_clone.clone();
+            async move {
+                let method = req.method().to_string();
+                let uri = req.uri().to_string();
+
+                // Read the body
+                let bytes = axum::body::to_bytes(req.into_body(), 1024 * 1024).await.unwrap();
+                let body: Option<serde_json::Value> = if bytes.is_empty() {
+                    None
+                } else {
+                    serde_json::from_slice(&bytes).ok()
+                };
+
+                let mut log = log.lock().unwrap();
+                log.requests.push((method, uri, body));
+
+                (
+                    StatusCode::OK,
+                    axum::Json(serde_json::json!({
+                        "resourceType": "OperationOutcome",
+                        "issue": [{"severity": "information", "code": "success", "diagnostics": "ok"}]
+                    })),
+                )
+            }
+        }));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        (format!("http://{}", addr), log)
+    }
+
+    async fn setup_test_server_with_status(status: StatusCode) -> (String, Arc<Mutex<RequestLog>>) {
+        let log: Arc<Mutex<RequestLog>> = Arc::default();
+        let log_clone = log.clone();
+
+        let app = Router::new().route("/{*path}", any(move |req: Request<Body>| {
+            let log = log_clone.clone();
+            async move {
+                let method = req.method().to_string();
+                let uri = req.uri().to_string();
+                let bytes = axum::body::to_bytes(req.into_body(), 1024 * 1024).await.unwrap();
+                let body: Option<serde_json::Value> = if bytes.is_empty() {
+                    None
+                } else {
+                    serde_json::from_slice(&bytes).ok()
+                };
+
+                let mut log = log.lock().unwrap();
+                log.requests.push((method, uri, body));
+
+                (status, axum::Json(serde_json::json!({
+                    "resourceType": "OperationOutcome",
+                    "issue": [{"severity": "error", "code": "processing", "diagnostics": "server error"}]
+                })))
+            }
+        }));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        (format!("http://{}", addr), log)
+    }
+
+    async fn setup_test_server_with_echo() -> (String, Arc<Mutex<RequestLog>>) {
+        let log: Arc<Mutex<RequestLog>> = Arc::default();
+        let log_clone = log.clone();
+
+        let app = Router::new().route(
+            "/{*path}",
+            any(move |req: Request<Body>| {
+                let log = log_clone.clone();
+                async move {
+                    let method = req.method().to_string();
+                    let uri = req.uri().to_string();
+                    let bytes = axum::body::to_bytes(req.into_body(), 1024 * 1024)
+                        .await
+                        .unwrap();
+                    let body: Option<serde_json::Value> = if bytes.is_empty() {
+                        None
+                    } else {
+                        serde_json::from_slice(&bytes).ok()
+                    };
+
+                    let mut log = log.lock().unwrap();
+                    log.requests.push((method, uri, body.clone()));
+
+                    // Echo back the body with an id so the uploader can extract it
+                    let response_body = body
+                        .unwrap_or_else(|| serde_json::json!({"resourceType": "OperationOutcome"}));
+
+                    (StatusCode::OK, axum::Json(response_body))
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        (format!("http://{}", addr), log)
+    }
+
+    // ── upload_ndjson_files tests ──
+
+    #[tokio::test]
+    async fn upload_ndjson_single_type() {
+        let (base_url, log) = setup_test_server_with_echo().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Write a test NDJSON file with 3 resources
+        let mut file = std::fs::File::create(data_dir.join("Patient.ndjson")).unwrap();
+        for i in 0..3 {
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "resourceType": "Patient",
+                    "id": format!("patient-{}", i + 1),
+                    "name": [{"family": format!("Test{}", i + 1)}]
+                })
+            )
+            .unwrap();
+        }
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        let ids = upload_ndjson_files(&data_dir, &["Patient".to_string()], &endpoint, 1)
+            .await
+            .unwrap();
+
+        assert!(ids.contains_key("Patient"));
+        assert_eq!(ids["Patient"].len(), 3);
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.requests.len(), 3);
+        assert_eq!(log.requests[0].0, "PUT");
+        assert!(log.requests[0].1.contains("/Patient/patient-1"));
+        assert_eq!(log.requests[1].0, "PUT");
+        assert!(log.requests[1].1.contains("/Patient/patient-2"));
+        assert_eq!(log.requests[2].0, "PUT");
+        assert!(log.requests[2].1.contains("/Patient/patient-3"));
+    }
+
+    #[tokio::test]
+    async fn upload_ndjson_multiple_types() {
+        let (base_url, log) = setup_test_server_with_echo().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Write Patient.ndjson
+        let mut file = std::fs::File::create(data_dir.join("Patient.ndjson")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "resourceType": "Patient", "id": "patient-1", "name": [{"family": "Test"}]
+            })
+        )
+        .unwrap();
+
+        // Write Observation.ndjson
+        let mut file = std::fs::File::create(data_dir.join("Observation.ndjson")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "resourceType": "Observation", "id": "obs-1", "status": "final"
+            })
+        )
+        .unwrap();
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        let ids = upload_ndjson_files(
+            &data_dir,
+            &["Patient".to_string(), "Observation".to_string()],
+            &endpoint,
+            1,
+        )
+        .await
+        .unwrap();
+
+        assert!(ids.contains_key("Patient"));
+        assert!(ids.contains_key("Observation"));
+        assert_eq!(ids["Patient"].len(), 1);
+        assert_eq!(ids["Observation"].len(), 1);
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.requests.len(), 2);
+        assert!(log.requests[0].1.contains("/Patient/patient-1"));
+        assert!(log.requests[1].1.contains("/Observation/obs-1"));
+    }
+
+    #[tokio::test]
+    async fn upload_ndjson_with_post_method() {
+        let (base_url, log) = setup_test_server_with_echo().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Write a test NDJSON file
+        let mut file = std::fs::File::create(data_dir.join("Patient.ndjson")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "resourceType": "Patient",
+                "id": "patient-1",
+                "name": [{"family": "Test"}]
+            })
+        )
+        .unwrap();
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "POST".to_string(),
+            concurrency: 1,
+        };
+
+        let ids = upload_ndjson_files(&data_dir, &["Patient".to_string()], &endpoint, 1)
+            .await
+            .unwrap();
+
+        assert!(ids.contains_key("Patient"));
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.requests.len(), 1);
+        // POST should be used instead of PUT
+        assert_eq!(log.requests[0].0, "POST");
+        // POST URL should be /Patient (no id in path)
+        assert!(log.requests[0].1.ends_with("/Patient"));
+        // id should be removed from body for POST
+        if let Some(ref body) = log.requests[0].2 {
+            assert!(body.get("id").is_none(), "id should be removed for POST");
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_ndjson_handles_missing_file() {
+        let (base_url, _log) = setup_test_server().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // No NDJSON files written — the file doesn't exist
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        // Should not crash — should return empty map
+        let ids = upload_ndjson_files(&data_dir, &["Patient".to_string()], &endpoint, 1)
+            .await
+            .unwrap();
+
+        // Patient should not be in the map since no file was found
+        assert!(
+            !ids.contains_key("Patient"),
+            "missing file should be skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn upload_ndjson_handles_server_error() {
+        let (base_url, log) =
+            setup_test_server_with_status(StatusCode::INTERNAL_SERVER_ERROR).await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Write a test NDJSON file
+        let mut file = std::fs::File::create(data_dir.join("Patient.ndjson")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "resourceType": "Patient",
+                "id": "patient-1",
+                "name": [{"family": "Test"}]
+            })
+        )
+        .unwrap();
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        // Should not crash — should log the error and continue
+        let ids = upload_ndjson_files(&data_dir, &["Patient".to_string()], &endpoint, 1)
+            .await
+            .unwrap();
+
+        // The request was made but the server returned 500, so no IDs should be recorded
+        assert!(ids.contains_key("Patient"));
+        assert!(
+            ids["Patient"].is_empty(),
+            "no IDs should be recorded on server error"
+        );
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.requests.len(), 1);
+        assert_eq!(log.requests[0].0, "PUT");
+    }
+
+    // ── upload_supplement_resources tests ──
+
+    #[tokio::test]
+    async fn test_upload_supplement_resources() {
+        let (base_url, log) = setup_test_server_with_echo().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Write a Patient.ndjson so bulk_counts has Patient covered
+        let mut file = std::fs::File::create(data_dir.join("Patient.ndjson")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "resourceType": "Patient", "id": "patient-1"
+            })
+        )
+        .unwrap();
+
+        let mut bulk_counts = HashMap::new();
+        bulk_counts.insert("Patient".to_string(), 1u64);
+        // Organization is NOT in bulk_counts — should get a supplement
+
+        let profile_urls = HashMap::new();
+        let profiles = Vec::new();
+        let value_set_systems = HashMap::new();
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        let ids = upload_supplement_resources(
+            &["Patient".to_string(), "Organization".to_string()],
+            &bulk_counts,
+            &profile_urls,
+            &profiles,
+            &value_set_systems,
+            &endpoint,
+        )
+        .await
+        .unwrap();
+
+        // Patient should be skipped (in bulk_counts), Organization should be uploaded
+        assert!(
+            !ids.contains_key("Patient"),
+            "Patient is in bulk_counts, should be skipped"
+        );
+        assert!(
+            ids.contains_key("Organization"),
+            "Organization should get a supplement"
+        );
+        assert_eq!(ids["Organization"].len(), 1);
+        assert_eq!(ids["Organization"][0], "organization-1");
+
+        let log = log.lock().unwrap();
+        // Only Organization should have been uploaded
+        assert_eq!(log.requests.len(), 1);
+        assert!(log.requests[0].1.contains("/Organization/organization-1"));
+    }
+
+    #[tokio::test]
+    async fn test_upload_supplement_skips_non_resource_types() {
+        let (base_url, log) = setup_test_server_with_echo().await;
+
+        let bulk_counts = HashMap::new(); // Nothing is covered
+        let profile_urls = HashMap::new();
+        let profiles = Vec::new();
+        let value_set_systems = HashMap::new();
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        let ids = upload_supplement_resources(
+            &[
+                "Extension".to_string(),
+                "Identifier".to_string(),
+                "Organization".to_string(),
+            ],
+            &bulk_counts,
+            &profile_urls,
+            &profiles,
+            &value_set_systems,
+            &endpoint,
+        )
+        .await
+        .unwrap();
+
+        // Extension and Identifier should be skipped (NON_RESOURCE_TYPES)
+        assert!(!ids.contains_key("Extension"));
+        assert!(!ids.contains_key("Identifier"));
+        // Organization should be uploaded
+        assert!(ids.contains_key("Organization"));
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.requests.len(), 1);
+        assert!(log.requests[0].1.contains("/Organization/organization-1"));
+    }
+
+    #[tokio::test]
+    async fn test_upload_supplement_skips_types_in_bulk_counts() {
+        let (base_url, log) = setup_test_server_with_echo().await;
+
+        let mut bulk_counts = HashMap::new();
+        bulk_counts.insert("Patient".to_string(), 5u64);
+        bulk_counts.insert("Organization".to_string(), 3u64);
+
+        let profile_urls = HashMap::new();
+        let profiles = Vec::new();
+        let value_set_systems = HashMap::new();
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        let ids = upload_supplement_resources(
+            &["Patient".to_string(), "Organization".to_string()],
+            &bulk_counts,
+            &profile_urls,
+            &profiles,
+            &value_set_systems,
+            &endpoint,
+        )
+        .await
+        .unwrap();
+
+        // Both types are in bulk_counts with count > 0, so nothing should be uploaded
+        assert!(
+            ids.is_empty(),
+            "no supplements should be uploaded when all types are covered"
+        );
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.requests.len(), 0, "no requests should be made");
+    }
+
+    // ── delete_all_resources tests ──
+
+    #[tokio::test]
+    async fn test_delete_all_resources() {
+        let (base_url, log) = setup_test_server().await;
+
+        let mut ids = HashMap::new();
+        ids.insert(
+            "Patient".to_string(),
+            vec!["patient-1".to_string(), "patient-2".to_string()],
+        );
+        ids.insert("Organization".to_string(), vec!["org-1".to_string()]);
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        delete_all_resources(
+            &ids,
+            &["Patient".to_string(), "Organization".to_string()],
+            &endpoint,
+            1,
+        )
+        .await
+        .unwrap();
+
+        let log = log.lock().unwrap();
+        // Should delete in reverse creation order: Organization first, then Patient
+        assert_eq!(log.requests.len(), 3);
+        assert_eq!(log.requests[0].0, "DELETE");
+        assert!(log.requests[0].1.contains("/Organization/org-1"));
+        assert_eq!(log.requests[1].0, "DELETE");
+        assert!(log.requests[1].1.contains("/Patient/patient-1"));
+        assert_eq!(log.requests[2].0, "DELETE");
+        assert!(log.requests[2].1.contains("/Patient/patient-2"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_all_resources_handles_errors() {
+        let (base_url, log) = setup_test_server_with_status(StatusCode::NOT_FOUND).await;
+
+        let mut ids = HashMap::new();
+        ids.insert("Patient".to_string(), vec!["patient-1".to_string()]);
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        // Should not crash — 404 is logged and processing continues
+        let result = delete_all_resources(&ids, &["Patient".to_string()], &endpoint, 1).await;
+        assert!(result.is_ok(), "delete should not fail on 404");
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.requests.len(), 1);
+        assert_eq!(log.requests[0].0, "DELETE");
+    }
+
+    // ── ensure_r5_extension_profiles tests ──
+
+    #[tokio::test]
+    async fn test_ensure_r5_extension_profiles() {
+        let (base_url, log) = setup_test_server().await;
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        ensure_r5_extension_profiles(&endpoint).await.unwrap();
+
+        let log = log.lock().unwrap();
+        // Should upload all 3 R5 extension profiles
+        assert_eq!(log.requests.len(), 3);
+        for req in log.requests.iter() {
+            assert_eq!(req.0, "PUT");
+            assert!(req.1.contains("/StructureDefinition/"));
+        }
+        // Verify specific profile URLs
+        assert!(log.requests[0].1.contains("individual-recordedSexOrGender"));
+        assert!(log.requests[1].1.contains("individual-genderIdentity"));
+        assert!(log.requests[2].1.contains("individual-pronouns"));
+    }
+
+    // ── add_write_auth tests ──
+
+    #[tokio::test]
+    async fn add_write_auth_basic() {
+        let endpoint = WriteEndpoint::Repository {
+            base_url: "http://repo.test/fhir".to_string(),
+            username: "admin".to_string(),
+            password: "s3cret".to_string(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        let client = reqwest::Client::new();
+        let req = client.put("http://repo.test/fhir/Patient/1");
+        let req = add_write_auth(req, &endpoint);
+
+        // We can't easily inspect the auth header on a RequestBuilder,
+        // but we can verify it compiles and the function doesn't panic.
+        // The actual auth is verified by sending a request to a server
+        // that checks the Authorization header.
+        let _ = req;
+    }
+
+    #[tokio::test]
+    async fn add_write_auth_headers() {
+        let mut headers = HashMap::new();
+        headers.insert("X-API-Key".to_string(), "test-key-123".to_string());
+        headers.insert("Authorization".to_string(), "Bearer test-token".to_string());
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: "http://server.test/fhir".to_string(),
+            headers,
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        let client = reqwest::Client::new();
+        let req = client.put("http://server.test/fhir/Patient/1");
+        let req = add_write_auth(req, &endpoint);
+
+        // Verify it compiles and doesn't panic
+        let _ = req;
+    }
+
+    #[allow(clippy::type_complexity)]
+    #[tokio::test]
+    async fn add_write_auth_basic_sends_correct_header() {
+        let log: Arc<Mutex<Vec<(String, Vec<(String, String)>)>>> = Arc::default();
+        let log_clone = log.clone();
+
+        let app = Router::new().route(
+            "/{*path}",
+            any(move |req: Request<Body>| {
+                let log = log_clone.clone();
+                async move {
+                    let method = req.method().to_string();
+                    let headers: Vec<(String, String)> = req
+                        .headers()
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                        .collect();
+                    let mut log = log.lock().unwrap();
+                    log.push((method, headers));
+                    (
+                        StatusCode::OK,
+                        axum::Json(serde_json::json!({"resourceType": "OperationOutcome"})),
+                    )
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let endpoint = WriteEndpoint::Repository {
+            base_url: base_url.clone(),
+            username: "admin".to_string(),
+            password: "s3cret".to_string(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        let client = reqwest::Client::new();
+        let req = client.put(format!("{}/Patient/1", base_url));
+        let req = add_write_auth(req, &endpoint);
+        req.send().await.unwrap();
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.len(), 1);
+        let auth_header = log[0].1.iter().find(|(k, _)| k == "authorization");
+        assert!(
+            auth_header.is_some(),
+            "Authorization header should be present"
+        );
+        if let Some((_, val)) = auth_header {
+            assert!(val.starts_with("Basic "), "Auth should be Basic");
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    #[tokio::test]
+    async fn add_write_auth_headers_sends_correct_headers() {
+        let log: Arc<Mutex<Vec<(String, Vec<(String, String)>)>>> = Arc::default();
+        let log_clone = log.clone();
+
+        let app = Router::new().route(
+            "/{*path}",
+            any(move |req: Request<Body>| {
+                let log = log_clone.clone();
+                async move {
+                    let method = req.method().to_string();
+                    let headers: Vec<(String, String)> = req
+                        .headers()
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                        .collect();
+                    let mut log = log.lock().unwrap();
+                    log.push((method, headers));
+                    (
+                        StatusCode::OK,
+                        axum::Json(serde_json::json!({"resourceType": "OperationOutcome"})),
+                    )
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let mut headers = HashMap::new();
+        headers.insert("X-API-Key".to_string(), "test-key-123".to_string());
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers,
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        let client = reqwest::Client::new();
+        let req = client.put(format!("{}/Patient/1", base_url));
+        let req = add_write_auth(req, &endpoint);
+        req.send().await.unwrap();
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.len(), 1);
+        let api_key_header = log[0].1.iter().find(|(k, _)| k == "x-api-key");
+        assert!(
+            api_key_header.is_some(),
+            "X-API-Key header should be present"
+        );
+        if let Some((_, val)) = api_key_header {
+            assert_eq!(val, "test-key-123");
+        }
     }
 }
