@@ -310,3 +310,351 @@ pub async fn start_mock_server(port: u16) -> anyhow::Result<SocketAddr> {
 
     Ok(bound_addr)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    /// Start the mock server on a random port and return the base URL.
+    async fn setup_server() -> String {
+        let app = create_mock_app();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{}/fhir", addr)
+    }
+
+    #[tokio::test]
+    async fn test_create_and_read_resource() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Create
+        let resp = client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!({
+                "resourceType": "Patient",
+                "name": [{"family": "Test"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let id = body["id"].as_str().unwrap().to_string();
+
+        // Read
+        let resp = client
+            .get(format!("{}/Patient/{}", base_url, id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["id"], id);
+        assert_eq!(body["name"][0]["family"], "Test");
+    }
+
+    #[tokio::test]
+    async fn test_read_nonexistent_resource() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .get(format!("{}/Patient/nonexistent-id", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["resourceType"], "OperationOutcome");
+    }
+
+    #[tokio::test]
+    async fn test_search_all_resources() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Create 3 resources
+        for i in 0..3 {
+            client
+                .post(format!("{}/Patient", base_url))
+                .header("Content-Type", "application/fhir+json")
+                .json(&serde_json::json!({
+                    "resourceType": "Patient",
+                    "id": format!("pat-{}", i),
+                    "name": [{"family": format!("Test{}", i)}]
+                }))
+                .send()
+                .await
+                .unwrap();
+        }
+
+        // Search all
+        let resp = client
+            .get(format!("{}/Patient", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["resourceType"], "Bundle");
+        assert_eq!(body["total"], 3);
+        assert_eq!(body["entry"].as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_search_with_filter() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Create resources with different family names
+        let patients = ["Smith", "Jones", "Smith"];
+        for (i, family) in patients.iter().enumerate() {
+            client
+                .post(format!("{}/Patient", base_url))
+                .header("Content-Type", "application/fhir+json")
+                .json(&serde_json::json!({
+                    "resourceType": "Patient",
+                    "id": format!("pat-{}", i),
+                    "name": [{"family": family}]
+                }))
+                .send()
+                .await
+                .unwrap();
+        }
+
+        // Search with filter
+        let resp = client
+            .get(format!("{}/Patient?family=Smith", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["entry"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_search_with_count() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Create 5 resources
+        for i in 0..5 {
+            client
+                .post(format!("{}/Patient", base_url))
+                .header("Content-Type", "application/fhir+json")
+                .json(&serde_json::json!({
+                    "resourceType": "Patient",
+                    "id": format!("pat-{}", i),
+                    "name": [{"family": format!("Test{}", i)}]
+                }))
+                .send()
+                .await
+                .unwrap();
+        }
+
+        // Search with _count=2
+        let resp = client
+            .get(format!("{}/Patient?_count=2", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["total"], 5);
+        assert_eq!(body["entry"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_search_empty_results() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Create a resource
+        client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!({
+                "resourceType": "Patient",
+                "name": [{"family": "Smith"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        // Search for a non-matching value
+        let resp = client
+            .get(format!("{}/Patient?family=Nonexistent", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["total"], 0);
+        assert_eq!(body["entry"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_update_resource() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Create
+        let resp = client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!({
+                "resourceType": "Patient",
+                "name": [{"family": "Old"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let id = body["id"].as_str().unwrap().to_string();
+
+        // Update
+        let resp = client
+            .put(format!("{}/Patient/{}", base_url, id))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!({
+                "resourceType": "Patient",
+                "name": [{"family": "Updated"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["name"][0]["family"], "Updated");
+
+        // Verify via GET
+        let resp = client
+            .get(format!("{}/Patient/{}", base_url, id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["name"][0]["family"], "Updated");
+    }
+
+    #[tokio::test]
+    async fn test_delete_resource() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Create
+        let resp = client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!({
+                "resourceType": "Patient",
+                "name": [{"family": "DeleteMe"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let id = body["id"].as_str().unwrap().to_string();
+
+        // Delete
+        let resp = client
+            .delete(format!("{}/Patient/{}", base_url, id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify gone
+        let resp = client
+            .get(format!("{}/Patient/{}", base_url, id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_resource() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .delete(format!("{}/Patient/nonexistent-id", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["resourceType"], "OperationOutcome");
+    }
+
+    #[tokio::test]
+    async fn test_create_resource_with_id() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // PUT with a specific ID (create-as-update)
+        let resp = client
+            .put(format!("{}/Patient/my-custom-id", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!({
+                "resourceType": "Patient",
+                "name": [{"family": "Custom"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["id"], "my-custom-id");
+
+        // Verify via GET
+        let resp = client
+            .get(format!("{}/Patient/my-custom-id", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["id"], "my-custom-id");
+        assert_eq!(body["name"][0]["family"], "Custom");
+    }
+
+    #[tokio::test]
+    async fn test_search_with_unknown_param() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Create a resource
+        client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!({
+                "resourceType": "Patient",
+                "name": [{"family": "Test"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        // Search with an unknown parameter — should return 200 Bundle (permissive)
+        let resp = client
+            .get(format!("{}/Patient?unknownparam=foo", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["resourceType"], "Bundle");
+        assert_eq!(body["total"], 0);
+    }
+}
