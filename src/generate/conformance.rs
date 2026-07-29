@@ -389,7 +389,7 @@ fn collect_must_support_fields(profile: &StructureDefinition) -> Vec<String> {
 
     elements
         .iter()
-        .filter(|e| e.must_support && e.min.unwrap_or(0) > 0 && e.path != profile.base_type)
+        .filter(|e| e.must_support && e.path != profile.base_type)
         .filter_map(|e| {
             // Convert "Patient.name" → "name", "Patient.name.family" → "name.family"
             e.path
@@ -703,6 +703,39 @@ mod tests {
                         slice_name: None,
                         slicing: None,
                     },
+                    ElementDefinition {
+                        id: "Patient.gender".to_string(),
+                        path: "Patient.gender".to_string(),
+                        min: Some(0),
+                        max: Some("1".to_string()),
+                        type_: vec![],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: true,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                        slice_name: None,
+                        slicing: None,
+                    },
                 ],
             }),
             differential: None,
@@ -762,11 +795,20 @@ mod tests {
             must_support_tests.len()
         );
 
-        // Should test that 'name' is present (it's mustSupport=true)
+        // Should test that 'name' is present (it's mustSupport=true, min=1)
         let name_test = must_support_tests
             .iter()
             .find(|t| t.name.contains("must_support_name"));
         assert!(name_test.is_some(), "Expected must_support_name test");
+
+        // Should test that 'gender' is present (it's mustSupport=true, min=0)
+        let gender_test = must_support_tests
+            .iter()
+            .find(|t| t.name.contains("must_support_gender"));
+        assert!(
+            gender_test.is_some(),
+            "Expected must_support_gender test for mustSupport field with min=0"
+        );
     }
 
     #[test]
