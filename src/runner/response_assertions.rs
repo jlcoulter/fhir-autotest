@@ -374,11 +374,20 @@ fn resolve_json_path(value: &Value, path: &str) -> Option<Value> {
         return Some(value.clone());
     }
 
-    // When the current value is an array, search ALL elements for the first one
-    // that satisfies the remaining path.  The original code only checked arr[0],
-    // which missed complex extensions that aren't the first element in the array.
+    // Two-phase array resolution for O(1) best-case performance:
+    // 1. Fast path: try arr[0] first (most common case — the first element in a
+    //    FHIR array usually contains the expected fields).
+    // 2. Fallback: only search remaining elements if the fast path fails.
+    //    This handles cases where the target sub-path is in a later element.
     if let Some(arr) = value.as_array() {
-        for elem in arr {
+        // Fast path: try first element
+        if let Some(first) = arr.first() {
+            if let Some(result) = resolve_json_path(first, path) {
+                return Some(result);
+            }
+        }
+        // Fallback: search remaining elements
+        for elem in arr.iter().skip(1) {
             if let Some(result) = resolve_json_path(elem, path) {
                 return Some(result);
             }
