@@ -7,6 +7,95 @@ use crate::model::*;
 use anyhow::Result;
 use std::collections::HashMap;
 
+/// Populate mustSupport fields with min=0 that are not BackboneElements.
+///
+/// The required-fields pass (pass 1) only populates fields with min > 0.
+/// But many profiles mark optional fields as mustSupport (e.g.
+/// Organization.telecom, Location.alias, Provenance.activity). The
+/// conformance checker verifies these fields are present in responses,
+/// so the generated test resource should include them.
+///
+/// This pass generates a single default value for each such field.
+/// Sub-fields (e.g. telecom.system, telecom.value) are handled by
+/// generate_typed_value which populates complex types with defaults.
+pub fn populate_must_support_optional_fields(
+    resource: &mut serde_json::Value,
+    elements: &[ElementDefinition],
+    resource_type: &str,
+    all_profiles: &[StructureDefinition],
+    value_set_systems: &HashMap<String, String>,
+) {
+    for element in elements {
+        let field_name = match get_field_name(&element.path, resource_type) {
+            Some(name) => name,
+            None => continue,
+        };
+        if field_name == resource_type || field_name.contains(':') {
+            continue;
+        }
+
+        // Must be optional (min=0) and mustSupport
+        if element.min.unwrap_or(0) != 0 {
+            continue;
+        }
+        if !element.must_support {
+            continue;
+        }
+
+        // Skip BackboneElements — handled by populate_must_support_backbones
+        if element.type_.first().map(|t| t.code.as_str()) == Some("BackboneElement") {
+            continue;
+        }
+
+        // Skip if the field is already populated
+        if resource.get(&field_name).is_some() {
+            continue;
+        }
+
+        // Skip fields with no type information
+        if element.type_.is_empty() {
+            continue;
+        }
+
+        let type_def = &element.type_[0];
+        let type_code = &type_def.code;
+
+        // Skip Extension — can't generate valid extensions without knowing the URL
+        if type_code == "Extension" {
+            continue;
+        }
+
+        let target_profiles = &type_def.target_profile;
+
+        let mut value =
+            generate_typed_value(type_code, target_profiles, element, value_set_systems);
+
+        if type_code == "Identifier" {
+            apply_identifier_profile_constraints(&mut value, type_def, all_profiles);
+        }
+
+        // For complex types inside a mustSupport field, check for required sub-fields
+        // at depth 2 (e.g. telecom.system, telecom.value)
+        if is_complex_type(type_code) {
+            let child_path = format!("{}.{}", resource_type, field_name);
+            populate_nested_required_fields(
+                &mut value,
+                &child_path,
+                elements,
+                all_profiles,
+                value_set_systems,
+            );
+        }
+
+        let max = element.max.as_deref().unwrap_or("1");
+        if max != "1" || is_base_spec_repeatable(resource_type, &field_name) {
+            resource[&field_name] = serde_json::json!([value]);
+        } else {
+            resource[&field_name] = value;
+        }
+    }
+}
+
 /// Populate mustSupport BackboneElement fields that have min=0 but whose children
 /// include at least one required field (min ≥ 1).
 ///
