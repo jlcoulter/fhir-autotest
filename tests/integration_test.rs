@@ -517,6 +517,10 @@ fn test_plan_contains_all_test_kinds() {
         "Should have negative tests"
     );
 
+    // Must have conformance tests (mustSupport, undeclared interactions)
+    // Conformance tests are added at runtime by the orchestrator, not during --generate.
+    // They are verified in the run_against_mock_fhir_server test below.
+
     // Total should be substantially more than just CRUD + individual searches
     assert!(
         tests.len() >= 15,
@@ -694,5 +698,269 @@ async fn run_against_mock_fhir_server() {
     assert!(
         !with_assertion_errors.is_empty() || report.passed == report.total,
         "Assertion validation should produce either errors (proving it runs) or all tests pass"
+    );
+
+    // Verify conformance tests were generated and run
+    let conformance_results: Vec<_> = report
+        .results
+        .iter()
+        .filter(|r| r.test_group == "_conformance")
+        .collect();
+    assert!(
+        !conformance_results.is_empty(),
+        "Should have conformance test results"
+    );
+    let conformance_names: Vec<&str> = conformance_results
+        .iter()
+        .map(|r| r.test_name.as_str())
+        .collect();
+    assert!(
+        conformance_names
+            .iter()
+            .any(|n| n.contains("_must_support_")),
+        "Should have mustSupport conformance tests"
+    );
+    assert!(
+        conformance_names.iter().any(|n| n.contains("_undeclared_")),
+        "Should have undeclared interaction conformance tests"
+    );
+}
+
+// ─── Dry-Run Test ────────────────────────────────────────────────────────────
+//
+// Verifies that --dry-run prints all test URLs without executing them.
+
+#[test]
+fn dry_run_prints_all_test_urls() {
+    let tgz_data = create_test_ig_package();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tgz_path = temp_dir.path().join("test_ig_package.tgz");
+    std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+    let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_config(&config_path, &tgz_path, &output_dir);
+
+    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let output = cmd
+        .args(["--config", config_path.to_str().unwrap(), "--dry-run"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should print test groups and URLs
+    assert!(
+        stdout.contains("Dry Run"),
+        "Should contain 'Dry Run' header"
+    );
+    assert!(
+        stdout.contains("Patient"),
+        "Should list Patient resource type"
+    );
+    assert!(stdout.contains("GET"), "Should contain HTTP methods");
+    assert!(
+        stdout.contains("Setup resources"),
+        "Should list setup resources"
+    );
+    assert!(stdout.contains("Cleanup"), "Should list cleanup phase");
+}
+
+// ─── Bulk Data Generation Test ──────────────────────────────────────────────
+//
+// Verifies that NDJSON files are generated with the correct number of resources
+// via the orchestrator with generate_only = true.
+
+#[tokio::test]
+async fn bulk_data_generates_ndjson_files() {
+    use fhir_ig_testgen::config::models::*;
+    use fhir_ig_testgen::runner::orchestrator::Orchestrator;
+    use std::collections::HashMap;
+
+    let tgz_data = create_test_ig_package();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tgz_path = temp_dir.path().join("test_ig_package.tgz");
+    std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+    // Start mock server so the orchestrator can run
+    let addr = fhir_ig_testgen::mock_server::start_mock_server(0)
+        .await
+        .unwrap();
+    let mock_url = format!("http://{}", addr);
+
+    let output_dir = temp_dir.path().join("output");
+    let mut counts = HashMap::new();
+    counts.insert("Patient".to_string(), 5u64);
+    counts.insert("Observation".to_string(), 10u64);
+
+    let config = TestConfig {
+        package: Some(tgz_path.to_str().unwrap().to_string()),
+        output: output_dir.to_str().unwrap().to_string(),
+        dry_run: false,
+        server: ServerConfig {
+            base_url: format!("{}/fhir", mock_url),
+            headers: HashMap::new(),
+        },
+        repository: None,
+        overrides: OverrideConfig::default(),
+        data_generation: DataGenerationConfig {
+            counts,
+            generate_only: true,
+        },
+        mock: false,
+        mock_port: 0,
+    };
+
+    let orchestrator = Orchestrator::new(config);
+    let report = orchestrator.run(tgz_path.to_str().unwrap()).await.unwrap();
+
+    // Verify NDJSON files
+    assert!(
+        output_dir.join("data/Patient.ndjson").exists(),
+        "Patient.ndjson should exist"
+    );
+    assert!(
+        output_dir.join("data/Observation.ndjson").exists(),
+        "Observation.ndjson should exist"
+    );
+    assert!(
+        output_dir.join("data/combined.ndjson").exists(),
+        "combined.ndjson should exist"
+    );
+
+    // Verify correct number of resources
+    let patient_path = output_dir.join("data/Patient.ndjson");
+    let patient_content = std::fs::read_to_string(&patient_path).unwrap();
+    let patient_lines: Vec<_> = patient_content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    assert_eq!(
+        patient_lines.len(),
+        5,
+        "Should generate 5 Patient resources"
+    );
+
+    let obs_path = output_dir.join("data/Observation.ndjson");
+    let obs_content = std::fs::read_to_string(&obs_path).unwrap();
+    let obs_lines: Vec<_> = obs_content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    assert_eq!(
+        obs_lines.len(),
+        10,
+        "Should generate 10 Observation resources"
+    );
+
+    // Verify the orchestrator ran tests (generate_only skips upload but still runs tests)
+    assert!(report.total > 0, "Should have run tests");
+}
+
+// ─── Error Handling Tests ────────────────────────────────────────────────────
+//
+// Verifies graceful failure on invalid inputs.
+
+#[test]
+fn fails_on_nonexistent_package() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = temp_dir.path().join("config.toml");
+    let config_content = r#"
+package = "/nonexistent/package.tgz"
+output = "./output"
+[server]
+base_url = "http://localhost:8080/fhir"
+"#;
+    std::fs::write(&config_path, config_content).unwrap();
+
+    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn fails_on_missing_package_in_config() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = temp_dir.path().join("config.toml");
+    let config_content = r#"
+output = "./output"
+[server]
+base_url = "http://localhost:8080/fhir"
+"#;
+    std::fs::write(&config_path, config_content).unwrap();
+
+    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn fails_on_malformed_config() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = temp_dir.path().join("config.toml");
+    std::fs::write(&config_path, "this is not valid toml {{{").unwrap();
+
+    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    cmd.args(["--config", config_path.to_str().unwrap()])
+        .assert()
+        .failure();
+}
+
+// ─── CLI Mock Server End-to-End Test ────────────────────────────────────────
+//
+// Verifies the full pipeline via CLI: generate → mock server → test → results.
+
+#[test]
+fn run_full_pipeline_against_mock_server() {
+    let tgz_data = create_test_ig_package();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tgz_path = temp_dir.path().join("test_ig_package.tgz");
+    std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+    let output_dir = temp_dir.path().join("output");
+    let config_content = format!(
+        r#"package = "{}"
+output = "{}"
+mock = true
+
+[server]
+base_url = "http://localhost:8080/fhir"
+"#,
+        tgz_path.display(),
+        output_dir.display(),
+    );
+    let config_path = temp_dir.path().join("config.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let _output = cmd
+        .args(["--config", config_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    // The binary may exit with failure if some tests fail, but results should still be written
+    // Verify results were written regardless of exit code
+    assert!(
+        output_dir.join("results/summary.json").exists(),
+        "summary.json should exist"
+    );
+    assert!(
+        output_dir.join("results/Patient.json").exists(),
+        "Patient results should exist"
+    );
+
+    // Verify summary has expected structure
+    let summary: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(output_dir.join("results/summary.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        summary["total"].as_u64().unwrap() > 0,
+        "Should have run at least one test"
+    );
+    assert!(
+        summary["passed"].as_u64().unwrap() > 0 || summary["failed"].as_u64().unwrap() > 0,
+        "Should have passed or failed tests"
     );
 }
