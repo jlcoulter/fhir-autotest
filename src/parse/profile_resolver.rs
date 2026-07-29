@@ -43,7 +43,7 @@ impl PackageCache {
     }
 
     /// Ensure a package is loaded, downloading it if not cached.
-    fn ensure_package(&mut self, package_id: &str, version: &str) -> Result<()> {
+    async fn ensure_package(&mut self, package_id: &str, version: &str) -> Result<()> {
         let cache_key = format!("{}@{}\n", package_id, version);
         if self.packages.contains_key(&cache_key) {
             return Ok(());
@@ -72,12 +72,12 @@ impl PackageCache {
 
         tracing::info!("Downloading FHIR package: {}@{}", package_id, version);
 
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .user_agent("fhir-ig-testgen/0.1")
             .build()?;
 
-        let response = client.get(&tgz_url).send()?;
+        let response = client.get(&tgz_url).send().await?;
         if !response.status().is_success() {
             anyhow::bail!(
                 "Failed to download package {} (status: {})",
@@ -86,7 +86,7 @@ impl PackageCache {
             );
         }
 
-        let bytes = response.bytes()?;
+        let bytes = response.bytes().await?;
         std::fs::write(&tgz_path, &bytes)?;
 
         let pkg = parse_package(tgz_path.to_str().unwrap())?;
@@ -107,7 +107,7 @@ impl PackageCache {
 /// loaded; if not, download it from the FHIR package registry or HL7 base.
 /// Merges parent snapshot elements into the child's snapshot so that slice
 /// definitions with their pattern values are available during resource generation.
-pub fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Result<()> {
+pub async fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Result<()> {
     // Build URL → index map for quick lookup
     let mut url_map: HashMap<String, usize> = HashMap::new();
     for (i, p) in profiles.iter().enumerate() {
@@ -137,11 +137,11 @@ pub fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Result<(
                 cached.clone()
             } else {
                 // Try downloading the individual profile
-                match download_profile(&base_url) {
+                match download_profile(&base_url).await {
                     Ok(p) => p,
                     Err(_) => {
                         // Individual download failed — try downloading the parent's FHIR package
-                        match resolve_via_package(&base_url, &mut package_cache) {
+                        match resolve_via_package(&base_url, &mut package_cache).await {
                             Ok(p) => p,
                             Err(e) => {
                                 tracing::warn!(
@@ -231,7 +231,7 @@ pub fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Result<(
             }
 
             // Try downloading the individual profile
-            match download_profile(url) {
+            match download_profile(url).await {
                 Ok(p) => {
                     url_map.insert(p.url.clone(), profiles.len());
                     profiles.push(p);
@@ -239,7 +239,7 @@ pub fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Result<(
                 }
                 Err(_) => {
                     // Try downloading the parent's FHIR package
-                    match resolve_via_package(url, &mut package_cache) {
+                    match resolve_via_package(url, &mut package_cache).await {
                         Ok(p) => {
                             url_map.insert(p.url.clone(), profiles.len());
                             profiles.push(p);
@@ -259,7 +259,7 @@ pub fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Result<(
 }
 
 /// Try to resolve a profile URL by downloading its containing FHIR package.
-fn resolve_via_package(url: &str, cache: &mut PackageCache) -> Result<StructureDefinition> {
+async fn resolve_via_package(url: &str, cache: &mut PackageCache) -> Result<StructureDefinition> {
     // Extract version suffix (e.g. "|2.0.0") and clean URL
     let version = url.split('|').nth(1).unwrap_or("1.0.0");
     let clean_url = url.split('|').next().unwrap_or(url);
@@ -267,7 +267,7 @@ fn resolve_via_package(url: &str, cache: &mut PackageCache) -> Result<StructureD
     let package_id =
         url_to_package_id(clean_url).context("Cannot determine FHIR package from URL")?;
 
-    cache.ensure_package(&package_id, version)?;
+    cache.ensure_package(&package_id, version).await?;
 
     cache.get_profile(clean_url).cloned().context(format!(
         "Profile {} not found in package {}@{}",
@@ -340,7 +340,7 @@ fn cache_profile(path: &std::path::Path, sd: &StructureDefinition) {
 ///
 /// Results are cached to disk at ~/.cache/fhir-ig-testgen/packages/<name>.json
 /// so subsequent runs don't re-download.
-fn download_profile(url: &str) -> Result<StructureDefinition> {
+async fn download_profile(url: &str) -> Result<StructureDefinition> {
     // Strip FHIR version suffix (e.g. "|4.0.1") if present
     let clean_url = url.split('|').next().unwrap_or(url);
     // Extract the profile name from the URL
@@ -359,7 +359,7 @@ fn download_profile(url: &str) -> Result<StructureDefinition> {
         }
     }
 
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .user_agent("fhir-ig-testgen/0.1")
         .build()?;
@@ -369,11 +369,12 @@ fn download_profile(url: &str) -> Result<StructureDefinition> {
     let response = client
         .get(&registry_url)
         .header("Accept", "application/fhir+json")
-        .send();
+        .send()
+        .await;
 
     match response {
         Ok(resp) if resp.status().is_success() => {
-            let sd: StructureDefinition = resp.json()?;
+            let sd: StructureDefinition = resp.json().await?;
             tracing::info!("Downloaded parent profile: {} ({})", sd.name, sd.url);
             cache_profile(&cache_path, &sd);
             return Ok(sd);
@@ -411,7 +412,8 @@ fn download_profile(url: &str) -> Result<StructureDefinition> {
         let response = client
             .get(fallback_url)
             .header("Accept", "application/fhir+json")
-            .send()?;
+            .send()
+            .await?;
 
         last_status = response.status().as_u16();
         tracing::debug!("HL7 fallback returned status: {}", last_status);
@@ -434,7 +436,7 @@ fn download_profile(url: &str) -> Result<StructureDefinition> {
             continue;
         }
 
-        match response.json::<StructureDefinition>() {
+        match response.json::<StructureDefinition>().await {
             Ok(sd) => {
                 tracing::info!(
                     "Downloaded parent profile from HL7: {} ({})",

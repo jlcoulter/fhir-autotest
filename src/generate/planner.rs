@@ -891,10 +891,8 @@ fn build_result_param_test(
                     .find(|sp| sp.param_type == "string" || sp.param_type == "date")
                     .map(|sp| sp.name.clone());
 
-                match fallback {
-                    Some(fb) => ("_sort", fb.clone(), Some(fb)),
-                    None => return None, // No suitable param, skip sort test
-                }
+                let fb = fallback?; // No suitable param, skip sort test
+                ("_sort", fb.clone(), Some(fb))
             }
         } else {
             (param, value.to_string(), None)
