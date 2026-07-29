@@ -3,6 +3,471 @@ use crate::generate::model::*;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{extract::Request, http::StatusCode, routing::any, Json, Router};
+    use http_body_util::BodyExt;
+    use std::sync::{Arc, Mutex};
+
+    /// A recorded request captured by the test server.
+    #[derive(Debug, Clone)]
+    struct RecordedRequest {
+        method: String,
+        uri: String,
+        headers: std::collections::HashMap<String, String>,
+        body: Option<serde_json::Value>,
+    }
+
+    /// A test server that records requests and returns configurable responses.
+    struct TestServer {
+        addr: String,
+        responses: Arc<Mutex<Vec<serde_json::Value>>>,
+        recorded: Arc<Mutex<Vec<RecordedRequest>>>,
+    }
+
+    impl TestServer {
+        async fn new() -> Self {
+            let responses: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+            let recorded: Arc<Mutex<Vec<RecordedRequest>>> = Arc::new(Mutex::new(Vec::new()));
+
+            let responses_clone = responses.clone();
+            let recorded_clone = recorded.clone();
+
+            let app = Router::new().route(
+                "/{*path}",
+                any(move |req: Request| {
+                    let responses = responses_clone.clone();
+                    let recorded = recorded_clone.clone();
+                    async move {
+                        // Record the request
+                        let method = req.method().to_string();
+                        let uri = req.uri().to_string();
+                        let headers: std::collections::HashMap<String, String> = req
+                            .headers()
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                            .collect();
+
+                        // Collect body bytes
+                        let (_parts, body) = req.into_parts();
+                        let body_bytes = BodyExt::collect(body)
+                            .await
+                            .map(|collected| collected.to_bytes())
+                            .unwrap_or_default();
+                        let body: Option<serde_json::Value> = if body_bytes.is_empty() {
+                            None
+                        } else {
+                            serde_json::from_slice(&body_bytes).ok()
+                        };
+
+                        recorded.lock().unwrap().push(RecordedRequest {
+                            method,
+                            uri,
+                            headers,
+                            body,
+                        });
+
+                        // Pop the next response or use default
+                        let mut store = responses.lock().unwrap();
+                        let response = store.pop().unwrap_or(serde_json::json!({
+                            "resourceType": "Bundle",
+                            "type": "searchset",
+                            "entry": []
+                        }));
+
+                        // Allow the response to specify a custom status code via _status field
+                        let status_code = response
+                            .get("_status")
+                            .and_then(|v| v.as_u64())
+                            .map(|s| StatusCode::from_u16(s as u16).unwrap_or(StatusCode::OK))
+                            .unwrap_or(StatusCode::OK);
+
+                        (status_code, Json(response))
+                    }
+                }),
+            );
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+
+            TestServer {
+                addr: format!("http://{}", addr),
+                responses,
+                recorded,
+            }
+        }
+
+        fn push_response(&self, value: serde_json::Value) {
+            self.responses.lock().unwrap().push(value);
+        }
+
+        fn last_request(&self) -> Option<RecordedRequest> {
+            let store = self.recorded.lock().unwrap();
+            store.last().cloned()
+        }
+    }
+
+    fn make_test_case(
+        name: &str,
+        method: &str,
+        url: &str,
+        expected_status: u16,
+        body: Option<serde_json::Value>,
+    ) -> TestCase {
+        TestCase {
+            name: name.to_string(),
+            kind: TestCaseKind::Interaction,
+            interaction: Interaction::Read,
+            resource_type: "Patient".to_string(),
+            profile_url: None,
+            request: HttpRequest {
+                method: method.to_string(),
+                url: url.to_string(),
+                headers: HashMap::new(),
+                body,
+            },
+            validation: ValidationSpec {
+                expected_status,
+                profile_url: None,
+                required_elements: vec![],
+                forbidden_elements: vec![],
+                response_assertion: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_get_request() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+
+        let test = make_test_case("test_get", "GET", "/Patient/test-id", 200, None);
+        let result = executor.execute_test(&test).await.unwrap();
+
+        assert_eq!(result.status_code, 200);
+        assert!(result.passed);
+
+        let recorded = server.last_request().unwrap();
+        assert_eq!(recorded.method, "GET");
+        assert!(recorded.uri.contains("/Patient/test-id"));
+    }
+
+    #[tokio::test]
+    async fn execute_post_request() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+
+        let body = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}]
+        });
+        let test = make_test_case("test_post", "POST", "/Patient", 200, Some(body.clone()));
+        let result = executor.execute_test(&test).await.unwrap();
+
+        assert_eq!(result.status_code, 200);
+        assert!(result.passed);
+
+        let recorded = server.last_request().unwrap();
+        assert_eq!(recorded.method, "POST");
+        // Verify the body was sent
+        assert_eq!(
+            recorded
+                .body
+                .as_ref()
+                .and_then(|b| b.get("resourceType"))
+                .and_then(|v| v.as_str()),
+            Some("Patient")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_test_passes_on_expected_status() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+
+        // Server returns 200, expected_status is 200
+        let test = make_test_case("test_pass", "GET", "/Patient/1", 200, None);
+        let result = executor.execute_test(&test).await.unwrap();
+
+        assert!(result.passed);
+        assert_eq!(result.status_code, 200);
+    }
+
+    #[tokio::test]
+    async fn execute_test_fails_on_wrong_status() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+
+        // Push a 404 response
+        server.push_response(serde_json::json!({
+            "resourceType": "OperationOutcome",
+            "issue": [{"severity": "error", "code": "not-found"}]
+        }));
+
+        // Override the default response: the test server always returns 200,
+        // so we need a way to return a different status. We'll use a custom
+        // route or push a response that the test server interprets differently.
+        //
+        // Actually, the test server always returns 200. To test wrong status,
+        // we need the server to return a non-200. Let's use a different approach:
+        // we'll make a second server that returns 404.
+        //
+        // For simplicity, let's just verify the sentinel logic by using
+        // expected_status: 200 with a server that returns 200 (passes) vs
+        // expected_status: 404 with a server that returns 200 (fails).
+        let test = make_test_case("test_fail", "GET", "/Patient/missing", 404, None);
+        let result = executor.execute_test(&test).await.unwrap();
+
+        // Server returned 200, expected 404 → should fail
+        assert!(!result.passed);
+        assert_eq!(result.status_code, 200);
+    }
+
+    #[tokio::test]
+    async fn execute_test_sentinel_zero_accepts_non_2xx() {
+        // expected_status: 0, server returns 403 → should pass
+        // We need a server that returns 403. Let's use a dedicated server
+        // with a custom handler for this test.
+        let app = Router::new().route(
+            "/{*path}",
+            any(|| async {
+                (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "resourceType": "OperationOutcome",
+                        "issue": [{"severity": "error", "code": "forbidden"}]
+                    })),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let server_url = format!("http://{}", addr);
+
+        let executor = TestExecutor::from_server_config(&server_url, HashMap::new()).unwrap();
+
+        let test = make_test_case("test_sentinel_non_2xx", "GET", "/Patient/1", 0, None);
+        let result = executor.execute_test(&test).await.unwrap();
+
+        // expected_status=0, server returned 403 (non-2xx) → pass
+        assert!(result.passed);
+        assert_eq!(result.status_code, 403);
+    }
+
+    #[tokio::test]
+    async fn execute_test_sentinel_zero_accepts_200_bundle() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+
+        // Server returns 200 with a Bundle (default response)
+        let test = make_test_case(
+            "test_sentinel_bundle",
+            "GET",
+            "/Patient?unknown=foo",
+            0,
+            None,
+        );
+        let result = executor.execute_test(&test).await.unwrap();
+
+        // expected_status=0, server returned 200 with Bundle → pass
+        assert!(result.passed);
+        assert_eq!(result.status_code, 200);
+    }
+
+    #[tokio::test]
+    async fn execute_test_sentinel_zero_rejects_200_non_bundle() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+
+        // Push a non-Bundle response
+        server.push_response(serde_json::json!({
+            "resourceType": "Patient",
+            "id": "test-id",
+            "name": [{"family": "Test"}]
+        }));
+
+        let test = make_test_case("test_sentinel_non_bundle", "GET", "/Patient/1", 0, None);
+        let result = executor.execute_test(&test).await.unwrap();
+
+        // expected_status=0, server returned 200 with non-Bundle → fail
+        assert!(!result.passed);
+        assert_eq!(result.status_code, 200);
+    }
+
+    #[tokio::test]
+    async fn create_resource_with_put() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+
+        // Push a response that looks like a created resource
+        server.push_response(serde_json::json!({
+            "resourceType": "Patient",
+            "id": "test-put-id",
+            "name": [{"family": "Created"}]
+        }));
+
+        let body = serde_json::json!({
+            "resourceType": "Patient",
+            "id": "test-put-id",
+            "name": [{"family": "Created"}]
+        });
+
+        let (id, _response) = executor.create_resource("Patient", &body).await.unwrap();
+
+        assert_eq!(id, "test-put-id");
+
+        let recorded = server.last_request().unwrap();
+        assert_eq!(recorded.method, "PUT");
+        assert!(recorded.uri.contains("/Patient/test-put-id"));
+    }
+
+    #[tokio::test]
+    async fn create_resource_with_post() {
+        let server = TestServer::new().await;
+        // Use a custom config with POST upload method
+        let executor = TestExecutor::new(
+            server.addr.clone(),
+            HashMap::new(),
+            WriteEndpoint::Server {
+                base_url: server.addr.clone(),
+                headers: HashMap::new(),
+                upload_method: "POST".to_string(),
+                concurrency: 1,
+            },
+        )
+        .unwrap();
+
+        // Push a response that looks like a created resource with 201 status
+        server.push_response(serde_json::json!({
+            "_status": 201,
+            "resourceType": "Patient",
+            "id": "test-post-id",
+            "name": [{"family": "Created"}]
+        }));
+
+        let body = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Created"}]
+        });
+
+        let (id, _response) = executor.create_resource("Patient", &body).await.unwrap();
+
+        assert_eq!(id, "test-post-id");
+
+        let recorded = server.last_request().unwrap();
+        assert_eq!(recorded.method, "POST");
+        assert!(recorded.uri.contains("/Patient"));
+    }
+
+    #[tokio::test]
+    async fn create_resource_put_missing_id_errors() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+
+        let body = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "NoId"}]
+        });
+
+        let result = executor.create_resource("Patient", &body).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("id") || err.contains("PUT"));
+    }
+
+    #[tokio::test]
+    async fn delete_resource() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+
+        let result = executor.delete_resource("Patient", "test-del-id").await;
+        assert!(result.is_ok());
+
+        let recorded = server.last_request().unwrap();
+        assert_eq!(recorded.method, "DELETE");
+        assert!(recorded.uri.contains("/Patient/test-del-id"));
+    }
+
+    #[tokio::test]
+    async fn add_read_auth_headers() {
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".to_string(), "Bearer test-token".to_string());
+        headers.insert("X-Custom".to_string(), "custom-value".to_string());
+
+        let server = TestServer::new().await;
+        let executor = TestExecutor::new(
+            server.addr.clone(),
+            headers,
+            WriteEndpoint::Server {
+                base_url: server.addr.clone(),
+                headers: HashMap::new(),
+                upload_method: "PUT".to_string(),
+                concurrency: 1,
+            },
+        )
+        .unwrap();
+
+        let test = make_test_case("test_auth", "GET", "/Patient/1", 200, None);
+        let _result = executor.execute_test(&test).await.unwrap();
+
+        let recorded = server.last_request().unwrap();
+        assert_eq!(
+            recorded.headers.get("authorization").map(|s| s.as_str()),
+            Some("Bearer test-token")
+        );
+        assert_eq!(
+            recorded.headers.get("x-custom").map(|s| s.as_str()),
+            Some("custom-value")
+        );
+    }
+
+    #[tokio::test]
+    async fn add_write_auth_basic_auth() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::new(
+            server.addr.clone(),
+            HashMap::new(),
+            WriteEndpoint::Repository {
+                base_url: server.addr.clone(),
+                username: "admin".to_string(),
+                password: "s3cret".to_string(),
+                upload_method: "PUT".to_string(),
+                concurrency: 1,
+            },
+        )
+        .unwrap();
+
+        // Push a response for the PUT
+        server.push_response(serde_json::json!({
+            "resourceType": "Patient",
+            "id": "test-auth-id",
+            "name": [{"family": "Auth"}]
+        }));
+
+        let body = serde_json::json!({
+            "resourceType": "Patient",
+            "id": "test-auth-id",
+            "name": [{"family": "Auth"}]
+        });
+
+        let _result = executor.create_resource("Patient", &body).await.unwrap();
+
+        let recorded = server.last_request().unwrap();
+        // Basic auth header should be present
+        let auth_header = recorded.headers.get("authorization");
+        assert!(auth_header.is_some());
+        let auth_value = auth_header.unwrap();
+        assert!(auth_value.starts_with("Basic "));
+    }
+}
+
 /// Executes HTTP requests against FHIR servers.
 ///
 /// Test queries (GET) go to the public FHIR server.
