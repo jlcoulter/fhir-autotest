@@ -69,6 +69,8 @@ pub fn generate_bulk_data(
     let prac_ids = ids.get("Practitioner").cloned().unwrap_or_default();
     let loc_ids = ids.get("Location").cloned().unwrap_or_default();
     let hs_ids = ids.get("HealthcareService").cloned().unwrap_or_default();
+    let practitioner_role_ids = ids.get("PractitionerRole").cloned().unwrap_or_default();
+    let endpoint_ids = ids.get("Endpoint").cloned().unwrap_or_default();
 
     // Build lookups so generation can prefer the exact profile URL from the
     // CapabilityStatement instead of an arbitrary StructureDefinition that
@@ -126,6 +128,8 @@ pub fn generate_bulk_data(
                     &prac_ids,
                     &loc_ids,
                     &hs_ids,
+                    &practitioner_role_ids,
+                    &endpoint_ids,
                     &mut rng,
                 );
                 apply_hcpd_bulk_fixes(
@@ -724,9 +728,7 @@ fn luhn_with_prefix(prefix: &str, total_len: usize, rng: &mut impl Rng) -> Strin
     format!("{}{}", base, check)
 }
 
-/// Return a creation order that respects dependencies.
-/// Organizations and Locations first, then Practitioners, then
-/// PractitionerRoles and HealthcareServices, then everything else.
+/// Return true when the profile URLs in a loaded IG indicate an HCPD/AU implementation
 /// Returns true when the profile URLs in a loaded IG indicate an HCPD/AU implementation
 /// guide, so that HCPD-specific identifier and extension overrides are applied only
 /// when appropriate.
@@ -741,20 +743,44 @@ fn is_hcpd_ig(profile_urls: &HashMap<String, String>) -> bool {
 pub fn bulk_data_creation_order(counts: &HashMap<String, u64>) -> Vec<String> {
     let mut order = Vec::new();
 
-    // Tier 1: no dependencies
-    for t in &["Organization", "Location"] {
+    // Tier 1: root resources
+    for t in &["Organization", "Practitioner"] {
         if counts.contains_key(*t) {
             order.push((*t).to_string());
         }
     }
-    // Tier 2: depends on tier 1
-    for t in &["Practitioner", "Endpoint"] {
+
+    // Tier 2: depends on Organization
+    for t in &["Endpoint"] {
         if counts.contains_key(*t) {
             order.push((*t).to_string());
         }
     }
-    // Tier 3: depends on tiers 1–2
-    for t in &["HealthcareService", "PractitionerRole"] {
+
+    // Tier 3: depends on Organization and Endpoint
+    for t in &["Location"] {
+        if counts.contains_key(*t) {
+            order.push((*t).to_string());
+        }
+    }
+
+    // Tier 4: depends on Organization, Endpoint, and Location
+    for t in &["HealthcareService"] {
+        if counts.contains_key(*t) {
+            order.push((*t).to_string());
+        }
+    }
+
+    // Tier 5: depends on Practitioner, Organization, Endpoint, Location,
+    // and HealthcareService
+    for t in &["PractitionerRole"] {
+        if counts.contains_key(*t) {
+            order.push((*t).to_string());
+        }
+    }
+
+    // Tier 6: may reference several resource pools and should come last.
+    for t in &["Provenance"] {
         if counts.contains_key(*t) {
             order.push((*t).to_string());
         }
@@ -1042,6 +1068,8 @@ fn overlay_cross_references(
     prac_ids: &[String],
     loc_ids: &[String],
     hs_ids: &[String],
+    practitioner_role_ids: &[String],
+    endpoint_ids: &[String],
     rng: &mut impl Rng,
 ) {
     let obj = match resource.as_object_mut() {
@@ -1082,13 +1110,33 @@ fn overlay_cross_references(
                     serde_json::json!([{ "reference": ref_str }]),
                 );
             }
+            if !endpoint_ids.is_empty() {
+                let ref_str = random_ref("Endpoint", endpoint_ids, rng);
+                obj.insert(
+                    "endpoint".to_string(),
+                    serde_json::json!([{ "reference": ref_str }]),
+                );
+            }
         }
         "Location" if !org_ids.is_empty() => {
-            let ref_str = random_ref("Organization", org_ids, rng);
+            // Ensure at least one deterministic reverse include path for
+            // Organization/_revinclude=Location:organization on organization-1.
+            let ref_str = if _id == "location-1" && org_ids.iter().any(|id| id == "organization-1") {
+                "Organization/organization-1".to_string()
+            } else {
+                random_ref("Organization", org_ids, rng)
+            };
             obj.insert(
                 "managingOrganization".to_string(),
                 serde_json::json!({ "reference": ref_str }),
             );
+            if !endpoint_ids.is_empty() {
+                let endpoint_ref = random_ref("Endpoint", endpoint_ids, rng);
+                obj.insert(
+                    "endpoint".to_string(),
+                    serde_json::json!([{ "reference": endpoint_ref }]),
+                );
+            }
         }
         "HealthcareService" => {
             if !org_ids.is_empty() {
@@ -1105,6 +1153,13 @@ fn overlay_cross_references(
                     serde_json::json!([{ "reference": ref_str }]),
                 );
             }
+            if !endpoint_ids.is_empty() {
+                let ref_str = random_ref("Endpoint", endpoint_ids, rng);
+                obj.insert(
+                    "endpoint".to_string(),
+                    serde_json::json!([{ "reference": ref_str }]),
+                );
+            }
         }
         "Endpoint" if !org_ids.is_empty() => {
             let ref_str = random_ref("Organization", org_ids, rng);
@@ -1114,7 +1169,15 @@ fn overlay_cross_references(
             );
         }
         "Provenance" => {
-            let target_ref = first_available_ref(org_ids, prac_ids, loc_ids, hs_ids, rng);
+            let target_ref = provenance_target_for_id(
+                _id,
+                org_ids,
+                prac_ids,
+                loc_ids,
+                hs_ids,
+                practitioner_role_ids,
+                rng,
+            );
 
             if let Some(ref_str) = target_ref.as_deref() {
                 obj.insert(
@@ -1154,26 +1217,63 @@ fn overlay_cross_references(
     }
 }
 
-fn first_available_ref(
+fn provenance_target_for_id(
+    provenance_id: &str,
     org_ids: &[String],
     prac_ids: &[String],
     loc_ids: &[String],
     hs_ids: &[String],
+    practitioner_role_ids: &[String],
     rng: &mut impl Rng,
 ) -> Option<String> {
-    if !org_ids.is_empty() {
-        return Some(random_ref("Organization", org_ids, rng));
+    // Deterministically seed coverage for _revinclude=Provenance:target checks
+    // that query with _id={type}-1.
+    let seeded_targets = [
+        ("Organization", org_ids),
+        ("Practitioner", prac_ids),
+        ("Location", loc_ids),
+        ("HealthcareService", hs_ids),
+        ("PractitionerRole", practitioner_role_ids),
+    ];
+    if let Some(seed_index) = provenance_sequence_number(provenance_id) {
+        let mut available: Vec<(&str, &str)> = Vec::new();
+        for (rtype, ids) in seeded_targets {
+            if let Some(first_id) = ids.first() {
+                available.push((rtype, first_id.as_str()));
+            }
+        }
+        if !available.is_empty() {
+            let idx = (seed_index - 1) % available.len();
+            let (rtype, id) = available[idx];
+            return Some(format!("{}/{}", rtype, id));
+        }
     }
-    if !prac_ids.is_empty() {
-        return Some(random_ref("Practitioner", prac_ids, rng));
+
+    // After deterministic seed coverage is established, spread remaining
+    // references randomly across all available resource types.
+    let mut candidates: Vec<String> = Vec::new();
+    candidates.extend(org_ids.iter().map(|id| format!("Organization/{}", id)));
+    candidates.extend(prac_ids.iter().map(|id| format!("Practitioner/{}", id)));
+    candidates.extend(loc_ids.iter().map(|id| format!("Location/{}", id)));
+    candidates.extend(hs_ids.iter().map(|id| format!("HealthcareService/{}", id)));
+    candidates.extend(
+        practitioner_role_ids
+            .iter()
+            .map(|id| format!("PractitionerRole/{}", id)),
+    );
+
+    if candidates.is_empty() {
+        None
+    } else {
+        Some(candidates[rng.random_range(0..candidates.len())].clone())
     }
-    if !loc_ids.is_empty() {
-        return Some(random_ref("Location", loc_ids, rng));
-    }
-    if !hs_ids.is_empty() {
-        return Some(random_ref("HealthcareService", hs_ids, rng));
-    }
-    None
+}
+
+fn provenance_sequence_number(provenance_id: &str) -> Option<usize> {
+    provenance_id
+        .rsplit_once('-')
+        .and_then(|(_, n)| n.parse::<usize>().ok())
+        .filter(|n| *n > 0)
 }
 
 fn random_ref(resource_type: &str, ids: &[String], rng: &mut impl Rng) -> String {
@@ -1976,17 +2076,23 @@ mod tests {
         let mut counts = HashMap::new();
         counts.insert("PractitionerRole".to_string(), 10);
         counts.insert("Organization".to_string(), 5);
+        counts.insert("Endpoint".to_string(), 5);
         counts.insert("Location".to_string(), 5);
 
         let order = bulk_data_creation_order(&counts);
 
-        // Organization and Location should come before PractitionerRole
+        // Organization, Endpoint, and Location should come before PractitionerRole.
         let org_idx = order.iter().position(|t| t == "Organization").unwrap();
+        let endpoint_idx = order.iter().position(|t| t == "Endpoint").unwrap();
         let loc_idx = order.iter().position(|t| t == "Location").unwrap();
         let pr_idx = order.iter().position(|t| t == "PractitionerRole").unwrap();
         assert!(
             org_idx < pr_idx,
             "Organization should come before PractitionerRole"
+        );
+        assert!(
+            endpoint_idx < loc_idx,
+            "Endpoint should come before Location"
         );
         assert!(
             loc_idx < pr_idx,
@@ -2135,6 +2241,8 @@ mod tests {
             &prac_ids,
             &[],
             &[],
+            &[],
+            &[],
             &mut rng,
         );
 
@@ -2147,16 +2255,155 @@ mod tests {
             .unwrap();
 
         assert!(
-            target_ref == "Organization/organization-1" || target_ref == "Organization/organization-2",
-            "target should reference an existing Organization ID"
+            [
+                "Organization/organization-1",
+                "Organization/organization-2",
+                "Practitioner/practitioner-1",
+            ]
+            .contains(&target_ref),
+            "target should reference an existing resource ID"
         );
         assert!(
             agent_ref == "Organization/organization-1" || agent_ref == "Organization/organization-2",
             "agent.who should reference an existing Organization ID"
         );
         assert!(
-            entity_ref == "Organization/organization-1" || entity_ref == "Organization/organization-2",
+            [
+                "Organization/organization-1",
+                "Organization/organization-2",
+                "Practitioner/practitioner-1",
+            ]
+            .contains(&entity_ref),
             "entity.what should reference an existing resource ID"
         );
+    }
+
+    #[test]
+    fn overlay_adds_endpoint_links_for_include_tests() {
+        let mut location = serde_json::json!({ "resourceType": "Location", "id": "location-1" });
+        let mut healthcare_service =
+            serde_json::json!({ "resourceType": "HealthcareService", "id": "healthcareservice-1" });
+        let mut practitioner_role =
+            serde_json::json!({ "resourceType": "PractitionerRole", "id": "practitionerrole-1" });
+
+        let org_ids = vec!["organization-1".to_string()];
+        let prac_ids = vec!["practitioner-1".to_string()];
+        let loc_ids = vec!["location-1".to_string()];
+        let hs_ids = vec!["healthcareservice-1".to_string()];
+        let endpoint_ids = vec!["endpoint-1".to_string()];
+        let mut rng = rand::rng();
+
+        overlay_cross_references(
+            &mut location,
+            "Location",
+            "location-1",
+            &org_ids,
+            &prac_ids,
+            &loc_ids,
+            &hs_ids,
+            &[],
+            &endpoint_ids,
+            &mut rng,
+        );
+        overlay_cross_references(
+            &mut healthcare_service,
+            "HealthcareService",
+            "healthcareservice-1",
+            &org_ids,
+            &prac_ids,
+            &loc_ids,
+            &hs_ids,
+            &[],
+            &endpoint_ids,
+            &mut rng,
+        );
+        overlay_cross_references(
+            &mut practitioner_role,
+            "PractitionerRole",
+            "practitionerrole-1",
+            &org_ids,
+            &prac_ids,
+            &loc_ids,
+            &hs_ids,
+            &[],
+            &endpoint_ids,
+            &mut rng,
+        );
+
+        assert_eq!(
+            location["endpoint"][0]["reference"].as_str().unwrap(),
+            "Endpoint/endpoint-1"
+        );
+        assert_eq!(
+            healthcare_service["endpoint"][0]["reference"].as_str().unwrap(),
+            "Endpoint/endpoint-1"
+        );
+        assert_eq!(
+            practitioner_role["endpoint"][0]["reference"].as_str().unwrap(),
+            "Endpoint/endpoint-1"
+        );
+    }
+
+    #[test]
+    fn location_one_links_to_organization_one_when_present() {
+        let mut location = serde_json::json!({ "resourceType": "Location", "id": "location-1" });
+        let org_ids = vec!["organization-1".to_string(), "organization-2".to_string()];
+        let mut rng = rand::rng();
+
+        overlay_cross_references(
+            &mut location,
+            "Location",
+            "location-1",
+            &org_ids,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &mut rng,
+        );
+
+        assert_eq!(
+            location["managingOrganization"]["reference"].as_str().unwrap(),
+            "Organization/organization-1"
+        );
+    }
+
+    #[test]
+    fn provenance_overlay_seeds_id_one_targets_for_revinclude_coverage() {
+        let org_ids = vec!["organization-1".to_string()];
+        let prac_ids = vec!["practitioner-1".to_string()];
+        let loc_ids = vec!["location-1".to_string()];
+        let hs_ids = vec!["healthcareservice-1".to_string()];
+        let practitioner_role_ids = vec!["practitionerrole-1".to_string()];
+        let mut rng = rand::rng();
+
+        let mut p1 = serde_json::json!({ "resourceType": "Provenance", "id": "provenance-1" });
+        let mut p2 = serde_json::json!({ "resourceType": "Provenance", "id": "provenance-2" });
+        let mut p3 = serde_json::json!({ "resourceType": "Provenance", "id": "provenance-3" });
+        let mut p4 = serde_json::json!({ "resourceType": "Provenance", "id": "provenance-4" });
+        let mut p5 = serde_json::json!({ "resourceType": "Provenance", "id": "provenance-5" });
+
+        for p in [&mut p1, &mut p2, &mut p3, &mut p4, &mut p5] {
+            let id = p["id"].as_str().unwrap().to_string();
+            overlay_cross_references(
+                p,
+                "Provenance",
+                &id,
+                &org_ids,
+                &prac_ids,
+                &loc_ids,
+                &hs_ids,
+                &practitioner_role_ids,
+                &[],
+                &mut rng,
+            );
+        }
+
+        assert_eq!(p1["target"][0]["reference"].as_str().unwrap(), "Organization/organization-1");
+        assert_eq!(p2["target"][0]["reference"].as_str().unwrap(), "Practitioner/practitioner-1");
+        assert_eq!(p3["target"][0]["reference"].as_str().unwrap(), "Location/location-1");
+        assert_eq!(p4["target"][0]["reference"].as_str().unwrap(), "HealthcareService/healthcareservice-1");
+        assert_eq!(p5["target"][0]["reference"].as_str().unwrap(), "PractitionerRole/practitionerrole-1");
     }
 }

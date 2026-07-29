@@ -533,6 +533,12 @@ impl Orchestrator {
 
                 // Populate response assertion field_values from created resources
                 if let Some(ref mut assertion) = test.validation.response_assertion {
+                    for search_assertion in &mut assertion.search_value_assertions {
+                        if search_assertion.expected_value.is_none() {
+                            search_assertion.expected_value =
+                                query_param_value(&test.request.url, &search_assertion.query_param);
+                        }
+                    }
                     if let Some(fields) = resource_field_values.get(&test.resource_type) {
                         let mut type_fields: HashMap<String, serde_json::Value> = HashMap::new();
                         for (path, value) in fields.iter() {
@@ -755,4 +761,15 @@ fn resolve_url_params(
     }
 
     result
+}
+
+fn query_param_value(url: &str, key: &str) -> Option<String> {
+    let (_path, query) = url.split_once('?')?;
+    for pair in query.split('&') {
+        let (k, v) = pair.split_once('=')?;
+        if k == key {
+            return Some(v.to_string());
+        }
+    }
+    None
 }
