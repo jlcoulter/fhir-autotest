@@ -1,4 +1,4 @@
-use crate::generate::random_au_locality_thread;
+use crate::generate::locality::random_au_locality_thread;
 use crate::model::*;
 use anyhow::Result;
 use std::collections::HashMap;
