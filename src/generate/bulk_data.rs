@@ -819,6 +819,21 @@ fn overlay_cross_references(
                 serde_json::json!({ "reference": ref_str }),
             );
         }
+        "Organization" if !org_ids.is_empty() => {
+            // Replace partOf with a valid reference to another Organization.
+            // If there's only one Organization, remove partOf entirely since
+            // there's no parent to reference — HAPI will reject a UUID that
+            // doesn't exist on the server.
+            if org_ids.len() > 1 {
+                let ref_str = random_ref("Organization", org_ids, rng);
+                obj.insert(
+                    "partOf".to_string(),
+                    serde_json::json!({ "reference": ref_str }),
+                );
+            } else {
+                obj.remove("partOf");
+            }
+        }
         "Provenance" => {
             let target_ref = provenance_target_for_id(
                 _id,
