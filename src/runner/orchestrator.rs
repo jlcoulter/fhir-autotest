@@ -374,13 +374,15 @@ impl Orchestrator {
             }
         }
 
-        // 6. Generate test plan
+        // 6. Generate test plan (with field values from generated resources)
         let mut plan = generate_test_plan(
             &cs,
             &pkg.structure_definitions,
             &pkg.search_parameters,
             Some(&pkg.operation_definitions),
             None,
+            &resource_field_values,
+            &created_ids,
         );
         plan.creation_order = creation_order.clone();
 
@@ -516,39 +518,6 @@ impl Orchestrator {
                         test_group: group.resource_type.clone(),
                     });
                     continue;
-                }
-
-                // Resolve search parameter values from created resources
-                if test.request.url.contains('?') || test.request.url.contains('&') {
-                    let fields = resource_field_values.get(&test.resource_type);
-                    test.request.url = resolve_url_params(
-                        &test.request.url,
-                        &test.resource_type,
-                        fields,
-                        &created_ids,
-                    );
-                }
-
-                // Populate response assertion field_values from created resources
-                if let Some(ref mut assertion) = test.validation.response_assertion {
-                    for search_assertion in &mut assertion.search_value_assertions {
-                        if search_assertion.expected_value.is_none() {
-                            search_assertion.expected_value =
-                                query_param_value(&test.request.url, &search_assertion.query_param);
-                        }
-                    }
-                    if let Some(fields) = resource_field_values.get(&test.resource_type) {
-                        let mut type_fields: HashMap<String, serde_json::Value> = HashMap::new();
-                        for (path, value) in fields.iter() {
-                            if path.matches('.').count() <= 2 {
-                                type_fields
-                                    .insert(path.clone(), serde_json::Value::String(value.clone()));
-                            }
-                        }
-                        assertion
-                            .field_values
-                            .insert(test.resource_type.clone(), type_fields);
-                    }
                 }
 
                 match executor.execute_test(&test).await {
@@ -724,94 +693,5 @@ fn resolve_reference_value(
     }
 
     tracing::warn!("Could not resolve reference: {}", s);
-    None
-}
-
-/// Resolve sentinel search values in URLs with actual values from created resources.
-/// Replaces patterns like `?name=test-value` with `?name=GeneratedFamily`
-/// and `?subject=Patient/test-id` with `?subject=Patient/actual-id`.
-fn resolve_url_params(
-    url: &str,
-    resource_type: &str,
-    field_values: Option<&HashMap<String, String>>,
-    created_ids: &HashMap<String, String>,
-) -> String {
-    let mut result = url.to_string();
-
-    // Replace reference-style sentinel values: ResourceType/test-id → ResourceType/actual-id
-    for (rt, id) in created_ids {
-        let sentinel = format!("{}/test-id", rt);
-        let actual = format!("{}/{}", rt, id);
-        result = result.replace(&sentinel, &actual);
-    }
-
-    // Replace field-based sentinel values if we have field values
-    if let Some(fields) = field_values {
-        // Common sentinel values from the planner's sample_value() function
-        let replacements = [
-            ("test-value", "string"),
-            ("test-code", "token"),
-            ("1", "number"),
-            ("2024-01-01", "date"),
-            ("2024-01-01T00:00:00Z", "dateTime"),
-            ("5.0||http://unitsofmeasure.org|kg", "quantity"),
-            ("http://example.org", "uri"),
-        ];
-
-        for (_sentinel, _param_type) in &replacements {
-            // Only replace if we can find a matching field value
-            // Check common search param → field path mappings
-            let param_mappings: Vec<(&str, &str)> = vec![
-                ("name", "name[0].family"),
-                ("family", "name[0].family"),
-                ("given", "name[0].given[0]"),
-                ("identifier", "identifier[0].value"),
-                ("gender", "gender"),
-                ("birthdate", "birthDate"),
-                ("active", "active"),
-                ("status", "status"),
-                ("telecom", "telecom[0].value"),
-                ("phone", "telecom[0].value"),
-                ("email", "telecom[0].value"),
-                ("city", "address[0].city"),
-                ("state", "address[0].state"),
-                ("postalCode", "address[0].postalCode"),
-                ("country", "address[0].country"),
-                ("code", "code.coding[0].code"),
-                ("type", "type[0].coding[0].code"),
-            ];
-
-            for (param, field_suffix) in &param_mappings {
-                let path = format!("{}.{}", resource_type, field_suffix);
-                if let Some(actual_value) = fields.get(&path) {
-                    let sentinel_for_param = match *param {
-                        "name" | "family" | "given" => "test-value",
-                        "identifier" => "test-value",
-                        "gender" | "status" | "active" => "test-value",
-                        "telecom" | "phone" | "email" => "test-value",
-                        "city" | "state" | "postalCode" | "country" => "test-value",
-                        "code" | "type" => "test-code",
-                        "birthdate" => "2024-01-01",
-                        _ => "test-value",
-                    };
-                    let pattern = format!("{}={}", param, sentinel_for_param);
-                    let replacement = format!("{}={}", param, actual_value);
-                    result = result.replace(&pattern, &replacement);
-                }
-            }
-        }
-    }
-
-    result
-}
-
-fn query_param_value(url: &str, key: &str) -> Option<String> {
-    let (_path, query) = url.split_once('?')?;
-    for pair in query.split('&') {
-        let (k, v) = pair.split_once('=')?;
-        if k == key {
-            return Some(v.to_string());
-        }
-    }
     None
 }

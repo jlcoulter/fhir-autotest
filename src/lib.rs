@@ -143,13 +143,15 @@ pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()>
         }
     }
 
-    // Generate test plan
+    // Generate test plan (with field values from generated resources)
     let mut plan = generate_test_plan(
         &cs,
         &profiles,
         &pkg.search_parameters,
         Some(&pkg.operation_definitions),
         None,
+        &HashMap::new(), // field_values not available at generate time
+        &HashMap::new(), // created_ids not available at generate time
     );
     plan.creation_order = creation_order.clone();
 
@@ -250,10 +252,11 @@ pub async fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> 
         &pkg.search_parameters,
         Some(&pkg.operation_definitions),
         None,
+        &HashMap::new(), // field_values not available at dry-run time
+        &HashMap::new(), // created_ids not available at dry-run time
     );
     plan.creation_order = creation_order.clone();
 
-    println!();
     println!(
         "=== Dry Run: {} test groups, {} total tests ===",
         plan.test_groups.len(),

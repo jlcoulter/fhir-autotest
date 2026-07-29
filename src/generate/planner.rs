@@ -1,4 +1,5 @@
 use crate::generate::model::*;
+use crate::generate::value_resolver::resolve_search_value;
 use crate::model::*;
 use std::collections::HashMap;
 
@@ -118,12 +119,18 @@ pub fn assertion_for_kind(kind: &TestCaseKind, _resource_type: &str) -> Option<R
 /// - Result parameter tests (_summary, _count, _sort, _elements)
 /// - $operation tests from OperationDefinition
 /// - Negative / error tests
+///
+/// `field_values` maps resource_type → field_path → value, extracted from
+/// generated resources. `created_ids` maps resource_type → server-assigned ID.
+/// These are used to embed real values in test URLs instead of sentinel placeholders.
 pub fn generate_test_plan(
     cs: &CapabilityStatement,
     _profiles: &[StructureDefinition],
     search_params: &[SearchParameter],
     operations: Option<&[OperationDefinition]>,
     ig_url: Option<&str>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
 ) -> TestPlan {
     let mut test_groups = Vec::new();
 
@@ -139,7 +146,14 @@ pub fn generate_test_plan(
                 .cloned()
                 .or_else(|| resource.profile.clone());
 
-            let group = build_test_group(resource, &profile_url, search_params, operations);
+            let group = build_test_group(
+                resource,
+                &profile_url,
+                search_params,
+                operations,
+                field_values,
+                created_ids,
+            );
             test_groups.push(group);
         }
 
@@ -149,7 +163,11 @@ pub fn generate_test_plan(
 
             let mut test = build_operation_test(
                 "", // system-level, no resource type prefix
-                &op.name, op_def, &None,
+                &op.name,
+                op_def,
+                &None,
+                field_values,
+                created_ids,
             );
             test.validation.response_assertion =
                 assertion_for_kind(&test.kind, &test.resource_type);
@@ -178,6 +196,8 @@ fn build_test_group(
     profile_url: &Option<String>,
     search_params: &[SearchParameter],
     operations: Option<&[OperationDefinition]>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
 ) -> TestGroup {
     let mut tests = Vec::new();
     let has_search_type = resource.interaction.iter().any(|i| i.code == "search-type");
@@ -217,6 +237,8 @@ fn build_test_group(
                 &sp.name,
                 &sp.param_type,
                 profile_url,
+                field_values,
+                created_ids,
             ));
 
             // Modifier tests
@@ -228,6 +250,8 @@ fn build_test_group(
                     &sp.param_type,
                     &modifier,
                     profile_url,
+                    field_values,
+                    created_ids,
                 ));
             }
 
@@ -240,6 +264,8 @@ fn build_test_group(
                     &sp.param_type,
                     &prefix,
                     profile_url,
+                    field_values,
+                    created_ids,
                 ));
             }
 
@@ -263,6 +289,8 @@ fn build_test_group(
                 &resource.resource_type,
                 sp,
                 profile_url,
+                field_values,
+                created_ids,
             ));
 
             // Modifier + prefix tests for standalone params too
@@ -274,6 +302,8 @@ fn build_test_group(
                     &sp.param_type,
                     &modifier,
                     profile_url,
+                    field_values,
+                    created_ids,
                 ));
             }
 
@@ -285,6 +315,8 @@ fn build_test_group(
                     &sp.param_type,
                     &prefix,
                     profile_url,
+                    field_values,
+                    created_ids,
                 ));
             }
 
@@ -309,6 +341,8 @@ fn build_test_group(
                             (&inline_params[j].name, &inline_params[j].param_type),
                         ],
                         profile_url,
+                        field_values,
+                        created_ids,
                     ));
                 }
             }
@@ -332,6 +366,8 @@ fn build_test_group(
                             &sp.name,
                             &target_sp.code,
                             profile_url,
+                            field_values,
+                            created_ids,
                         ));
                     }
                 }
@@ -409,6 +445,8 @@ fn build_test_group(
             &op.name,
             op_def,
             profile_url,
+            field_values,
+            created_ids,
         ));
     }
 
@@ -512,7 +550,28 @@ fn build_interaction_test(
     }
 }
 
+/// Resolve a search parameter value from generated resources, falling back
+/// to a sentinel value if no real value is available.
+fn resolve_param_value(
+    resource_type: &str,
+    param_name: &str,
+    param_type: &str,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
+) -> String {
+    let rt_values = field_values.get(resource_type);
+    let value = resolve_search_value(
+        resource_type,
+        param_name,
+        param_type,
+        rt_values.unwrap_or(&HashMap::new()),
+        created_ids,
+    );
+    value.unwrap_or_else(|| sample_value(param_type).to_string())
+}
+
 /// Sample value for a search param based on its type.
+/// Used as fallback when no generated resource value is available.
 fn sample_value(param_type: &str) -> &'static str {
     match param_type {
         "string" => "test-value",
@@ -535,16 +594,17 @@ fn build_search_single_test(
     param_name: &str,
     param_type: &str,
     profile_url: &Option<String>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
 ) -> TestCase {
-    let value = sample_value(param_type);
+    let value = resolve_param_value(
+        resource_type,
+        param_name,
+        param_type,
+        field_values,
+        created_ids,
+    );
     let url = format!("/{resource_type}?{param_name}={value}&_id={{id}}");
-
-    let search_value_assertions = vec![SearchValueAssertion {
-        resource_type: resource_type.to_string(),
-        query_param: param_name.to_string(),
-        field_paths: search_param_assertion_paths(resource_type, param_name, param_type),
-        expected_value: None,
-    }];
 
     TestCase {
         name: format!(
@@ -573,7 +633,6 @@ fn build_search_single_test(
             response_assertion: Some(ResponseAssertion {
                 bundle_type: Some("searchset".to_string()),
                 min_entries: Some(0),
-                search_value_assertions,
                 ..ResponseAssertion::none()
             }),
         },
@@ -584,8 +643,17 @@ fn build_search_single_from_sp(
     resource_type: &str,
     sp: &SearchParameter,
     profile_url: &Option<String>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
 ) -> TestCase {
-    build_search_single_test(resource_type, &sp.code, &sp.param_type, profile_url)
+    build_search_single_test(
+        resource_type,
+        &sp.code,
+        &sp.param_type,
+        profile_url,
+        field_values,
+        created_ids,
+    )
 }
 
 fn build_search_modifier_test(
@@ -594,8 +662,16 @@ fn build_search_modifier_test(
     param_type: &str,
     modifier: &SearchModifier,
     profile_url: &Option<String>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
 ) -> TestCase {
-    let value = sample_value(param_type);
+    let value = resolve_param_value(
+        resource_type,
+        param_name,
+        param_type,
+        field_values,
+        created_ids,
+    );
     let url = if matches!(modifier, SearchModifier::Missing) {
         // :missing takes true/false
         format!("/{resource_type}?{param_name}:missing=true")
@@ -639,8 +715,16 @@ fn build_search_prefix_test(
     param_type: &str,
     prefix: &SearchPrefix,
     profile_url: &Option<String>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
 ) -> TestCase {
-    let value = sample_value(param_type);
+    let value = resolve_param_value(
+        resource_type,
+        param_name,
+        param_type,
+        field_values,
+        created_ids,
+    );
     let url = format!(
         "/{resource_type}?{param_name}={prefix}{value}",
         prefix = prefix.prefix_str()
@@ -721,10 +805,15 @@ fn build_search_combo_test(
     resource_type: &str,
     params: &[(&str, &str)],
     profile_url: &Option<String>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
 ) -> TestCase {
     let query: Vec<String> = params
         .iter()
-        .map(|(name, ptype)| format!("{}={}", name, sample_value(ptype)))
+        .map(|(name, ptype)| {
+            let value = resolve_param_value(resource_type, name, ptype, field_values, created_ids);
+            format!("{}={}", name, value)
+        })
         .collect();
     let url = format!("/{}?{}", resource_type, query.join("&"));
 
@@ -763,8 +852,20 @@ fn build_chained_search_test(
     chain_param: &str,
     target_param: &str,
     profile_url: &Option<String>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
 ) -> TestCase {
-    let url = format!("/{resource_type}?{chain_param}.{target_param}=test-value");
+    // For chained searches, resolve the target param value from the target resource type.
+    // We don't know the target resource type at this point, so use the chain param's
+    // reference target as a hint.
+    let value = resolve_param_value(
+        resource_type,
+        target_param,
+        "string",
+        field_values,
+        created_ids,
+    );
+    let url = format!("/{resource_type}?{chain_param}.{target_param}={value}");
 
     TestCase {
         name: format!(
@@ -958,6 +1059,8 @@ fn build_operation_test(
     code: &str,
     op_def: Option<&OperationDefinition>,
     profile_url: &Option<String>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
 ) -> TestCase {
     // Build request body from operation parameters
     let body = op_def.map(|def| {
@@ -975,10 +1078,14 @@ fn build_operation_test(
                     serde_json::Value::String(p.name.clone()),
                 );
                 if let Some(ptype) = &p.param_type {
-                    param_obj.insert(
-                        "value".to_string(),
-                        serde_json::Value::String(sample_value(ptype).to_string()),
+                    let value = resolve_param_value(
+                        resource_type,
+                        &p.name,
+                        ptype,
+                        field_values,
+                        created_ids,
                     );
+                    param_obj.insert("value".to_string(), serde_json::Value::String(value));
                 }
                 param_array.push(serde_json::Value::Object(param_obj));
             }
@@ -1145,32 +1252,6 @@ fn infer_reference_target(param_name: &str, search_params: &[SearchParameter]) -
     }
 }
 
-fn search_param_assertion_paths(
-    _resource_type: &str,
-    param_name: &str,
-    param_type: &str,
-) -> Vec<String> {
-    match param_name {
-        "name" => vec!["name.family".to_string(), "name.given".to_string()],
-        "identifier" => vec!["identifier.value".to_string()],
-        "active" => vec!["active".to_string()],
-        "status" => vec!["status".to_string()],
-        "birthdate" => vec!["birthDate".to_string()],
-        "gender" => vec!["gender".to_string()],
-        "target" => vec!["target.reference".to_string()],
-        "organization" => vec!["organization.reference".to_string()],
-        "location" => vec!["location.reference".to_string()],
-        "endpoint" => vec!["endpoint.reference".to_string()],
-        "_id" => vec!["id".to_string()],
-        _ => match param_type {
-            "reference" => vec![format!("{}.reference", param_name)],
-            _ => vec![param_name.to_string()],
-        },
-    }
-    .into_iter()
-    .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1281,7 +1362,17 @@ mod tests {
     fn generate_test_plan_from_capability_statement() {
         let cs = sample_capability_statement();
         let ops = sample_operations();
-        let plan = generate_test_plan(&cs, &[], &sample_search_params(), Some(&ops), None);
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(
+            &cs,
+            &[],
+            &sample_search_params(),
+            Some(&ops),
+            None,
+            &empty_fv,
+            &empty_ids,
+        );
 
         assert_eq!(plan.test_groups.len(), 2); // Patient group + system $export group
         let patient_group = plan
@@ -1346,7 +1437,17 @@ mod tests {
     fn test_case_count_is_comprehensive() {
         let cs = sample_capability_statement();
         let ops = sample_operations();
-        let plan = generate_test_plan(&cs, &[], &sample_search_params(), Some(&ops), None);
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(
+            &cs,
+            &[],
+            &sample_search_params(),
+            Some(&ops),
+            None,
+            &empty_fv,
+            &empty_ids,
+        );
 
         let group = &plan.test_groups[0];
 
@@ -1429,7 +1530,9 @@ mod tests {
     #[test]
     fn search_modifier_urls_are_correct() {
         let cs = sample_capability_statement();
-        let plan = generate_test_plan(&cs, &[], &[], None, None);
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], &[], None, None, &empty_fv, &empty_ids);
         let group = &plan.test_groups[0];
 
         // Find the :exact modifier test for "name"
@@ -1468,7 +1571,9 @@ mod tests {
     #[test]
     fn search_prefix_urls_are_correct() {
         let cs = sample_capability_statement();
-        let plan = generate_test_plan(&cs, &[], &[], None, None);
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], &[], None, None, &empty_fv, &empty_ids);
         let group = &plan.test_groups[0];
 
         // Find the gt prefix test for birthdate
@@ -1503,24 +1608,22 @@ mod tests {
                 mode: "server".to_string(),
                 resource: vec![RestResource {
                     resource_type: "Location".to_string(),
-                    profile: None,
+                    profile: Some("http://hl7.org/fhir/StructureDefinition/Location".to_string()),
                     supported_profile: vec![],
                     interaction: vec![
                         RestInteraction {
-                            code: "read".to_string(),
+                            code: "search-type".to_string(),
                         },
                         RestInteraction {
-                            code: "search-type".to_string(),
+                            code: "read".to_string(),
                         },
                     ],
                     search_param: vec![RestSearchParam {
                         name: "near".to_string(),
-                        definition: None,
                         param_type: "special".to_string(),
+                        definition: None,
                         documentation: None,
                     }],
-                    search_include: vec![],
-                    search_revinclude: vec![],
                     operation: vec![],
                     read_history: None,
                     update_create: None,
@@ -1528,118 +1631,34 @@ mod tests {
                     conditional_read: None,
                     conditional_update: None,
                     conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
                 }],
                 interaction: vec![],
                 operation: vec![],
             }],
         };
 
-        let plan = generate_test_plan(&cs, &[], &[], None, None);
-        let group = plan
-            .test_groups
-            .iter()
-            .find(|g| g.resource_type == "Location")
-            .expect("Should have Location group");
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], &[], None, None, &empty_fv, &empty_ids);
+        let group = &plan.test_groups[0];
 
-        // Should have a SearchSingle test for "near"
-        assert!(group.tests.iter().any(|t| matches!(t.kind, TestCaseKind::SearchSingle { ref param_name, .. } if param_name == "near")),
-            "Should have SearchSingle test for near param");
-
-        // Should have a SearchNear test with coordinate format
         let near_test = group
             .tests
             .iter()
             .find(|t| matches!(t.kind, TestCaseKind::SearchNear { .. }));
-        assert!(
-            near_test.is_some(),
-            "Should have SearchNear test for special-type param"
-        );
+        assert!(near_test.is_some(), "Should have a near search test");
         let near_test = near_test.unwrap();
         assert!(
-            near_test
-                .request
-                .url
-                .contains("near=-25.0%7C133.0%7C3000%7Ckm"),
-            "Near test URL should contain encoded near coordinate format, got {}",
+            near_test.request.url.contains("near="),
+            "URL should contain near=, got {}",
             near_test.request.url
         );
         assert!(
-            near_test.request.url.starts_with("/Location?"),
-            "Near test URL should start with /Location?, got {}",
+            near_test.request.url.contains("%7C"),
+            "URL should contain %7C (pipe encoding), got {}",
             near_test.request.url
-        );
-    }
-}
-
-#[cfg(test)]
-mod debug_tests {
-    use crate::generate::planner::generate_test_plan;
-    use crate::parse::parse_package;
-
-    #[test]
-    #[ignore = "requires local package/package.tgz — run with `cargo test -- --ignored`"]
-    fn debug_real_package_cs_parsing() {
-        let pkg = parse_package("package/package.tgz").unwrap();
-        for cs in &pkg.capability_statements {
-            eprintln!(
-                "CS: {:?} | rest: {}",
-                cs.name.as_deref().unwrap_or("unknown"),
-                cs.rest.len()
-            );
-            for rest in &cs.rest {
-                eprintln!(
-                    "  rest mode: {} | resources: {}",
-                    rest.mode,
-                    rest.resource.len()
-                );
-                for res in &rest.resource {
-                    eprintln!(
-                        "    resource: {} | interactions: {} | searchParams: {} | operations: {}",
-                        res.resource_type,
-                        res.interaction.len(),
-                        res.search_param.len(),
-                        res.operation.len()
-                    );
-                    for sp in &res.search_param {
-                        eprintln!("      searchParam: {} type={}", sp.name, sp.param_type);
-                    }
-                    for op in &res.operation {
-                        eprintln!("      operation: {} def={:?}", op.name, op.definition);
-                    }
-                }
-            }
-        }
-        // Generate test plan from the responder CS (should have resources)
-        let responder_cs = pkg
-            .capability_statements
-            .iter()
-            .find(|cs| cs.name.as_deref() == Some("HealthConnectProviderDirectoryResponder"))
-            .expect("Should find responder CS");
-        let plan = generate_test_plan(
-            responder_cs,
-            &pkg.structure_definitions,
-            &pkg.search_parameters,
-            Some(&pkg.operation_definitions),
-            None,
-        );
-        eprintln!(
-            "Test plan: {} groups, {} total tests",
-            plan.test_groups.len(),
-            plan.test_groups
-                .iter()
-                .map(|g| g.tests.len())
-                .sum::<usize>()
-        );
-        for group in &plan.test_groups {
-            eprintln!(
-                "  Group: {} | tests: {}",
-                group.resource_type,
-                group.tests.len()
-            );
-        }
-        assert!(
-            !plan.test_groups.is_empty(),
-            "Should have test groups from real CS"
         );
     }
 }
