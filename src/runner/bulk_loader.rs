@@ -170,6 +170,114 @@ pub async fn ensure_r5_extension_profiles(write_endpoint: &WriteEndpoint) -> Res
 ///
 /// For each resource type in `creation_order`, reads the NDJSON file from
 /// `{data_dir}/{ResourceType}.ndjson` and uploads each resource to the repository.
+/// Upload one resource per uncovered resource type to the repository.
+///
+/// For each type in `creation_order` that has no entry in `bulk_counts` (or count = 0),
+/// generates a single resource using the profile-aware generator, assigns it the
+/// predictable ID `{resourcetype}-1`, and PUTs it to the repository.
+///
+/// This ensures that conformance must_support tests — which search by `_id={type}-1` —
+/// can always find a matching resource regardless of which resource types are configured
+/// in `data_generation.counts`. Works with any FHIR IG.
+pub async fn upload_supplement_resources(
+    creation_order: &[String],
+    bulk_counts: &std::collections::HashMap<String, u64>,
+    profile_urls: &std::collections::HashMap<String, String>,
+    profiles: &[crate::model::StructureDefinition],
+    value_set_systems: &std::collections::HashMap<String, String>,
+    write_endpoint: &WriteEndpoint,
+) -> Result<HashMap<String, Vec<String>>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
+    let base_url = match write_endpoint {
+        WriteEndpoint::Repository { base_url, .. } => base_url,
+        WriteEndpoint::Server { base_url, .. } => base_url,
+    };
+
+    let mut supplement_ids: HashMap<String, Vec<String>> = HashMap::new();
+    let mut any_uploaded = false;
+
+    for resource_type in creation_order {
+        let count = bulk_counts.get(resource_type).copied().unwrap_or(0);
+        if count > 0 {
+            continue; // Already covered by bulk data
+        }
+
+        // Skip FHIR data types that are not independently creatable resources.
+        // Some CapabilityStatements list types like Extension or Identifier which
+        // are structural types, not top-level FHIR resources.
+        const NON_RESOURCE_TYPES: &[&str] = &[
+            "Extension", "Identifier", "Coding", "CodeableConcept", "Address",
+            "HumanName", "ContactPoint", "Period", "Quantity", "Range",
+            "Ratio", "Attachment", "Annotation", "Signature", "Timing",
+        ];
+        if NON_RESOURCE_TYPES.contains(&resource_type.as_str()) {
+            continue;
+        }
+
+        // Generate a single resource for this type
+        let resource = match crate::generate::generate_supplement_resource(
+            resource_type,
+            profile_urls,
+            profiles,
+            value_set_systems,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Could not generate supplement resource for {}: {}", resource_type, e);
+                continue;
+            }
+        };
+
+        let id = format!("{}-1", resource_type.to_lowercase());
+        let url = format!("{}/{}/{}", base_url, resource_type, id);
+
+        if !any_uploaded {
+            println!("\n── Uploading supplement resources (uncovered types) ──");
+            any_uploaded = true;
+        }
+
+        let req = client
+            .put(&url)
+            .header("Content-Type", "application/fhir+json")
+            .header("Accept", "application/fhir+json")
+            .json(&resource);
+        let req = add_write_auth(req, write_endpoint);
+
+        match req.send().await {
+            Ok(r) if r.status().as_u16() < 300 => {
+                tracing::info!("Uploaded supplement {} ({})", resource_type, id);
+                println!("  {} {}", resource_type, id);
+                supplement_ids
+                    .entry(resource_type.clone())
+                    .or_default()
+                    .push(id);
+            }
+            Ok(r) => {
+                let status = r.status();
+                let body: serde_json::Value = r.json().await.unwrap_or_default();
+                tracing::warn!(
+                    "Failed to upload supplement {} (HTTP {}): {:?}",
+                    resource_type,
+                    status,
+                    body
+                );
+            }
+            Err(e) => {
+                tracing::warn!("Error uploading supplement {}: {}", resource_type, e);
+            }
+        }
+    }
+
+    Ok(supplement_ids)
+}
+
+/// Upload NDJSON files to the FHIR repository and return IDs per resource type.
+///
+/// For each resource type in `creation_order`, reads the NDJSON file from
+/// `{data_dir}/{ResourceType}.ndjson` and uploads each resource to the repository.
 /// Returns a map of resource type → list of server-assigned IDs.
 ///
 /// Uses PUT (update-as-create) by default, or POST if `upload_method` is "POST".

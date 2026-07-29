@@ -493,6 +493,8 @@ fn is_base_spec_repeatable(resource_type: &str, field_name: &str) -> bool {
         ("Location", "address") => false,
         ("PractitionerRole", "code") => true,
         ("HealthcareService", "code") => true,
+        ("Provenance", "target") => true,
+        ("Provenance", "agent") => true,
         _ => false,
     }
 }

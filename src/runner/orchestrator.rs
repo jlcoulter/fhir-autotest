@@ -263,9 +263,32 @@ impl Orchestrator {
                 println!("    {}: {} resources", rt, ids.len());
             }
 
+            // Write supplement resources (one per uncovered type) to NDJSON files
+            // so they appear in the data output alongside the bulk data.
+            let supplement_ids = write_supplement_ndjson(
+                &creation_order,
+                &self.config.data_generation.counts,
+                &profile_urls,
+                &pkg.structure_definitions,
+                &value_set_systems,
+                output_path,
+            )?;
+            if !supplement_ids.is_empty() {
+                println!("  Generated {} supplement resource type(s):", supplement_ids.len());
+                for rt in supplement_ids.keys() {
+                    println!("    {}: {}-1", rt, rt.to_lowercase());
+                }
+            }
+
+            // Merge supplement IDs so update.ndjson includes them too.
+            let mut all_ids = generated_ids;
+            for (rt, ids) in supplement_ids.iter() {
+                all_ids.entry(rt.clone()).or_default().extend(ids.iter().cloned());
+            }
+
             // Generate update.ndjson with the same resources but 1-2
             // randomly updated parameters per resource (same IDs).
-            generate_update_ndjson(&generated_ids, output_path)?;
+            generate_update_ndjson(&all_ids, output_path)?;
             println!("  Generated update.ndjson with updated resources");
 
             if self.config.data_generation.generate_only {
@@ -279,14 +302,22 @@ impl Orchestrator {
                 println!("\n── Ensuring R5 extension profiles are available ──");
                 ensure_r5_extension_profiles(&write_endpoint).await?;
 
-                // Upload NDJSON files to the repository
+                // Upload bulk data + supplement resources (all read from NDJSON files on disk).
+                // Extend the creation order with supplement types so they are uploaded too.
+                let mut upload_order = data_creation_order.clone();
+                for rt in supplement_ids.keys() {
+                    if !upload_order.contains(rt) {
+                        upload_order.push(rt.clone());
+                    }
+                }
+
                 println!(
                     "\n── Uploading bulk data to {} ({}) ──",
                     write_url, upload_method
                 );
                 let uploaded_ids = upload_ndjson_files(
                     &data_dir,
-                    &data_creation_order,
+                    &upload_order,
                     &write_endpoint,
                     concurrency,
                 )
@@ -566,15 +597,16 @@ impl Orchestrator {
 
         // 9. Cleanup
         if has_bulk_data && !self.config.data_generation.generate_only {
-            // Bulk delete all uploaded resources
-            let data_creation_order = bulk_data_creation_order(&self.config.data_generation.counts);
+            // Bulk delete all uploaded resources, including supplement resources.
+            // Use creation_order (full CapabilityStatement order) so supplement
+            // types not in data_generation.counts are also covered.
             println!(
                 "\n── Cleanup: bulk-deleting resources from {} ──",
                 write_url
             );
             delete_all_resources(
                 &bulk_ids,
-                &data_creation_order,
+                &creation_order,
                 &write_endpoint,
                 concurrency,
             )
