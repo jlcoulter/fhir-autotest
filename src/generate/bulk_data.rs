@@ -250,15 +250,22 @@ pub fn generate_supplement_resource(
 /// Walk a JSON value and replace any `"reference": "ResourceType/some-uuid"` with
 /// `"reference": "ResourceType/resourcetype-1"` so supplement resources always
 /// point to the predictable IDs used by other supplement resources.
+/// The abstract `Resource` base type is mapped to `Organization` as a concrete fallback.
 fn normalize_supplement_references(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(obj) => {
             if let Some(ref_val) = obj.get_mut("reference") {
                 if let Some(s) = ref_val.as_str() {
                     if let Some((rtype, _id)) = s.split_once('/') {
-                        // Only normalize if the current ID looks like a UUID (not already a -1 style)
-                        let new_id = format!("{}-1", rtype.to_lowercase());
-                        *ref_val = serde_json::Value::String(format!("{}/{}", rtype, new_id));
+                        // Map the abstract FHIR `Resource` base type to a concrete
+                        // type that is always present from bulk data.
+                        let concrete_type = if rtype == "Resource" {
+                            "Organization"
+                        } else {
+                            rtype
+                        };
+                        let new_id = format!("{}-1", concrete_type.to_lowercase());
+                        *ref_val = serde_json::Value::String(format!("{}/{}", concrete_type, new_id));
                     }
                 }
             }

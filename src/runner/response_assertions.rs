@@ -321,21 +321,43 @@ pub fn assert_response(
 /// Resolve a dotted JSON path like "name.family" or "birthDate" to a value.
 /// Handles arrays by returning the first matching value.
 fn resolve_json_path(value: &Value, path: &str) -> Option<Value> {
-    let parts: Vec<&str> = path.split('.').collect();
-    let mut current = value;
-
-    for part in parts {
-        if let Some(arr) = current.as_array() {
-            if arr.is_empty() {
-                return None;
-            }
-            current = &arr[0];
-        }
-
-        current = current.get(part)?;
+    if path.is_empty() {
+        return Some(value.clone());
     }
 
-    Some(current.clone())
+    // When the current value is an array, search ALL elements for the first one
+    // that satisfies the remaining path.  The original code only checked arr[0],
+    // which missed complex extensions that aren't the first element in the array.
+    if let Some(arr) = value.as_array() {
+        for elem in arr {
+            if let Some(result) = resolve_json_path(elem, path) {
+                return Some(result);
+            }
+        }
+        return None;
+    }
+
+    let (head, tail) = match path.split_once('.') {
+        Some((h, t)) => (h, Some(t)),
+        None => (path, None),
+    };
+
+    let obj = value.as_object()?;
+
+    let next_value = if head == "value[x]" {
+        // Polymorphic FHIR field: matches any key prefixed with "value" followed by
+        // at least one more character (valueCodeableConcept, valueString, etc.).
+        obj.iter()
+            .find(|(key, _)| key.starts_with("value") && key.len() > "value".len())
+            .map(|(_, v)| v)?
+    } else {
+        obj.get(head)?
+    };
+
+    match tail {
+        None => Some(next_value.clone()),
+        Some(t) => resolve_json_path(next_value, t),
+    }
 }
 
 /// Compare two JSON values for sorting. Returns negative if a < b, 0 if equal, positive if a > b.
@@ -577,6 +599,47 @@ mod tests {
             errors.is_empty(),
             "Expected no errors for absent 'text', got: {:?}",
             errors
+        );
+    }
+
+    #[test]
+    fn resolve_json_path_value_x_in_nested_extension() {
+        // Simulates: Organization.extension[suppressed].extension[suppressedBy].valueCodeableConcept
+        let v = json!({
+            "resourceType": "Organization",
+            "extension": [
+                {
+                    "url": "http://example.com/simple-ext",
+                    "valueString": "simple"
+                },
+                {
+                    "url": "http://example.com/complex-ext",
+                    "extension": [
+                        {
+                            "url": "suppressedBy",
+                            "valueCodeableConcept": {
+                                "coding": [{"code": "org-initiated"}],
+                                "text": "test"
+                            }
+                        }
+                    ]
+                }
+            ]
+        });
+        // Bug 1: value[x] must match valueCodeableConcept
+        assert!(
+            resolve_json_path(&v, "extension.extension.value[x]").is_some(),
+            "extension.extension.value[x] should resolve to valueCodeableConcept"
+        );
+        // Bug 1b: value[x].coding must also resolve
+        assert!(
+            resolve_json_path(&v, "extension.extension.value[x].coding").is_some(),
+            "extension.extension.value[x].coding should resolve"
+        );
+        // Bug 2: extension.extension should find the complex ext even if simple ext is first
+        assert!(
+            resolve_json_path(&v, "extension.extension").is_some(),
+            "extension.extension should find sub-extensions in any array element"
         );
     }
 

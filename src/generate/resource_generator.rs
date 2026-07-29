@@ -122,7 +122,96 @@ pub fn generate_resource_with_value_sets(
         value_set_systems,
     );
 
+    // Fourth pass: populate mustSupport BackboneElement fields that were skipped
+    // in pass 1 because min=0. A backbone with min=0 but mustSupport=true should
+    // be generated when at least one of its children has min=1 — this ensures
+    // the conformance must_support checker can verify the field is present.
+    populate_must_support_backbones(
+        &mut resource,
+        elements,
+        &profile.base_type,
+        all_profiles,
+        value_set_systems,
+    );
+
     Ok(resource)
+}
+
+/// Populate mustSupport BackboneElement fields that have min=0 but whose children
+/// include at least one required field (min ≥ 1).
+///
+/// The required-fields pass (pass 1) skips optional fields entirely. But when a
+/// BackboneElement is mustSupport, a server must be able to store and return it —
+/// so the generated test resource should include it so the must_support checker
+/// can verify its presence. Only direct children are considered (depth 1 off the
+/// backbone), matching the behaviour of `populate_backbone_fields`.
+fn populate_must_support_backbones(
+    resource: &mut serde_json::Value,
+    elements: &[ElementDefinition],
+    resource_type: &str,
+    all_profiles: &[StructureDefinition],
+    value_set_systems: &HashMap<String, String>,
+) {
+    for element in elements {
+        // Only direct children of the resource root (depth 1, no slices)
+        let field_name = match get_field_name(&element.path, resource_type) {
+            Some(name) => name,
+            None => continue,
+        };
+        if field_name == resource_type || field_name.contains(':') {
+            continue;
+        }
+
+        // Must be optional (min=0), mustSupport, and a BackboneElement
+        if element.min.unwrap_or(0) != 0 {
+            continue;
+        }
+        if !element.must_support {
+            continue;
+        }
+        if element.type_.first().map(|t| t.code.as_str()) != Some("BackboneElement") {
+            continue;
+        }
+
+        // Skip if the field is already populated
+        if resource.get(&field_name).is_some() {
+            continue;
+        }
+
+        // Check whether any direct child has min ≥ 1 (would be populated in a backbone)
+        let parent_path = format!("{}.{}", resource_type, field_name);
+        let has_required_child = elements.iter().any(|e| {
+            e.path.starts_with(&format!("{}.", parent_path))
+                && !e
+                    .path
+                    .strip_prefix(&format!("{}.", parent_path))
+                    .unwrap_or("")
+                    .contains('.')
+                && e.min.unwrap_or(0) >= 1
+        });
+
+        if !has_required_child {
+            continue;
+        }
+
+        // Generate and populate the backbone
+        let mut backbone = serde_json::Map::new();
+        populate_backbone_fields(
+            &mut backbone,
+            &parent_path,
+            elements,
+            resource_type,
+            all_profiles,
+            value_set_systems,
+        );
+
+        let max = element.max.as_deref().unwrap_or("1");
+        if max != "1" || is_base_spec_repeatable(resource_type, &field_name) {
+            resource[&field_name] = serde_json::json!([backbone]);
+        } else {
+            resource[&field_name] = serde_json::json!(backbone);
+        }
+    }
 }
 
 fn populate_required_fields(
