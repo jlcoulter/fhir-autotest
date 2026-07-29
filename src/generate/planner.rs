@@ -349,6 +349,7 @@ fn build_test_group(
                     &resource.resource_type,
                     &param.to_lowercase(),
                     false,
+                    None,
                     expected_include_type,
                     profile_url,
                 ));
@@ -357,10 +358,12 @@ fn build_test_group(
         for revinclude_spec in &resource.search_revinclude {
             // Format: "ResourceName:paramName" e.g. "Location:organization"
             if let Some((res, param)) = revinclude_spec.split_once(':') {
-                tests.push(build_revinclude_test(
+                tests.push(build_include_test(
                     &resource.resource_type,
-                    res,
                     &param.to_lowercase(),
+                    true,
+                    Some(res),
+                    None,
                     profile_url,
                 ));
             }
@@ -787,6 +790,7 @@ fn build_include_test(
     resource_type: &str,
     param_name: &str,
     revinclude: bool,
+    source_resource: Option<&str>,
     expected_include_type: Option<String>,
     profile_url: &Option<String>,
 ) -> TestCase {
@@ -796,7 +800,8 @@ fn build_include_test(
         "_include"
     };
     let target = if revinclude {
-        format!("Patient:{}", param_name)
+        let source = source_resource.unwrap_or("Patient");
+        format!("{}:{}", source, param_name)
     } else {
         format!("{resource_type}:{param_name}")
     };
@@ -842,53 +847,6 @@ fn build_include_test(
                 min_entries: Some(0),
                 include_types,
                 include_requires_distinct_from,
-                ..ResponseAssertion::none()
-            }),
-        },
-    }
-}
-
-fn build_revinclude_test(
-    resource_type: &str,
-    source_resource: &str,
-    param_name: &str,
-    profile_url: &Option<String>,
-) -> TestCase {
-    let target = format!("{source_resource}:{param_name}");
-    let url = format!("/{resource_type}?_revinclude={target}&_id={{id}}");
-
-    let mut include_types = HashMap::new();
-    include_types.insert(source_resource.to_string(), param_name.to_string());
-
-    TestCase {
-        name: format!(
-            "{}_revinclude_{}_{}",
-            resource_type.to_lowercase(),
-            source_resource.to_lowercase(),
-            param_name.replace('-', "_")
-        ),
-        kind: TestCaseKind::Include {
-            param: param_name.to_string(),
-            revinclude: true,
-        },
-        interaction: Interaction::SearchType,
-        resource_type: resource_type.to_string(),
-        profile_url: profile_url.clone(),
-        request: HttpRequest {
-            method: "GET".to_string(),
-            url,
-            headers: HashMap::new(),
-            body: None,
-        },
-        validation: ValidationSpec {
-            expected_status: 200,
-            profile_url: None,
-            required_elements: Vec::new(),
-            forbidden_elements: Vec::new(),
-            response_assertion: Some(ResponseAssertion {
-                bundle_type: Some("searchset".to_string()),
-                min_entries: Some(0),
-                include_types,
                 ..ResponseAssertion::none()
             }),
         },
