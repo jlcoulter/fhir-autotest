@@ -370,24 +370,33 @@ fn build_test_group(
         }
 
         // --- Result parameter tests ---
-        tests.push(build_result_param_test(
+        if let Some(test) = build_result_param_test(
             &resource.resource_type,
             "_summary",
             "true",
             profile_url,
-        ));
-        tests.push(build_result_param_test(
+            &inline_params,
+        ) {
+            tests.push(test);
+        }
+        if let Some(test) = build_result_param_test(
             &resource.resource_type,
             "_count",
             "1",
             profile_url,
-        ));
-        tests.push(build_result_param_test(
+            &inline_params,
+        ) {
+            tests.push(test);
+        }
+        if let Some(sort_test) = build_result_param_test(
             &resource.resource_type,
             "_sort",
             "_lastUpdated",
             profile_url,
-        ));
+            &inline_params,
+        ) {
+            tests.push(sort_test);
+        }
     }
 
     // --- $operation tests from CS rest.operation ---
@@ -858,15 +867,71 @@ fn build_result_param_test(
     param: &str,
     value: &str,
     profile_url: &Option<String>,
-) -> TestCase {
-    let url = format!("/{resource_type}?{param}={value}&_id=nonexistent-id-99999");
+    declared_params: &[RestSearchParam],
+) -> Option<TestCase> {
+    // For _sort, determine the actual sort field based on declared params
+    let (actual_param, actual_value, sort_field): (&str, String, Option<String>) =
+        if param == "_sort" {
+            // Check if _lastUpdated is declared as a search param for this resource
+            let has_last_updated = declared_params.iter().any(|sp| {
+                sp.name.eq_ignore_ascii_case("_lastUpdated")
+                    || sp.name.eq_ignore_ascii_case("lastUpdated")
+            });
 
-    TestCase {
-        name: format!(
+            if has_last_updated {
+                (
+                    "_sort",
+                    "_lastUpdated".to_string(),
+                    Some("_lastUpdated".to_string()),
+                )
+            } else {
+                // Find first string or date param to use as fallback
+                let fallback = declared_params
+                    .iter()
+                    .find(|sp| sp.param_type == "string" || sp.param_type == "date")
+                    .map(|sp| sp.name.clone());
+
+                match fallback {
+                    Some(fb) => ("_sort", fb.clone(), Some(fb)),
+                    None => return None, // No suitable param, skip sort test
+                }
+            }
+        } else {
+            (param, value.to_string(), None)
+        };
+
+    let url = format!("/{resource_type}?{actual_param}={actual_value}&_id=nonexistent-id-99999");
+
+    let name = if param == "_sort" {
+        format!(
+            "{}_result_sort_{}",
+            resource_type.to_lowercase(),
+            actual_value.replace('-', "_")
+        )
+    } else {
+        format!(
             "{}_result_{}",
             resource_type.to_lowercase(),
             param.trim_start_matches('_')
-        ),
+        )
+    };
+
+    // Build response assertion for _sort with the actual sort field
+    let response_assertion = if param == "_sort" {
+        Some(ResponseAssertion {
+            bundle_type: Some("searchset".to_string()),
+            sort_by: Some(SortAssertion {
+                field: sort_field.unwrap_or_else(|| "_lastUpdated".to_string()),
+                direction: "asc".to_string(),
+            }),
+            ..ResponseAssertion::none()
+        })
+    } else {
+        None
+    };
+
+    Some(TestCase {
+        name,
         kind: TestCaseKind::ResultParam {
             param: param.to_string(),
         },
@@ -884,9 +949,9 @@ fn build_result_param_test(
             profile_url: None,
             required_elements: Vec::new(),
             forbidden_elements: Vec::new(),
-            response_assertion: None,
+            response_assertion,
         },
-    }
+    })
 }
 
 fn build_operation_test(
