@@ -407,33 +407,30 @@ fn build_test_group(
         }
 
         // --- Result parameter tests ---
-        if let Some(test) = build_result_param_test(
+        tests.extend(build_result_param_test(
             &resource.resource_type,
             "_summary",
             "true",
             profile_url,
             &inline_params,
-        ) {
-            tests.push(test);
-        }
-        if let Some(test) = build_result_param_test(
+            created_ids,
+        ));
+        tests.extend(build_result_param_test(
             &resource.resource_type,
             "_count",
             "1",
             profile_url,
             &inline_params,
-        ) {
-            tests.push(test);
-        }
-        if let Some(sort_test) = build_result_param_test(
+            created_ids,
+        ));
+        tests.extend(build_result_param_test(
             &resource.resource_type,
             "_sort",
             "_lastUpdated",
             profile_url,
             &inline_params,
-        ) {
-            tests.push(sort_test);
-        }
+            created_ids,
+        ));
     }
 
     // --- $operation tests from CS rest.operation ---
@@ -970,7 +967,8 @@ fn build_result_param_test(
     value: &str,
     profile_url: &Option<String>,
     declared_params: &[RestSearchParam],
-) -> Option<TestCase> {
+    created_ids: &HashMap<String, String>,
+) -> Vec<TestCase> {
     // For _sort, determine the actual sort field based on declared params
     let (actual_param, actual_value, sort_field): (&str, String, Option<String>) =
         if param == "_sort" {
@@ -993,16 +991,17 @@ fn build_result_param_test(
                     .find(|sp| sp.param_type == "string" || sp.param_type == "date")
                     .map(|sp| sp.name.clone());
 
-                let fb = fallback?; // No suitable param, skip sort test
+                let fb = match fallback {
+                    Some(fb) => fb,
+                    None => return Vec::new(), // No suitable param, skip sort test
+                };
                 ("_sort", fb.clone(), Some(fb))
             }
         } else {
             (param, value.to_string(), None)
         };
 
-    let url = format!("/{resource_type}?{actual_param}={actual_value}&_id=nonexistent-id-99999");
-
-    let name = if param == "_sort" {
+    let base_name = if param == "_sort" {
         format!(
             "{}_result_sort_{}",
             resource_type.to_lowercase(),
@@ -1016,8 +1015,69 @@ fn build_result_param_test(
         )
     };
 
-    // Build response assertion for _sort with the actual sort field
-    let response_assertion = if param == "_sort" {
+    let mut tests = Vec::new();
+
+    // Test A: with real resource ID (uses {id} placeholder resolved at runtime)
+    // This exercises the result param behaviour on actual data.
+    if created_ids.contains_key(resource_type) {
+        let url = format!("/{resource_type}?{actual_param}={actual_value}&_id={{id}}");
+
+        let response_assertion = match param {
+            "_count" => Some(ResponseAssertion {
+                bundle_type: Some("searchset".to_string()),
+                min_entries: Some(1),
+                max_entries: Some(1),
+                ..ResponseAssertion::none()
+            }),
+            "_summary" => Some(ResponseAssertion {
+                bundle_type: Some("searchset".to_string()),
+                min_entries: Some(1),
+                absent_fields: vec!["text".to_string()],
+                ..ResponseAssertion::none()
+            }),
+            "_sort" => Some(ResponseAssertion {
+                bundle_type: Some("searchset".to_string()),
+                sort_by: Some(SortAssertion {
+                    field: sort_field
+                        .clone()
+                        .unwrap_or_else(|| "_lastUpdated".to_string()),
+                    direction: "asc".to_string(),
+                }),
+                ..ResponseAssertion::none()
+            }),
+            _ => None,
+        };
+
+        tests.push(TestCase {
+            name: base_name.clone(),
+            kind: TestCaseKind::ResultParam {
+                param: param.to_string(),
+            },
+            interaction: Interaction::SearchType,
+            resource_type: resource_type.to_string(),
+            profile_url: profile_url.clone(),
+            request: HttpRequest {
+                method: "GET".to_string(),
+                url,
+                headers: HashMap::new(),
+                body: None,
+            },
+            validation: ValidationSpec {
+                expected_status: 200,
+                profile_url: None,
+                required_elements: Vec::new(),
+                forbidden_elements: Vec::new(),
+                response_assertion,
+            },
+        });
+    }
+
+    // Test B: with nonexistent ID — always returns empty Bundle
+    // Verifies Bundle structure on empty results.
+    let url_empty =
+        format!("/{resource_type}?{actual_param}={actual_value}&_id=nonexistent-id-99999");
+
+    let response_assertion_empty = if param == "_sort" {
         Some(ResponseAssertion {
             bundle_type: Some("searchset".to_string()),
             sort_by: Some(SortAssertion {
@@ -1030,8 +1090,8 @@ fn build_result_param_test(
         None
     };
 
-    Some(TestCase {
-        name,
+    tests.push(TestCase {
+        name: format!("{}_empty", base_name),
         kind: TestCaseKind::ResultParam {
             param: param.to_string(),
         },
@@ -1040,7 +1100,7 @@ fn build_result_param_test(
         profile_url: profile_url.clone(),
         request: HttpRequest {
             method: "GET".to_string(),
-            url,
+            url: url_empty,
             headers: HashMap::new(),
             body: None,
         },
@@ -1049,9 +1109,11 @@ fn build_result_param_test(
             profile_url: None,
             required_elements: Vec::new(),
             forbidden_elements: Vec::new(),
-            response_assertion,
+            response_assertion: response_assertion_empty,
         },
-    })
+    });
+
+    tests
 }
 
 fn build_operation_test(
