@@ -318,7 +318,7 @@ fn build_test_group(
         for sp in &inline_params {
             if sp.param_type == "reference" {
                 // Try to find target resource search params to chain into
-                if let Some(target_type) = infer_reference_target(&sp.name) {
+                if let Some(target_type) = infer_reference_target(&sp.name, search_params) {
                     // Find search params for the target resource
                     let target_params: Vec<&SearchParameter> = search_params
                         .iter()
@@ -344,7 +344,8 @@ fn build_test_group(
             // FHIR search parameter codes are lowercase, so normalise the
             // param portion (e.g. "partOf" → "partof") to match the server.
             if let Some((_res, param)) = include_spec.split_once(':') {
-                let expected_include_type = infer_reference_target(&param.to_lowercase());
+                let expected_include_type =
+                    infer_reference_target(&param.to_lowercase(), search_params);
                 tests.push(build_include_test(
                     &resource.resource_type,
                     &param.to_lowercase(),
@@ -1099,8 +1100,35 @@ fn build_negative_test(
     }
 }
 
-/// Infer a reference target resource type from common FHIR search param names.
-fn infer_reference_target(param_name: &str) -> Option<String> {
+/// Infer a reference target resource type from a SearchParameter's expression field.
+///
+/// Extracts the first resource type from the FHIRPath expression (e.g.,
+/// `"Patient.name | Practitioner.name"` → `"Patient"`). Falls back to a
+/// hardcoded mapping of common search parameter names when no SearchParameter
+/// definition is found.
+fn infer_reference_target(param_name: &str, search_params: &[SearchParameter]) -> Option<String> {
+    // Try to find the SearchParameter by code and extract from its expression
+    if let Some(sp) = search_params.iter().find(|sp| sp.code == param_name) {
+        if let Some(expression) = sp.expression.as_deref() {
+            let types: Vec<&str> = expression
+                .split('|')
+                .filter_map(|part| {
+                    let part = part.trim();
+                    let rtype = part.split('.').next()?;
+                    if rtype.chars().next()?.is_uppercase() && !rtype.contains('-') {
+                        Some(rtype)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !types.is_empty() {
+                return Some(types.first()?.to_string());
+            }
+        }
+    }
+
+    // Fallback: hardcoded mapping for common FHIR search parameter names
     match param_name {
         "subject" | "patient" => Some("Patient".to_string()),
         "encounter" => Some("Encounter".to_string()),
