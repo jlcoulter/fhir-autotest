@@ -1284,4 +1284,233 @@ mod tests {
             assert_eq!(val, "test-key-123");
         }
     }
+
+    // ── End-to-end tests using mock_server ──
+
+    #[tokio::test]
+    async fn e2e_upload_verify_and_delete() {
+        let addr = crate::mock_server::start_mock_server(0).await.unwrap();
+        let base_url = format!("http://{}/fhir", addr);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Write Patient.ndjson with 2 resources
+        let mut file = std::fs::File::create(data_dir.join("Patient.ndjson")).unwrap();
+        for i in 0..2 {
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "resourceType": "Patient",
+                    "id": format!("e2e-patient-{}", i + 1),
+                    "name": [{"family": format!("E2E{}", i + 1)}]
+                })
+            )
+            .unwrap();
+        }
+
+        // Write Observation.ndjson with 1 resource
+        let mut file = std::fs::File::create(data_dir.join("Observation.ndjson")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "resourceType": "Observation",
+                "id": "e2e-obs-1",
+                "status": "final",
+                "code": {"coding": [{"code": "test"}]}
+            })
+        )
+        .unwrap();
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        // Step 1: Upload
+        let ids = upload_ndjson_files(
+            &data_dir,
+            &["Patient".to_string(), "Observation".to_string()],
+            &endpoint,
+            1,
+        )
+        .await
+        .unwrap();
+
+        assert!(ids.contains_key("Patient"));
+        assert!(ids.contains_key("Observation"));
+        assert_eq!(ids["Patient"].len(), 2);
+        assert_eq!(ids["Observation"].len(), 1);
+
+        // Step 2: Verify resources are accessible via GET
+        let client = reqwest::Client::new();
+        for id in &ids["Patient"] {
+            let resp = client
+                .get(format!("{}/Patient/{}", base_url, id))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200, "Patient {} should exist", id);
+        }
+        for id in &ids["Observation"] {
+            let resp = client
+                .get(format!("{}/Observation/{}", base_url, id))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200, "Observation {} should exist", id);
+        }
+
+        // Step 3: Delete all resources
+        delete_all_resources(
+            &ids,
+            &["Patient".to_string(), "Observation".to_string()],
+            &endpoint,
+            1,
+        )
+        .await
+        .unwrap();
+
+        // Step 4: Verify resources are gone
+        for id in &ids["Patient"] {
+            let resp = client
+                .get(format!("{}/Patient/{}", base_url, id))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 404, "Patient {} should be deleted", id);
+        }
+        for id in &ids["Observation"] {
+            let resp = client
+                .get(format!("{}/Observation/{}", base_url, id))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 404, "Observation {} should be deleted", id);
+        }
+    }
+
+    #[tokio::test]
+    async fn e2e_upload_with_concurrency() {
+        let addr = crate::mock_server::start_mock_server(0).await.unwrap();
+        let base_url = format!("http://{}/fhir", addr);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Write 10 Patient resources
+        let mut file = std::fs::File::create(data_dir.join("Patient.ndjson")).unwrap();
+        for i in 0..10 {
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "resourceType": "Patient",
+                    "id": format!("concurrent-patient-{}", i + 1),
+                    "name": [{"family": format!("Concurrent{}", i + 1)}]
+                })
+            )
+            .unwrap();
+        }
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 4,
+        };
+
+        // Upload with concurrency = 4
+        let ids = upload_ndjson_files(&data_dir, &["Patient".to_string()], &endpoint, 4)
+            .await
+            .unwrap();
+
+        assert!(ids.contains_key("Patient"));
+        assert_eq!(
+            ids["Patient"].len(),
+            10,
+            "all 10 resources should be uploaded"
+        );
+
+        // Verify all resources exist
+        let client = reqwest::Client::new();
+        for id in &ids["Patient"] {
+            let resp = client
+                .get(format!("{}/Patient/{}", base_url, id))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                200,
+                "Patient {} should exist after concurrent upload",
+                id
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_ndjson_empty_file() {
+        let (base_url, _log) = setup_test_server().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Write an empty NDJSON file (no content)
+        std::fs::File::create(data_dir.join("Patient.ndjson")).unwrap();
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        // Should not crash — should skip the empty file
+        let ids = upload_ndjson_files(&data_dir, &["Patient".to_string()], &endpoint, 1)
+            .await
+            .unwrap();
+
+        assert!(
+            !ids.contains_key("Patient"),
+            "empty NDJSON file should be skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn upload_ndjson_empty_lines_only() {
+        let (base_url, _log) = setup_test_server().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Write an NDJSON file with only blank lines
+        let mut file = std::fs::File::create(data_dir.join("Patient.ndjson")).unwrap();
+        writeln!(file).unwrap();
+        writeln!(file, "   ").unwrap();
+        writeln!(file).unwrap();
+
+        let endpoint = WriteEndpoint::Server {
+            base_url: base_url.clone(),
+            headers: HashMap::new(),
+            upload_method: "PUT".to_string(),
+            concurrency: 1,
+        };
+
+        // Should not crash — should skip the empty file
+        let ids = upload_ndjson_files(&data_dir, &["Patient".to_string()], &endpoint, 1)
+            .await
+            .unwrap();
+
+        assert!(
+            !ids.contains_key("Patient"),
+            "NDJSON with only blank lines should be skipped"
+        );
+    }
 }
