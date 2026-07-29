@@ -273,6 +273,12 @@ impl Orchestrator {
                 println!("\n  generate_only = true: skipping upload and deletion");
                 println!("  NDJSON files are in {}/data/", self.config.output);
             } else {
+                // Pre-upload required R5 extension StructureDefinitions so the HAPI
+                // validator can resolve profile URIs used in slicing discriminators
+                // (e.g. individual-recordedSexOrGender on Practitioner.extension).
+                println!("\n── Ensuring R5 extension profiles are available ──");
+                ensure_r5_extension_profiles(&write_endpoint).await?;
+
                 // Upload NDJSON files to the repository
                 println!(
                     "\n── Uploading bulk data to {} ({}) ──",

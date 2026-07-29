@@ -4,6 +4,168 @@ use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::Path;
 
+/// HL7 R5 extension StructureDefinitions that the HCPD profile references for slicing.
+/// These must be available in the HAPI validator's registry or validation of Practitioner
+/// resources will fail with "Slicing cannot be evaluated" errors.
+///
+/// These are minimal but valid StructureDefinitions sufficient for the HAPI validator
+/// to resolve profile URIs in extension slicing discriminators.
+const R5_EXTENSION_PROFILES: &[(&str, &str, &str)] = &[
+    (
+        "individual-recordedSexOrGender",
+        "http://hl7.org/fhir/StructureDefinition/individual-recordedSexOrGender",
+        r#"{
+  "resourceType": "StructureDefinition",
+  "id": "individual-recordedSexOrGender",
+  "url": "http://hl7.org/fhir/StructureDefinition/individual-recordedSexOrGender",
+  "version": "5.3.0",
+  "name": "IndividualRecordedSexOrGender",
+  "title": "Individual Recorded Sex Or Gender",
+  "status": "active",
+  "kind": "complex-type",
+  "abstract": false,
+  "context": [{"type": "element", "expression": "DomainResource"}],
+  "type": "Extension",
+  "baseDefinition": "http://hl7.org/fhir/StructureDefinition/Extension",
+  "derivation": "constraint",
+  "snapshot": {
+    "element": [
+      {"id": "Extension", "path": "Extension", "min": 0, "max": "*",
+       "type": [{"code": "Extension"}]},
+      {"id": "Extension.extension", "path": "Extension.extension", "min": 0, "max": "*",
+       "slicing": {"discriminator": [{"type": "value", "path": "url"}], "rules": "open"},
+       "type": [{"code": "Extension"}]},
+      {"id": "Extension.extension:value", "path": "Extension.extension",
+       "sliceName": "value", "min": 0, "max": "1",
+       "type": [{"code": "Extension"}]},
+      {"id": "Extension.extension:value.url", "path": "Extension.extension.url",
+       "min": 1, "max": "1", "fixedUri": "value"},
+      {"id": "Extension.extension:value.value[x]", "path": "Extension.extension.value[x]",
+       "min": 1, "max": "1", "type": [{"code": "CodeableConcept"}]},
+      {"id": "Extension.url", "path": "Extension.url", "min": 1, "max": "1",
+       "fixedUri": "http://hl7.org/fhir/StructureDefinition/individual-recordedSexOrGender"},
+      {"id": "Extension.value[x]", "path": "Extension.value[x]", "min": 0, "max": "0"}
+    ]
+  }
+}"#,
+    ),
+    (
+        "individual-genderIdentity",
+        "http://hl7.org/fhir/StructureDefinition/individual-genderIdentity",
+        r#"{
+  "resourceType": "StructureDefinition",
+  "id": "individual-genderIdentity",
+  "url": "http://hl7.org/fhir/StructureDefinition/individual-genderIdentity",
+  "version": "5.3.0",
+  "name": "IndividualGenderIdentity",
+  "title": "Individual Gender Identity",
+  "status": "active",
+  "kind": "complex-type",
+  "abstract": false,
+  "context": [{"type": "element", "expression": "DomainResource"}],
+  "type": "Extension",
+  "baseDefinition": "http://hl7.org/fhir/StructureDefinition/Extension",
+  "derivation": "constraint",
+  "snapshot": {
+    "element": [
+      {"id": "Extension", "path": "Extension", "min": 0, "max": "*",
+       "type": [{"code": "Extension"}]},
+      {"id": "Extension.extension", "path": "Extension.extension", "min": 0, "max": "*",
+       "slicing": {"discriminator": [{"type": "value", "path": "url"}], "rules": "open"},
+       "type": [{"code": "Extension"}]},
+      {"id": "Extension.url", "path": "Extension.url", "min": 1, "max": "1",
+       "fixedUri": "http://hl7.org/fhir/StructureDefinition/individual-genderIdentity"},
+      {"id": "Extension.value[x]", "path": "Extension.value[x]", "min": 0, "max": "0"}
+    ]
+  }
+}"#,
+    ),
+    (
+        "individual-pronouns",
+        "http://hl7.org/fhir/StructureDefinition/individual-pronouns",
+        r#"{
+  "resourceType": "StructureDefinition",
+  "id": "individual-pronouns",
+  "url": "http://hl7.org/fhir/StructureDefinition/individual-pronouns",
+  "version": "5.3.0",
+  "name": "IndividualPronouns",
+  "title": "Individual Pronouns",
+  "status": "active",
+  "kind": "complex-type",
+  "abstract": false,
+  "context": [{"type": "element", "expression": "DomainResource"}],
+  "type": "Extension",
+  "baseDefinition": "http://hl7.org/fhir/StructureDefinition/Extension",
+  "derivation": "constraint",
+  "snapshot": {
+    "element": [
+      {"id": "Extension", "path": "Extension", "min": 0, "max": "*",
+       "type": [{"code": "Extension"}]},
+      {"id": "Extension.extension", "path": "Extension.extension", "min": 0, "max": "*",
+       "slicing": {"discriminator": [{"type": "value", "path": "url"}], "rules": "open"},
+       "type": [{"code": "Extension"}]},
+      {"id": "Extension.url", "path": "Extension.url", "min": 1, "max": "1",
+       "fixedUri": "http://hl7.org/fhir/StructureDefinition/individual-pronouns"},
+      {"id": "Extension.value[x]", "path": "Extension.value[x]", "min": 0, "max": "0"}
+    ]
+  }
+}"#,
+    ),
+];
+
+/// Ensure the required HL7 R5 extension StructureDefinitions are present in the
+/// FHIR repository. If a profile is missing (404), uploads the embedded minimal
+/// StructureDefinition so the HAPI validator can resolve profile URIs used in
+/// extension slicing discriminators.
+pub async fn ensure_r5_extension_profiles(write_endpoint: &WriteEndpoint) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
+    let base_url = match write_endpoint {
+        WriteEndpoint::Repository { base_url, .. } => base_url,
+        WriteEndpoint::Server { base_url, .. } => base_url,
+    };
+
+    for (id, canonical_url, embedded_json) in R5_EXTENSION_PROFILES {
+        let repo_url = format!("{}/StructureDefinition/{}", base_url, id);
+
+        // Always PUT the embedded StructureDefinition to ensure the latest version
+        // is present. HAPI handles idempotent updates gracefully.
+
+        // Parse the embedded minimal StructureDefinition
+        let sd_json: serde_json::Value = serde_json::from_str(embedded_json)
+            .with_context(|| format!("Failed to parse embedded StructureDefinition for {}", id))?;
+
+        // Upload to repository
+        let put_req = client
+            .put(&repo_url)
+            .header("Content-Type", "application/fhir+json")
+            .header("Accept", "application/fhir+json")
+            .json(&sd_json);
+        let put_req = add_write_auth(put_req, write_endpoint);
+
+        match put_req.send().await {
+            Ok(r) if r.status().as_u16() < 300 => {
+                tracing::info!("Uploaded R5 extension profile: {}", canonical_url);
+                println!("  Uploaded R5 profile: {}", canonical_url);
+            }
+            Ok(r) => {
+                tracing::warn!(
+                    "Failed to upload R5 profile {} (HTTP {})",
+                    id,
+                    r.status()
+                );
+            }
+            Err(e) => {
+                tracing::warn!("Error uploading R5 profile {}: {}", id, e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Upload NDJSON files to the FHIR repository and return IDs per resource type.
 ///
 /// For each resource type in `creation_order`, reads the NDJSON file from

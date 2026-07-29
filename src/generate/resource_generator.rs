@@ -24,6 +24,41 @@ pub fn build_value_set_system_map(
     map
 }
 
+/// Build a map from CodeSystem URL → first concept code in that system.
+///
+/// Used as a fallback when generating CodeableConcept values for elements with
+/// a required binding: if no fixedCoding is specified, we pick the first valid
+/// code from the bound CodeSystem.
+pub fn build_code_system_first_code_map(
+    raw_resources: &HashMap<String, serde_json::Value>,
+) -> HashMap<String, (String, Option<String>)> {
+    let mut map: HashMap<String, (String, Option<String>)> = HashMap::new();
+
+    for resource in raw_resources.values() {
+        match resource.get("resourceType").and_then(|v| v.as_str()) {
+            Some("CodeSystem") => {
+                let Some(url) = resource.get("url").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let first_concept = resource
+                    .get("concept")
+                    .and_then(|c| c.as_array())
+                    .and_then(|a| a.first());
+                if let Some(concept) = first_concept {
+                    let code = concept.get("code").and_then(|c| c.as_str()).map(|s| s.to_string());
+                    let display = concept.get("display").and_then(|d| d.as_str()).map(|s| s.to_string());
+                    if let Some(code) = code {
+                        map.insert(url.to_string(), (code, display));
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    map
+}
+
 /// Generate a synthetic FHIR resource that conforms to a StructureDefinition profile.
 ///
 /// Walks the snapshot elements, fills in required fields (min > 0) with appropriate
@@ -651,6 +686,20 @@ fn direct_fixed_or_pattern_value(element: &ElementDefinition) -> Option<serde_js
     None
 }
 
+/// Capitalize the first letter of a FHIR type code to produce a valid value[x] key.
+///
+/// FHIR JSON requires PascalCase for the type suffix in value[x] properties:
+///   markdown  → valueMarkdown
+///   boolean   → valueBoolean
+///   Period    → valuePeriod  (already PascalCase — unchanged)
+fn capitalize_fhir_type(type_code: &str) -> String {
+    let mut chars = type_code.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
 fn bound_system_for_element(
     element: &ElementDefinition,
     value_set_systems: &HashMap<String, String>,
@@ -753,7 +802,13 @@ fn generate_typed_value(
                     "text": "General practice"
                 })
             } else {
+                // Always include at least one coding — profiles commonly require
+                // CodeableConcept.coding with min = 1 (e.g. suppressed.suppressedBy).
                 serde_json::json!({
+                    "coding": [{
+                        "system": "http://terminology.hl7.org/CodeSystem/v3-NullFlavor",
+                        "code": "UNK"
+                    }],
                     "text": "General practice"
                 })
             }
@@ -1241,8 +1296,33 @@ fn populate_extension_slices(
                 });
 
                 if let (Some(vt), Some(value_elem)) = (sub_value_type, sub_value_elem) {
-                    let value = generate_typed_value(vt, &[], value_elem, value_set_systems);
-                    let value_key = format!("value{}", vt);
+                    let mut value = generate_typed_value(vt, &[], value_elem, value_set_systems);
+
+                    // If the value type is CodeableConcept, the profile may constrain the
+                    // coding with a fixedCoding on the value[x].coding child element.
+                    // Check the profile's own elements (not the base extension definition's)
+                    // to find any fixed/pattern coding that must be used.
+                    if vt == "CodeableConcept" {
+                        let sub_name = sub_slice.slice_name.as_deref().unwrap_or("");
+                        let slice_name_str = slice.slice_name.as_deref().unwrap_or("");
+                        let fixed_coding = elements.iter().find(|e| {
+                            e.id.contains(&format!(":{}", slice_name_str))
+                                && e.id.contains(&format!(":{}", sub_name))
+                                && (e.id.ends_with(".value[x].coding")
+                                    || e.path.ends_with("value[x].coding"))
+                        }).and_then(|e| e.fixed_coding.as_ref().or(e.pattern_coding.as_ref()));
+
+                        if let Some(coding) = fixed_coding {
+                            value = serde_json::json!({
+                                "coding": [coding],
+                                "text": coding.get("display").and_then(|d| d.as_str()).unwrap_or("General practice")
+                            });
+                        }
+                    }
+
+                    // FHIR requires PascalCase suffix: valueMarkdown, valueCodeableConcept, etc.
+                    let type_name = capitalize_fhir_type(vt);
+                    let value_key = format!("value{}", type_name);
                     sub_entry[value_key] = value;
                 }
 
@@ -1260,9 +1340,9 @@ fn populate_extension_slices(
 
             if let Some(vt) = value_type {
                 let value = generate_typed_value(vt, &[], slice, value_set_systems);
-                // The key is "value[x]" in the extension definition, but in the instance
-                // it becomes the concrete type name, e.g. "valuePeriod", "valueCodeableConcept"
-                let value_key = format!("value{}", vt);
+                // FHIR requires PascalCase suffix: valueMarkdown, valueCodeableConcept, etc.
+                let type_name = capitalize_fhir_type(vt);
+                let value_key = format!("value{}", type_name);
                 ext_entry[value_key] = value;
             }
         }
@@ -1420,8 +1500,11 @@ fn find_identifier_type(
 
 fn find_human_name_use(slice_name: &str, elements: &[ElementDefinition]) -> Option<String> {
     for el in elements {
-        let matches_slice = el.path.contains(&format!(":{}.\"", slice_name))
-            || el.id.contains(&format!(":{}.\"", slice_name));
+        // Match elements that belong to this named slice and have a .use path.
+        // Element IDs for sliced sub-elements look like:
+        //   Practitioner.name:officialName.use  (id contains ":officialName")
+        let matches_slice = el.id.contains(&format!(":{}", slice_name))
+            || el.path.contains(&format!(":{}", slice_name));
 
         if !matches_slice {
             continue;

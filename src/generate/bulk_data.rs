@@ -331,15 +331,15 @@ fn apply_hcpd_bulk_fixes(
                 .and_then(|a| a.as_array_mut())
                 .and_then(|a| a.first_mut())
             {
-                if first_type.get("coding").is_none() {
-                    first_type["coding"] = serde_json::json!([
-                        {
-                            "system": "http://snomed.info/sct",
-                            "code": "408443003",
-                            "display": "General medical practice"
-                        }
-                    ]);
-                }
+                // Always set a valid SNOMED coding with display — the HCPD profile
+                // requires type.coding.display (min = 1).
+                first_type["coding"] = serde_json::json!([
+                    {
+                        "system": "http://snomed.info/sct",
+                        "code": "408443003",
+                        "display": "General medical practice"
+                    }
+                ]);
             }
         }
         "Location" => {
@@ -386,6 +386,10 @@ fn apply_hcpd_bulk_fixes(
                     "value": registration_number
                 }
             ]);
+
+            // Fix suppressedBy extension coding — the HCPD profile requires a code
+            // from the responsible-party-type ValueSet, not NullFlavor.
+            fix_suppressed_by_coding(resource);
         }
         _ => {}
     }
@@ -393,6 +397,39 @@ fn apply_hcpd_bulk_fixes(
 
 fn extract_reference_id(reference: &str) -> Option<&str> {
     reference.split_once('/').map(|(_, id)| id)
+}
+
+/// Fix the `suppressedBy.valueCodeableConcept.coding` in the `suppressed` extension
+/// to use a valid code from the responsible-party-type CodeSystem.
+///
+/// The profile requires `coding[0]` from
+/// `http://digitalhealth.gov.au/fhir/cc/CodeSystem/responsible-party-type`.
+/// The generic resource generator falls back to NullFlavor which is not in the ValueSet.
+fn fix_suppressed_by_coding(resource: &mut serde_json::Value) {
+    let Some(exts) = resource.get_mut("extension").and_then(|e| e.as_array_mut()) else {
+        return;
+    };
+    for ext in exts {
+        let url = ext.get("url").and_then(|u| u.as_str()).unwrap_or("");
+        if !url.contains("suppressed") {
+            continue;
+        }
+        let Some(sub_exts) = ext.get_mut("extension").and_then(|e| e.as_array_mut()) else {
+            continue;
+        };
+        for sub_ext in sub_exts.iter_mut() {
+            let sub_url = sub_ext.get("url").and_then(|u| u.as_str()).unwrap_or("");
+            if sub_url == "suppressedBy" {
+                sub_ext["valueCodeableConcept"] = serde_json::json!({
+                    "coding": [{
+                        "system": "http://digitalhealth.gov.au/fhir/cc/CodeSystem/responsible-party-type",
+                        "code": "organisation-initiated"
+                    }],
+                    "text": "Organisation initiated"
+                });
+            }
+        }
+    }
 }
 
 fn random_digits(len: usize, rng: &mut impl Rng) -> String {
