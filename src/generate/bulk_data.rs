@@ -2120,4 +2120,466 @@ mod tests {
             "PractitionerRole/practitionerrole-1"
         );
     }
+
+    // ── Tests for generate_supplement_resource ─────────────────────────────
+
+    #[test]
+    fn supplement_resource_creates_valid_fhir_json() {
+        let resource = generate_supplement_resource(
+            "Organization",
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(resource["resourceType"], "Organization");
+        assert_eq!(resource["id"], "organization-1");
+        assert!(resource["meta"]["profile"].as_array().is_some());
+        assert!(resource["meta"]["lastUpdated"].as_str().is_some());
+    }
+
+    #[test]
+    fn supplement_resource_uses_profile_url_when_provided() {
+        let mut profile_urls = HashMap::new();
+        profile_urls.insert(
+            "Organization".to_string(),
+            "http://example.org/fhir/StructureDefinition/MyOrg".to_string(),
+        );
+
+        let resource = generate_supplement_resource(
+            "Organization",
+            &profile_urls,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        let profiles = resource["meta"]["profile"].as_array().unwrap();
+        assert_eq!(
+            profiles[0].as_str().unwrap(),
+            "http://example.org/fhir/StructureDefinition/MyOrg"
+        );
+    }
+
+    #[test]
+    fn supplement_resource_normalizes_references() {
+        let resource = generate_supplement_resource(
+            "PractitionerRole",
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        // All references should use the {type}-1 pattern
+        let practitioner_ref = resource["practitioner"]["reference"].as_str().unwrap();
+        assert_eq!(practitioner_ref, "Practitioner/practitioner-1");
+
+        let organization_ref = resource["organization"]["reference"].as_str().unwrap();
+        assert_eq!(organization_ref, "Organization/organization-1");
+    }
+
+    #[test]
+    fn supplement_resource_handles_unknown_type() {
+        let resource = generate_supplement_resource(
+            "UnknownType",
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(resource["resourceType"], "UnknownType");
+        assert_eq!(resource["id"], "unknowntype-1");
+        assert_eq!(resource["status"], "active");
+    }
+
+    // ── Tests for write_supplement_ndjson ──────────────────────────────────
+
+    #[test]
+    fn write_supplement_creates_files_for_uncovered_types() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create bulk data for Organization only
+        let mut bulk_counts = HashMap::new();
+        bulk_counts.insert("Organization".to_string(), 5);
+
+        // Creation order includes types not in bulk_counts
+        let creation_order = bulk_data_creation_order(&bulk_counts);
+
+        let supplement_ids = write_supplement_ndjson(
+            &creation_order,
+            &bulk_counts,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
+
+        // Supplement IDs should only include types not in bulk_counts
+        // (and not in NON_RESOURCE_TYPES)
+        assert!(
+            !supplement_ids.contains_key("Organization"),
+            "Organization has bulk count, should not be in supplement"
+        );
+
+        // Each supplement type should have its own NDJSON file
+        for (resource_type, ids) in &supplement_ids {
+            let path = dir
+                .path()
+                .join("data")
+                .join(format!("{}.ndjson", resource_type));
+            assert!(path.exists(), "{}.ndjson should exist", resource_type);
+            let contents = std::fs::read_to_string(&path).unwrap();
+            let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+            assert_eq!(lines.len(), 1, "{} should have 1 line", resource_type);
+            assert_eq!(ids.len(), 1, "{} should have 1 ID", resource_type);
+
+            let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+            assert_eq!(parsed["resourceType"], *resource_type);
+            assert_eq!(parsed["id"], format!("{}-1", resource_type.to_lowercase()));
+        }
+    }
+
+    #[test]
+    fn write_supplement_skips_non_resource_types() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut bulk_counts = HashMap::new();
+        bulk_counts.insert("Organization".to_string(), 5);
+
+        // Include a non-resource type in the creation order
+        let mut creation_order = bulk_data_creation_order(&bulk_counts);
+        creation_order.push("Extension".to_string());
+
+        let supplement_ids = write_supplement_ndjson(
+            &creation_order,
+            &bulk_counts,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
+
+        // Extension should be skipped
+        assert!(
+            !supplement_ids.contains_key("Extension"),
+            "Extension is a non-resource type and should be skipped"
+        );
+    }
+
+    #[test]
+    fn write_supplement_appends_to_combined_ndjson() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // First write bulk data for Organization only
+        let mut bulk_counts = HashMap::new();
+        bulk_counts.insert("Organization".to_string(), 2);
+
+        // Add a type that has no bulk count so it becomes a supplement
+        let mut creation_order = bulk_data_creation_order(&bulk_counts);
+        creation_order.push("Patient".to_string());
+
+        generate_bulk_data(
+            &bulk_counts,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
+
+        // Then write supplements for uncovered types
+        write_supplement_ndjson(
+            &creation_order,
+            &bulk_counts,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
+
+        // combined.ndjson should have bulk + supplement resources
+        let combined_path = dir.path().join("data/combined.ndjson");
+        let contents = std::fs::read_to_string(&combined_path).unwrap();
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+
+        // At least 2 bulk lines + supplement lines
+        assert!(
+            lines.len() > 2,
+            "combined.ndjson should have bulk + supplement resources"
+        );
+    }
+
+    // ── Tests for generate_update_ndjson ───────────────────────────────────
+
+    #[test]
+    fn update_ndjson_creates_file_with_same_count() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut counts = HashMap::new();
+        counts.insert("Organization".to_string(), 5);
+        counts.insert("Practitioner".to_string(), 10);
+
+        let ids = generate_bulk_data(
+            &counts,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
+
+        generate_update_ndjson(&ids, dir.path()).unwrap();
+
+        let update_path = dir.path().join("data/update.ndjson");
+        assert!(update_path.exists(), "update.ndjson should exist");
+
+        let contents = std::fs::read_to_string(&update_path).unwrap();
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+
+        // Should have same number of resources as bulk data
+        let total_bulk: usize = counts.values().sum::<u64>() as usize;
+        assert_eq!(
+            lines.len(),
+            total_bulk,
+            "update.ndjson should have {} lines",
+            total_bulk
+        );
+    }
+
+    #[test]
+    fn update_ndjson_resources_differ_from_originals() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut counts = HashMap::new();
+        counts.insert("Organization".to_string(), 3);
+
+        let ids = generate_bulk_data(
+            &counts,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
+
+        // Read original resources
+        let orig_path = dir.path().join("data/Organization.ndjson");
+        let orig_contents = std::fs::read_to_string(&orig_path).unwrap();
+        let orig_lines: Vec<&str> = orig_contents.lines().filter(|l| !l.is_empty()).collect();
+
+        generate_update_ndjson(&ids, dir.path()).unwrap();
+
+        // Read updated resources
+        let update_path = dir.path().join("data/update.ndjson");
+        let update_contents = std::fs::read_to_string(&update_path).unwrap();
+        let update_lines: Vec<&str> = update_contents.lines().filter(|l| !l.is_empty()).collect();
+
+        assert_eq!(orig_lines.len(), update_lines.len());
+
+        // Each updated resource should have the same id but different content
+        for (orig_line, update_line) in orig_lines.iter().zip(update_lines.iter()) {
+            let orig: serde_json::Value = serde_json::from_str(orig_line).unwrap();
+            let updated: serde_json::Value = serde_json::from_str(update_line).unwrap();
+
+            // Same id
+            assert_eq!(orig["id"], updated["id"]);
+
+            // Different content (at least one field should have changed)
+            assert_ne!(
+                orig, updated,
+                "Updated resource should differ from original"
+            );
+        }
+    }
+
+    #[test]
+    fn update_ndjson_preserves_resource_type_and_id() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut counts = HashMap::new();
+        counts.insert("Organization".to_string(), 2);
+        counts.insert("Practitioner".to_string(), 2);
+
+        let ids = generate_bulk_data(
+            &counts,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
+
+        generate_update_ndjson(&ids, dir.path()).unwrap();
+
+        let update_path = dir.path().join("data/update.ndjson");
+        let contents = std::fs::read_to_string(&update_path).unwrap();
+
+        for line in contents.lines().filter(|l| !l.is_empty()) {
+            let resource: serde_json::Value = serde_json::from_str(line).unwrap();
+            let rtype = resource["resourceType"].as_str().unwrap();
+            let id = resource["id"].as_str().unwrap();
+
+            // resourceType and id should be preserved
+            assert!(!rtype.is_empty());
+            assert!(!id.is_empty());
+
+            // id should match the pattern {type}-{n}
+            assert!(id.starts_with(&rtype.to_lowercase()));
+        }
+    }
+
+    #[test]
+    fn update_ndjson_handles_empty_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let ids = IdStore::new();
+
+        // Create the data directory so the function can write to it
+        std::fs::create_dir_all(dir.path().join("data")).unwrap();
+
+        // Should not error when there are no IDs
+        generate_update_ndjson(&ids, dir.path()).unwrap();
+
+        let update_path = dir.path().join("data/update.ndjson");
+        assert!(update_path.exists(), "update.ndjson should exist");
+        let contents = std::fs::read_to_string(&update_path).unwrap();
+        assert!(contents.trim().is_empty(), "update.ndjson should be empty");
+    }
+
+    // ── Additional generate_bulk_data tests ────────────────────────────────
+
+    #[test]
+    fn bulk_data_handles_empty_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let counts = HashMap::new();
+
+        let ids = generate_bulk_data(
+            &counts,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
+
+        assert!(
+            ids.is_empty(),
+            "No resources should be generated for empty counts"
+        );
+    }
+
+    #[test]
+    fn bulk_data_creates_combined_ndjson() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut counts = HashMap::new();
+        counts.insert("Organization".to_string(), 3);
+        counts.insert("Practitioner".to_string(), 2);
+
+        generate_bulk_data(
+            &counts,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
+
+        let combined_path = dir.path().join("data/combined.ndjson");
+        assert!(combined_path.exists(), "combined.ndjson should exist");
+
+        let contents = std::fs::read_to_string(&combined_path).unwrap();
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        let total: usize = counts.values().sum::<u64>() as usize;
+        assert_eq!(
+            lines.len(),
+            total,
+            "combined.ndjson should have all resources"
+        );
+    }
+
+    #[test]
+    fn bulk_data_stamps_created_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut counts = HashMap::new();
+        counts.insert("Organization".to_string(), 5);
+
+        generate_bulk_data(
+            &counts,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
+
+        let path = dir.path().join("data/Organization.ndjson");
+        let contents = std::fs::read_to_string(&path).unwrap();
+
+        for line in contents.lines().filter(|l| !l.is_empty()) {
+            let org: serde_json::Value = serde_json::from_str(line).unwrap();
+            let last_updated = org["meta"]["lastUpdated"].as_str().unwrap();
+            assert!(!last_updated.is_empty(), "meta.lastUpdated should be set");
+            // Should be an ISO timestamp
+            assert!(
+                last_updated.contains('T'),
+                "meta.lastUpdated should be an ISO timestamp, got: {}",
+                last_updated
+            );
+        }
+    }
+
+    #[test]
+    fn bulk_data_creation_order_includes_all_types() {
+        let mut counts = HashMap::new();
+        counts.insert("Organization".to_string(), 5);
+        counts.insert("Practitioner".to_string(), 5);
+        counts.insert("Endpoint".to_string(), 5);
+        counts.insert("Location".to_string(), 5);
+        counts.insert("HealthcareService".to_string(), 5);
+        counts.insert("PractitionerRole".to_string(), 5);
+        counts.insert("Provenance".to_string(), 5);
+        counts.insert("Patient".to_string(), 5);
+
+        let order = bulk_data_creation_order(&counts);
+
+        // All types should be in the order
+        for t in counts.keys() {
+            assert!(order.contains(t), "{} should be in creation order", t);
+        }
+
+        // Order should respect dependencies
+        let org_idx = order.iter().position(|t| t == "Organization").unwrap();
+        let prac_idx = order.iter().position(|t| t == "Practitioner").unwrap();
+        let endpoint_idx = order.iter().position(|t| t == "Endpoint").unwrap();
+        let loc_idx = order.iter().position(|t| t == "Location").unwrap();
+        let hs_idx = order.iter().position(|t| t == "HealthcareService").unwrap();
+        let pr_idx = order.iter().position(|t| t == "PractitionerRole").unwrap();
+        let prov_idx = order.iter().position(|t| t == "Provenance").unwrap();
+
+        assert!(org_idx < endpoint_idx, "Organization before Endpoint");
+        assert!(endpoint_idx < loc_idx, "Endpoint before Location");
+        assert!(loc_idx < hs_idx, "Location before HealthcareService");
+        assert!(hs_idx < pr_idx, "HealthcareService before PractitionerRole");
+        assert!(prac_idx < pr_idx, "Practitioner before PractitionerRole");
+        assert!(pr_idx < prov_idx, "PractitionerRole before Provenance");
+    }
 }
