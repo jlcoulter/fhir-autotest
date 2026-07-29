@@ -14,5 +14,5 @@ RUN apk add --no-cache ca-certificates
 # Final stage
 FROM scratch
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /app/target/release/fhir-ig-testgen /fhir-ig-testgen
-ENTRYPOINT ["/fhir-ig-testgen"]
+COPY --from=builder /app/target/release/fhir-autotest /fhir-autotest
+ENTRYPOINT ["/fhir-autotest"]

@@ -1,297 +1,282 @@
-# fhir-ig-testgen
+# fhir-autotest
 
-A Rust CLI tool that parses FHIR R4 Implementation Guide packages (`.tgz`) and automatically generates conformance tests with synthetic test data.
+[![CI](https://github.com/jlcoulter/fhir-autotest/actions/workflows/ci.yml/badge.svg)](https://github.com/jlcoulter/fhir-autotest/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/rust-1.88+-blue.svg)](https://www.rust-lang.org)
+[![Edition](https://img.shields.io/badge/edition-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Given an IG package, it:
+**Automated FHIR R4 conformance testing from Implementation Guide packages.**
 
-1. Parses the CapabilityStatement to discover supported resources and interactions
-2. Parses StructureDefinitions (profiles) to understand required fields and constraints
-3. Generates synthetic FHIR resources that satisfy profile constraints
-4. Resolves resource dependencies via topological sort (Patient before Observation, etc.)
-5. Creates a test plan with HTTP requests for every supported interaction
-6. Runs tests against a FHIR server and validates responses against profiles and assertions
+Given a FHIR Implementation Guide `.tgz` package, `fhir-autotest` parses the CapabilityStatement, StructureDefinitions, SearchParameters, and OperationDefinitions to generate and execute a comprehensive test suite — no manual test writing required.
 
-## Installation
+It is designed as an open-source alternative to [Inferno](https://inferno.healthit.gov/) for the subset of conformance testing that can be derived automatically from the IG's own machine-readable artifacts.
+
+---
+
+## Quick Start
 
 ```bash
+# 1. Build
 cargo build --release
-```
 
-## Usage
-
-Create a `config.toml` (see [`config.toml`](config.toml) for a full example):
-
-```toml
-package = "path/to/ig-package.tgz"
-output = "./output"
-results = "./results.json"
+# 2. Create a config file pointing at your IG package
+cat > config.toml << 'EOF'
+package = "./package.tgz"
 
 [server]
 base_url = "http://localhost:8080/fhir"
+EOF
+
+# 3. Run against the built-in mock server (no real FHIR server needed)
+fhir-autotest --mock
+
+# 4. Or run against a real FHIR server
+fhir-autotest
 ```
 
-Then run:
+The tool generates test resources, creates them on the server, runs every test, validates responses, cleans up, and writes detailed results to `output/results/`.
 
-```bash
-# Generate test plan and resources
-fhir-ig-testgen --generate
+---
 
-# Run tests against a FHIR server
-fhir-ig-testgen
+## What It Tests
 
-# Run tests against a built-in mock server (no real FHIR server needed)
-fhir-ig-testgen --mock
+For every resource type declared in a server-mode CapabilityStatement, `fhir-autotest` generates:
 
-# Mock server on a specific port
-fhir-ig-testgen --mock --mock-port 8091
+### Functional Tests
 
-# Preview without executing
-fhir-ig-testgen --dry-run
-
-# Override specific fields from the CLI
-fhir-ig-testgen --config other.toml
-fhir-ig-testgen --package path/to/other.tgz
-fhir-ig-testgen --output ./other-output
-```
-
-CLI flags override config values: `--package`, `--output`, `--results`, `--dry-run`, `--generate`, `--mock`, `--mock-port`.
-
-### Validate a resource against a profile
-
-```bash
-fhir-ig-testgen validate --package path/to/ig-package.tgz --resource patient.json
-# or with explicit profile URL:
-fhir-ig-testgen validate --package path/to/ig-package.tgz --resource patient.json \
-  --profile "http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient"
-```
-
-## Test Coverage
-
-For each resource type declared in a server-mode CapabilityStatement, `fhir-ig-testgen` generates:
-
-### Test Plan (Functional Tests)
-
-These tests exercise the interactions and parameters the CapabilityStatement declares the server supports.
-
-| Test Kind | Description | Example |
-|-----------|-------------|---------|
-| **CRUD interactions** | One test per supported interaction | `read`, `create`, `update`, `delete`, `search-type` |
-| **Single search params** | One test per declared search parameter | `?name=Smith`, `?birthdate=2024-01-01` |
-| **Search modifiers** | Type-appropriate modifiers | `:exact`, `:contains` on strings; `:missing` on all; `:not` on tokens |
-| **Search prefixes** | All 9 FHIR prefixes on date/number/quantity params | `?birthdate=gt2024-01-01`, `?birthdate=lt2024-01-01` |
-| **Near searches** | Coordinate/distance searches for `special`-type params | `?near=-33.86:151.21:10:km` |
-| **Combinatorial searches** | All 2-parameter combinations within a resource type | `?name=Smith&birthdate=2024-01-01` |
-| **Chained searches** | Reference params chained into target params | `?subject.name=Smith` |
-| **`_include` / `_revinclude`** | From the CS's declared `searchInclude` and `searchRevInclude` | `?_include=Patient:organization` |
-| **Result parameters** | `_summary`, `_count`, `_sort` on every searchable resource | `?_summary=true`, `?_count=1`, `?_sort=name` |
-| **`$operation`** | From both resource-level and system-level `rest.operation` | `$everything`, `$export` |
-| **Negative tests** | Read nonexistent ID (404), search with invalid parameter | `/Patient/nonexistent-id-99999` |
+| Category | What's Tested | Example |
+|----------|--------------|---------|
+| **CRUD interactions** | Every declared interaction | `GET /Patient/{id}`, `POST /Patient`, `PUT /Patient/{id}`, `DELETE /Patient/{id}` |
+| **Search parameters** | One test per declared search param with real values from generated resources | `GET /Patient?name=Smith&_id={id}` |
+| **Search modifiers** | Type-appropriate modifiers on every param | `:exact`, `:contains` on strings; `:missing` on all types; `:not`, `:text` on tokens |
+| **Search prefixes** | All 9 FHIR prefixes on date/number/quantity params | `?birthdate=gt2024-01-01`, `?value-quantity=le5.0` |
+| **Near searches** | Proximity queries for `special`-type params | `GET /Location?near=-33.86%7C151.21%7C10%7Ckm` |
+| **Combinatorial search** | All 2-parameter combinations within a resource type | `?name=Smith&birthdate=2024-01-01` |
+| **Chained search** | Reference params chained into target resource params | `?subject.name=Smith` |
+| **`_include` / `_revinclude`** | From the CS's `searchInclude` and `searchRevInclude` declarations | `?_include=Patient:organization`, `?_revinclude=Location:organization` |
+| **Result parameters** | `_summary`, `_count`, `_sort` on every searchable resource | `?_summary=true`, `?_count=1`, `?_sort=_lastUpdated` |
+| **`$operations`** | Resource-level and system-level operations from the CS | `POST /Patient/$everything`, `POST /$export` |
+| **Negative tests** | Read nonexistent ID, search with invalid parameter name | `GET /Patient/nonexistent-id-99999` → 404 |
 
 ### Conformance Tests (Responder Obligations)
 
-These tests verify that the server actually meets the obligations it declares in its CapabilityStatement. They are **IG-agnostic** — driven entirely by whatever CapabilityStatement and StructureDefinitions are in the package, not hardcoded for any specific IG.
+These verify the server actually meets the obligations it declares — driven entirely by the IG's own artifacts, not hardcoded for any specific IG.
 
-| Test Category | What It Checks | Example |
-|---------------|----------------|---------|
-| **CapabilityStatement validation** | CS has required fields (`status`, server-mode `rest`, resource `type`, search param `name`/`type`) | CS missing `status` → error; resource entry without `type` → error |
-| **MustSupport field presence** | Fields marked `mustSupport=true` in declared profiles appear in search responses | `Patient.name` is mustSupport → `GET /Patient?_count=10` must return entries containing `name` |
-| **Cardinality enforcement** | `min` and `max` constraints from profile ElementDefinitions are respected | `Patient.name` has min=1 → responses must include `name`; `Patient.birthDate` has max=1 → responses must not have multiple `birthDate` |
-| **Undeclared interaction rejection** | Interactions NOT in the CS are rejected (non-2xx expected) | CS declares only `read` and `search-type` for Patient → `POST /Patient` (create) must be rejected |
-| **Undeclared search param handling** | Search parameters NOT in the CS are either rejected OR ignored by the server | `GET /Patient?__invalid_conformance_test__=value` may return `4xx/5xx` or `200 Bundle` |
-
-**How profile matching works:**
-
-1. If the CS references a `profile` URL, use that StructureDefinition
-2. If the CS references `supportedProfile` URLs, use those
-3. Otherwise, fall back to any StructureDefinition whose `base_type` matches the resource type
-
-**Negative conformance tests** use `expected_status: 0` as a sentinel meaning "expect non-2xx." For undeclared search parameters, the harness also accepts `200` with a `Bundle` (server ignored unknown param), which is allowed by FHIR behavior.
+| Category | What It Checks |
+|----------|---------------|
+| **CS validation** | CapabilityStatement has required fields (`status`, server-mode `rest`, resource `type`, search param `name`/`type`) |
+| **MustSupport presence** | Fields marked `mustSupport=true` in declared profiles appear in search responses |
+| **Cardinality enforcement** | `min`/`max` constraints from profile ElementDefinitions are respected |
+| **Undeclared interaction rejection** | Interactions NOT in the CS are rejected by the server |
+| **Undeclared search param handling** | Unknown search parameters are either rejected or silently ignored (both are valid per FHIR spec) |
 
 ### Response Assertions
 
-Every test case carries a `ResponseAssertion` that validates the server response beyond HTTP status codes:
+Every test validates responses beyond HTTP status codes:
 
-- **Bundle type**: search tests verify `Bundle.type == "searchset"`
-- **Entry count**: `_count` tests verify entries ≤ requested count
-- **Resource types**: included resources match expected types
-- **Field values**: response fields match auto-generated sentinel values
-- **Required field presence**: mustSupport fields must exist in responses (regardless of value)
-- **Include types**: `_include`/`_revinclude` results contain declared target types
-- **Sort order**: `_sort` results are ordered by the specified field
-- **Absent fields**: `_summary=true` strips `text` div
-- **OperationOutcome**: negative tests verify severity `"error"`
+- **Bundle structure**: `type` must be `"searchset"` for search responses
+- **Entry counts**: `_count` tests verify entries ≤ requested count
+- **Resource types**: `_include`/`_revinclude` results contain expected target types
+- **Field values**: Response fields match values from generated resources
+- **MustSupport presence**: Required fields exist in responses regardless of value
+- **Sort order**: `_sort` results are ordered by the specified field and direction
+- **Summary mode**: `_summary=true` strips narrative `text` and preserves `id`/`meta`
+- **Operation outcomes**: Error responses carry the expected severity
 
-### What A Passing Run Means (And Does Not Mean)
+---
 
-A full pass means the server satisfied the rules in this harness for this dataset and CapabilityStatement.
-It does **not** prove complete FHIR conformance in the formal certification sense.
-
-Known limitations of strictness:
-
-- **Undeclared search params are permissive**: `200 + Bundle` can pass (treated as "ignored unknown param").
-- **Some conformance checks allow empty search results**: MustSupport/cardinality checks use `min_entries = 0`, so they validate entries when present but do not fail solely for no matches.
-- **Include/revinclude checks are type-presence focused**: they verify expected included types appear, not full join provenance for every primary hit.
-- **Semantic search checks are existential**: they require at least one matching entry/path, not universal match across every returned entry.
-
-Use this tool as high-signal interoperability testing, and complement it with stricter profile validation and certification-aligned test suites when required.
-
-At runtime, the orchestrator resolves sentinel search values (e.g. `Patient/test-id` → `Patient/actual-id`, `?name=test-value` → `?name=GeneratedFamily`) using field values extracted from generated resources.
-
-## Test Data Generation
-
-The resource generator walks each profile's snapshot elements and:
-
-- **Required fields** (min > 0): generates appropriate values based on the FHIR type
-- **Fixed/pattern values**: uses the exact values specified by the profile
-- **Reference types**: creates `placeholder:ResourceType` references, resolved to actual IDs at test time
-- **Optional fields** (min = 0): omitted to keep resources minimal
-
-Supported FHIR types for generation:
-
-| Type | Generated Value |
-|------|-----------------|
-| string, code, uri, url, canonical | Sentinel string |
-| boolean | `true` |
-| integer, positiveInt, unsignedInt | `1` |
-| date, dateTime, instant | `2024-01-01` |
-| Identifier | `{ "system": "...", "value": "..." }` |
-| HumanName | `{ "family": "...", "given": ["..."] }` |
-| Address | `{ "line": [...], "city": "...", ... }` |
-| CodeableConcept | `{ "coding": [{ "system": "...", "code": "..." }] }` |
-| Reference | `{ "reference": "placeholder:ResourceType" }` |
-
-## Dependency Resolution
-
-Resources that reference other resources are created in topological order. For example, an Observation that references a Patient will create the Patient first, then substitute the placeholder reference with the actual ID returned by the server.
-
-Circular dependencies are handled gracefully — resources in a cycle (e.g. Organization ↔ Endpoint) are created in an arbitrary order within the cycle, with one direction using a placeholder reference.
-
-You can override the auto-resolved creation order in `config.toml`.
-
-## Profile Validation
-
-Responses are validated against the IG's StructureDefinitions:
-
-- **resourceType** must match the profile's base type
-- **Required elements** (min > 0) must be present
-- **Fixed values** must match exactly
-- **Pattern values** must match
-
-## Architecture
+## How It Works
 
 ```
-┌──────────────┐     ┌─────────────────┐     ┌──────────────────┐
-│  IG Package  │────>│  Parse & Model   │────>│  Generate Tests   │
-│  (.tgz)      │     │  (Capability,   │     │  (test plan,      │
-│              │     │   Profiles)      │     │   resources)      │
-└──────────────┘     └─────────────────┘     └────────┬───────────┘
-                                                       │
-                              ┌─────────────────┐      │
-                              │  Config Override │──────┤
-                              │  (fixtures,     │      │
-                              │   ordering)     │      ▼
-                              └─────────────────┘ ┌──────────────┐
-                                                  │  Test Runner  │
-                                                  │  (execute +   │
-                                                  │   validate)   │
-                                                  └──────┬───────┘
-                                                         │
-                              ┌───────────────────┐       │
-                              │ Response Assertion │───────┤
-                              │ (Bundle, fields,  │       │
-                              │  includes, sort)  │       │
-                              └───────────────────┘       │
-                                                         ▼
-                                                  ┌──────────────┐
-                                                  │  FHIR Server │
-                                                  └──────────────┘
+IG Package (.tgz)
+    │
+    ▼
+┌──────────────────────────────────────────────────┐
+│ 1. Parse                                         │
+│    Extract CapabilityStatement, StructureDefs,   │
+│    SearchParameters, OperationDefinitions,       │
+│    ValueSets, CodeSystems                       │
+└──────────────────┬───────────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────────┐
+│ 2. Resolve                                       │
+│    • Download missing parent profiles from       │
+│      packages.fhir.org and hl7.org               │
+│    • Merge parent snapshots for slice definitions│
+│    • Resolve profiled types (e.g. au-hpii)       │
+│    • Cache everything to ~/.cache/fhir-autotest│
+└──────────────────┬───────────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────────┐
+│ 3. Generate Resources                            │
+│    • Walk profile snapshots, populate required   │
+│      fields (min > 0) with type-appropriate data │
+│    • Apply fixed/pattern values from profiles    │
+│    • Handle sliced fields (identifier:abn, etc.) │
+│    • Handle extension slices with correct URLs   │
+│    • Resolve ValueSet bindings to real codes     │
+│    • Stamp meta.profile with canonical URL       │
+│    • Resolve cross-references between types      │
+└──────────────────┬───────────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────────┐
+│ 4. Generate Test Plan                            │
+│    • Build test cases from CapabilityStatement   │
+│    • Embed real field values from generated      │
+│      resources directly in test URLs             │
+│    • Generate conformance tests from profiles    │
+│    • Resolve dependency order (topological sort  │
+│      with SCC cycle handling)                    │
+└──────────────────┬───────────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────────┐
+│ 5. Execute                                       │
+│    • Create setup resources on the server        │
+│    • Run every test case against the server      │
+│    • Validate responses against profiles         │
+│    • Evaluate response assertions                │
+│    • Clean up (delete created resources)         │
+│    • Write per-group results + summary to disk   │
+└──────────────────────────────────────────────────┘
 ```
 
-## Test Results
+---
 
-After every test run, results are written to `{output}/results/`:
+## Installation
+
+### From Source
+
+```bash
+git clone https://github.com/jlcoulter/fhir-ig-test-generator.git
+cd fhir-ig-test-generator
+cargo build --release
+```
+
+The binary will be at `target/release/fhir-autotest`.
+
+### Docker
+
+```bash
+docker build -t fhir-autotest .
+docker run --rm -v $(pwd)/config.toml:/config.toml -v $(pwd)/package.tgz:/package.tgz fhir-autotest
+```
+
+### Requirements
+
+- Rust 1.88+ (uses edition 2021)
+- No system OpenSSL required — uses `rustls` for TLS
+
+---
+
+## Usage
+
+### Basic Commands
+
+```bash
+# Full pipeline: generate resources, run tests, validate, clean up
+fhir-autotest
+
+# Generate only (no server needed): produces test plan + resources
+fhir-autotest --generate
+
+# Preview all test URLs without executing
+fhir-autotest --dry-run
+
+# Run against the built-in mock FHIR server
+fhir-autotest --mock
+
+# Mock server on a specific port (useful for debugging with curl)
+fhir-autotest --mock --mock-port 8091
+
+# Use a different config file
+fhir-autotest --config production.toml
+
+# Override the IG package path
+fhir-autotest --package path/to/other-ig.tgz
+```
+
+The config file defaults to `config.toml` in the current directory. CLI flags override config values.
+
+### Validate a Resource
+
+```bash
+# Auto-detect profile by resource type
+fhir-autotest validate --resource patient.json
+
+# Specify an explicit profile URL
+fhir-autotest validate --resource patient.json \
+  --profile "http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient"
+```
+
+The `validate` subcommand uses the IG package from your config file to find the profile.
+
+### Test Results
+
+After every run, results are written to `{output}/results/`:
 
 ```
 output/results/
-├── summary.json              # Overall totals and per-group breakdowns
-├── Patient.json              # Full results for Patient test group
-├── Observation.json          # Full results for Observation test group
-├── _conformance.json         # Full results for conformance tests
-└── ...                       # One file per resource type + conformance
+├── summary.json          # Overall totals and per-group breakdowns
+├── failed.json           # All failing tests in one file
+├── Patient.json          # Full results for Patient test group
+├── Observation.json      # Full results for Observation test group
+├── _conformance.json     # Conformance test results
+└── ...                   # One file per resource type
 ```
 
-**`summary.json`** contains:
+Each per-group file contains the full `TestResult` array with request method, URL, body, response status, response body, and validation errors.
 
-| Field | Description |
-|-------|-------------|
-| `total` | Total test count |
-| `passed` | Number of passed tests |
-| `failed` | Number of failed tests |
-| `groups` | Per-group breakdown (group name, total, passed, failed) |
-
-**Per-group files** contain the full `TestResult` array with request details, response bodies, status codes, and validation errors for every test in that group.
+---
 
 ## Configuration
 
-See [`config.toml`](config.toml) for a complete example with comments.
+See [`config.toml`](config.toml) for a fully commented template. Key settings:
 
-Key settings:
+### Top-Level
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `package` | Path to the IG package (.tgz) | Required (or `--package` flag) |
-| `output` | Directory for generated test plan, resources, and results | `./output` |
+| `package` | Path to the IG package (`.tgz`) | Required |
+| `output` | Output directory for test plan, resources, and results | `./output` |
 | `dry_run` | Print all test URLs without executing | `false` |
 | `mock` | Use built-in mock FHIR server | `false` |
-| `mock_port` | Port for mock server (0 = random) | `0` |
-| `server.base_url` | Public FHIR server URL (for GET/search queries) | Required |
-| `server.headers` | HTTP headers for the public server (auth tokens) | None |
-| `repository.base_url` | Internal repository URL (for resource upload/delete) | None |
-| `repository.username` | Basic auth username for the repository | None |
-| `repository.password` | Basic auth password for the repository | None |
-| `repository.upload_method` | HTTP method for uploading resources: `PUT` or `POST` | `PUT` |
-| `repository.concurrency` | Parallel requests for upload/delete (1 = sequential) | `1` |
-| `overrides.capability_statement_file` | Path to responder CapabilityStatement JSON to replace package-selected CS | None |
-| `overrides.creation_order` | Manual resource creation order | Auto-resolved |
-| `overrides.fixtures_dir` | Directory for fixture JSON files | None |
-| `overrides.fixture_map` | Map resource type → fixture filename | None |
-| `data_generation.counts` | Bulk data counts per resource type (e.g. Organization = 20000) | None |
-| `data_generation.generate_only` | Generate NDJSON files but skip upload/delete | `false` |
+| `mock_port` | Port for mock server (`0` = random) | `0` |
 
-### Repository vs Server
+### `[server]` — Public FHIR API
 
-When `repository` is configured, resource upload and delete operations go to the
-repository endpoint with basic auth, while read/search queries go to the public
-`server` endpoint. This matches production setups where the public FHIR API is
-read-only and data must be loaded through an internal service.
+| Setting | Description |
+|---------|-------------|
+| `base_url` | Base URL for read/search requests |
+| `headers` | Optional HTTP headers (auth tokens, API keys) |
 
-In development, leave `repository` commented out — all requests go to `server`.
+### `[repository]` — Internal Write Endpoint (optional)
 
-### Upload Method
+When configured, resource upload/delete goes here instead of the public server. This matches production setups where the public API is read-only.
 
-The `repository.upload_method` setting controls how resources are created:
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `base_url` | Internal repository URL | None |
+| `username` | Basic auth username | None |
+| `password` | Basic auth password | None |
+| `upload_method` | `"PUT"` (update-as-create) or `"POST"` (server-assigned ID) | `"PUT"` |
+| `concurrency` | Parallel requests for upload/delete | `1` |
 
-- **`PUT`** (default): Uses `PUT /{ResourceType}/{id}` with client-assigned IDs
-  (FHIR "update as create" pattern). The resource body must include an `id` field.
-  This is the most common pattern for bulk data loading.
+### `[overrides]` — Manual Control
 
-- **`POST`**: Uses `POST /{ResourceType}` with server-assigned IDs. The `id` field
-  is removed from the resource body before sending.
+| Setting | Description |
+|---------|-------------|
+| `capability_statement_file` | Path to a CapabilityStatement JSON to use instead of the package's CS |
+| `creation_order` | Manual resource creation order (overrides auto-resolved order) |
+| `fixtures_dir` | Directory for fixture JSON files |
+| `fixture_map` | Map of resource type → fixture filename |
 
-```toml
-[repository]
-base_url = "http://repo.internal:8080/fhir"
-username = "admin"
-password = "admin123"
-upload_method = "PUT"   # or "POST"
-concurrency = 1        # parallel requests for upload/delete
-```
+### `[data_generation]` — Bulk Test Data
 
-### Bulk Data Generation
-
-When `data_generation.counts` is configured, the tool generates realistic FHIR
-resources in NDJSON format (one file per resource type under `{output}/data/`),
-bulk-uploads them to the repository before tests, and bulk-deletes them afterward.
+Generate realistic FHIR resources at scale. Resources are written as NDJSON, uploaded before tests, and deleted afterward.
 
 ```toml
 [data_generation]
@@ -302,81 +287,194 @@ counts.Location = 20_000
 counts.HealthcareService = 100_000
 ```
 
-Key features:
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `counts.{Type}` | Number of resources to generate per FHIR type | None |
+| `generate_only` | Generate NDJSON files but skip upload/delete | `false` |
 
-- **Cross-references**: PractitionerRole references Practitioner/Organization/Location/HealthcareService/Endpoint; HealthcareService references Organization/Location/Endpoint; Location references Organization/Endpoint.
-- **Realistic data**: Names, addresses, NPIs, specialties, and coordinates are generated using the `fake` crate.
-- **Coordinate coverage**: Locations are spread across 20 US cities with lat/lon jitter, enabling `near` search tests.
-- **Dependency order**: Resources are created in dependency-safe order (Organization → Practitioner → Endpoint → Location → HealthcareService → PractitionerRole → Provenance) and deleted in reverse.
-- **Revinclude seeding**: Provenance targets are seeded to cover `*-1` resources for Organization, Practitioner, Location, HealthcareService, and PractitionerRole, then randomized across remaining IDs.
-- **Concurrent uploads**: 20 parallel requests during upload and deletion for throughput.
+When `data_generation.counts` is configured, the single-resource setup phase is skipped — only bulk data is used. Cross-references between resources are resolved automatically (e.g., PractitionerRole → Practitioner, HealthcareService → Location).
 
-When `data_generation.counts` is set, the single-resource setup phase is skipped — only bulk data is used.
+---
 
-To generate NDJSON files without uploading (e.g. for manual upload or sending to a separate system):
+## Resource Generation
 
-```toml
-[data_generation]
-generate_only = true
-counts.Organization = 20_000
-```
+The resource generator is **profile-aware** — it walks each StructureDefinition's snapshot elements and produces resources that satisfy the IG's constraints:
 
-The files are written to `{output}/data/{ResourceType}.ndjson` and left in place. No upload or deletion is performed.
+- **Required fields** (`min > 0`): populated with type-appropriate values
+- **Fixed/pattern values**: applied exactly as specified by the profile
+- **Sliced fields**: values match slice discriminator patterns (e.g., `identifier:abn` gets the correct `system` URI)
+- **Extension slices**: extensions defined by the profile are included with correct URLs and values
+- **ValueSet bindings**: when a field is bound to a ValueSet, the generator resolves the actual code system and picks a valid code
+- **BackboneElements**: required sub-fields of complex types (e.g., `Practitioner.qualification.identifier`) are populated
+- **`meta.profile`**: stamped with the profile's canonical URL so servers can validate conformance
+- **Cross-references**: `Reference` fields point to actual created resources, resolved at runtime
 
-### Mock Server
+Resources are written as `{output}/resources/{ProfileName}.json` — one file per profile, supporting IGs with multiple profiles for the same base type.
 
-The built-in mock FHIR server handles CRUD operations and basic search filtering (string contains, token/code match, `_count`). It's useful for development, CI, and quick smoke tests where no real FHIR server is available.
+---
 
-Enable it via config or CLI:
+## Dependency Resolution
 
-```toml
-# In config.toml (top-level, before [server])
-mock = true
-mock_port = 8091
-```
+Resources are created in dependency order using topological sort. For example, an Observation referencing a Patient will create the Patient first, then substitute the placeholder reference with the actual server-assigned ID.
+
+Circular dependencies (e.g., Organization ↔ Endpoint) are handled via strongly connected component detection — resources in a cycle are created in arbitrary order, with one direction using a placeholder resolved later.
+
+The auto-resolved order can be overridden via `[overrides].creation_order` in config.
+
+---
+
+## Mock Server
+
+The built-in mock FHIR server supports:
+
+- **CRUD**: `POST`, `GET`, `PUT`, `DELETE` for all resource types with UUID assignment
+- **Search**: basic parameter filtering (string contains, token/code matching, name/family/given, identifier)
+- **Result params**: `_count`, `_summary`, `_sort`, `_elements`, `_include`, `_revinclude`
+- **Operations**: `$everything`, `$export`, etc. return stub `Parameters`
+- **Update-as-create**: `PUT` to a nonexistent resource creates it (returns 201)
+- **404 handling**: read/delete nonexistent resources returns 404 + OperationOutcome
+
+Use it for development, CI, and smoke tests without a real FHIR server:
 
 ```bash
-# Or via CLI flags
-fhir-ig-testgen --mock
-fhir-ig-testgen --mock --mock-port 8091
+fhir-autotest --mock
 ```
 
-When `mock` is enabled, the `[server]` and `[repository]` sections are ignored — all requests go to the mock server.
+---
 
 ## Real-World Example
 
-Testing against the HCPD (Health Connect Provider Directory) IG:
+Testing against the HCPD (Healthcare Provider Directory) IG with 339 generated tests:
 
-```bash
-# Run against a real FHIR server
-fhir-ig-testgen --config config.toml
+```
+── Setup: creating resources ──
+  PUT http://localhost:8080/fhir/Organization ... → Organization/abc-123
+  PUT http://localhost:8080/fhir/Location ... → Location/def-456
 
-# Example output:
-# === FHIR IG Test Results ===
-# Total: 339 | Passed: 287 | Failed: 52
-# ---
-# [PASS] patient_read (HTTP 200)
-# [PASS] patient_search_name (HTTP 200)
-# [FAIL] patient_search_birthdate_gt (HTTP 200)
-#   - Bundle type mismatch: expected "searchset", got "collection"
-# [PASS] patient_negative_read_nonexistent (HTTP 404)
-# ...
+── Running 339 test cases against http://localhost:8080/fhir ──
+
+── Patient ──
+  → GET /Patient/abc-123 [200]
+  → GET /Patient?name=Smith&_id=abc-123 [200]
+  → GET /Patient?name:exact=Smith [200]
+  → GET /Patient?birthdate=gt2020-01-01 [200]
+  ✗ POST /Patient [400]
+  → GET /Patient/nonexistent-id-99999 [404]
+
+── _conformance ──
+  → GET /Patient?_id=patient-1&_count=10 [200]
+  → GET /Patient?__invalid_conformance_test__=value [200]
+
+=== FHIR IG Test Results ===
+Total: 339 | Passed: 287 | Failed: 52
 ```
 
-## Mock Server Integration Test
+---
 
-The project includes a full integration test that spins up an in-process mock FHIR server using `axum` and runs the orchestrator end-to-end. This verifies:
+## Comparison to Inferno
 
-- Resource creation (POST)
-- Read/search tests (GET)
-- Negative tests (404 for nonexistent resources)
-- Response assertion validation
-- Resource cleanup (DELETE)
+| | Inferno | fhir-autotest |
+|---|---|---|
+| **Test authoring** | Manual (Ruby DSL) | Automatic from IG package |
+| **IG coverage** | One test kit per IG | Any FHIR R4 IG package |
+| **Profile awareness** | Manual assertions | Auto-generated from StructureDefinitions |
+| **Search param coverage** | Manual per-param tests | Exhaustive: every param × every modifier × every prefix |
+| **Conformance tests** | Manual | Auto-generated: MustSupport, cardinality, undeclared interactions |
+| **Bulk data** | Manual setup | Auto-generated NDJSON with cross-references |
+| **Setup/teardown** | Manual | Automatic resource creation and cleanup |
+| **Scope** | Full certification testing | Automatable conformance testing |
+
+`fhir-autotest` does not replace Inferno for certification-grade testing. It automates the subset of conformance testing that can be derived from the IG's machine-readable artifacts — the tests you'd otherwise write by hand for every IG.
+
+---
+
+## Project Structure
+
+```
+src/
+├── main.rs              # CLI entry point (clap)
+├── lib.rs               # Public API: run_generate, run_tests, run_dry_run, run_validate
+├── model/               # FHIR R4 data types
+│   ├── capability.rs    # CapabilityStatement, Rest, RestResource
+│   ├── profile.rs       # StructureDefinition, ElementDefinition, Slicing
+│   ├── search_param.rs  # SearchParameter
+│   └── operation.rs     # OperationDefinition
+├── parse/               # IG package parsing
+│   ├── package.rs       # .tgz extraction, resource categorization
+│   └── profile_resolver.rs  # Parent profile download, cache, merge
+├── generate/            # Test plan and resource generation
+│   ├── model.rs         # TestCase, TestPlan, ResponseAssertion, enums
+│   ├── planner.rs       # Test builders (CRUD, search, modifiers, operations)
+│   ├── resource_generator.rs  # Profile-aware resource generation
+│   ├── bulk_data.rs     # Bulk NDJSON generation with cross-references
+│   ├── conformance.rs   # Conformance test generation (MustSupport, cardinality)
+│   ├── dependency_resolver.rs  # Topological sort with SCC cycle handling
+│   └── value_resolver.rs  # Field value extraction and search param resolution
+├── runner/              # Test execution
+│   ├── orchestrator.rs  # Full pipeline orchestration
+│   ├── executor.rs      # HTTP request execution, auth, PUT/POST
+│   ├── response_assertions.rs  # Bundle, field, sort, include validation
+│   ├── validator.rs     # Profile validation
+│   └── bulk_loader.rs   # NDJSON upload, delete, R5 extension profiles
+├── config/              # Configuration
+│   └── models.rs        # TestConfig, ServerConfig, RepositoryConfig
+└── mock_server.rs       # In-process mock FHIR server (axum)
+```
+
+---
+
+## Development
+
+### Running Tests
 
 ```bash
-cargo test run_against_mock_fhir_server
+# All tests (unit + integration)
+cargo test --all
+
+# Integration test with visible per-request output
+cargo test --test integration_test run_against_mock_fhir_server -- --nocapture
+
+# Specific test module
+cargo test generate::planner
 ```
+
+### Code Quality
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+```
+
+Both must pass clean before committing. CI enforces this on every push and PR.
+
+### CI
+
+GitHub Actions runs `fmt`, `clippy`, `cargo test --all`, and `cargo build --release` on every push to `master` and every pull request.
+
+---
+
+## Limitations
+
+- **FHIR R4 only** — no R5 support
+- **Local `.tgz` packages only** — no direct NPM registry or Simplifier.net integration
+- **Complex extensions** (nested sub-extensions where `value[x]` is prohibited) are not yet handled — simple extensions with concrete `value[x]` types work correctly
+- **Chained search params** are limited to 2-hop chains with string target params
+- **Combinatorial search** is limited to 2-parameter combinations (configurable depth planned)
+- **`_elements`** is not yet tested
+- **Profile validation** checks top-level required fields and fixed values, not nested field constraints or FHIRPath invariants
+
+---
 
 ## License
 
-MIT
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.

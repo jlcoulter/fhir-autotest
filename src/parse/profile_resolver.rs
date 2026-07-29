@@ -11,7 +11,7 @@ fn cache_dir() -> PathBuf {
         .unwrap_or_else(|_| ".".to_string());
     let mut dir = PathBuf::from(home);
     dir.push(".cache");
-    dir.push("fhir-ig-testgen");
+    dir.push("fhir-autotest");
     dir.push("packages");
     dir
 }
@@ -74,7 +74,7 @@ impl PackageCache {
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
-            .user_agent("fhir-ig-testgen/0.1")
+            .user_agent("fhir-autotest/0.1")
             .build()?;
 
         let response = client.get(&tgz_url).send().await?;
@@ -338,7 +338,7 @@ fn cache_profile(path: &std::path::Path, sd: &StructureDefinition) {
 /// 1. https://packages.fhir.org/StructureDefinition/<name>
 /// 2. Domain-specific fallback based on the original URL's host
 ///
-/// Results are cached to disk at ~/.cache/fhir-ig-testgen/packages/<name>.json
+/// Results are cached to disk at ~/.cache/fhir-autotest/packages/<name>.json
 /// so subsequent runs don't re-download.
 async fn download_profile(url: &str) -> Result<StructureDefinition> {
     // Strip FHIR version suffix (e.g. "|4.0.1") if present
@@ -361,7 +361,7 @@ async fn download_profile(url: &str) -> Result<StructureDefinition> {
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
-        .user_agent("fhir-ig-testgen/0.1")
+        .user_agent("fhir-autotest/0.1")
         .build()?;
 
     // Try the FHIR package registry first
@@ -589,10 +589,12 @@ mod tests {
         // Should have 3 elements: Patient, Patient.identifier, Patient.identifier:abn
         assert_eq!(snapshot.element.len(), 3);
         // The slice should be present
-        assert!(snapshot
-            .element
-            .iter()
-            .any(|e| e.id == "Patient.identifier:abn"));
+        assert!(
+            snapshot
+                .element
+                .iter()
+                .any(|e| e.id == "Patient.identifier:abn")
+        );
         // The child's identifier should have min=1 (child's constraint preserved)
         let ident = snapshot
             .element

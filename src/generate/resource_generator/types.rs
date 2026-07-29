@@ -403,21 +403,20 @@ pub fn apply_identifier_profile_constraints(
             .iter()
             .chain(type_def.target_profile.iter())
         {
-            if obj.get("system").is_none()
+            if (obj.get("system").is_none()
                 || obj
                     .get("system")
                     .and_then(|v| v.as_str())
-                    .is_some_and(is_generic_identifier_system)
+                    .is_some_and(is_generic_identifier_system))
+                && let Some(system) = find_identifier_system(profile_url, all_profiles)
             {
-                if let Some(system) = find_identifier_system(profile_url, all_profiles) {
-                    obj.insert("system".to_string(), serde_json::json!(system));
-                }
+                obj.insert("system".to_string(), serde_json::json!(system));
             }
 
-            if !obj.contains_key("type") {
-                if let Some(identifier_type) = find_identifier_type(profile_url, all_profiles) {
-                    obj.insert("type".to_string(), identifier_type);
-                }
+            if !obj.contains_key("type")
+                && let Some(identifier_type) = find_identifier_type(profile_url, all_profiles)
+            {
+                obj.insert("type".to_string(), identifier_type);
             }
 
             if obj.contains_key("system") && obj.contains_key("type") {

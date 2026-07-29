@@ -53,71 +53,64 @@ pub fn validate_against_profile(
         }
 
         // Check fixed values
-        if let Some(fixed) = &element.fixed_string {
-            if let Some(val) = resource.get(&field_name).and_then(|v| v.as_str()) {
-                if val != fixed {
-                    errors.push(format!(
-                        "{}: expected '{}', got '{}'",
-                        element.path, fixed, val
-                    ));
-                }
-            }
+        if let Some(fixed) = &element.fixed_string
+            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_str())
+            && val != fixed
+        {
+            errors.push(format!(
+                "{}: expected '{}', got '{}'",
+                element.path, fixed, val
+            ));
         }
-        if let Some(fixed) = &element.fixed_code {
-            if let Some(val) = resource.get(&field_name).and_then(|v| v.as_str()) {
-                if val != fixed {
-                    errors.push(format!(
-                        "{}: expected code '{}', got '{}'",
-                        element.path, fixed, val
-                    ));
-                }
-            }
+        if let Some(fixed) = &element.fixed_code
+            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_str())
+            && val != fixed
+        {
+            errors.push(format!(
+                "{}: expected code '{}', got '{}'",
+                element.path, fixed, val
+            ));
         }
-        if let Some(fixed) = &element.fixed_uri {
-            if let Some(val) = resource.get(&field_name).and_then(|v| v.as_str()) {
-                if val != fixed {
-                    errors.push(format!(
-                        "{}: expected uri '{}', got '{}'",
-                        element.path, fixed, val
-                    ));
-                }
-            }
+        if let Some(fixed) = &element.fixed_uri
+            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_str())
+            && val != fixed
+        {
+            errors.push(format!(
+                "{}: expected uri '{}', got '{}'",
+                element.path, fixed, val
+            ));
         }
-        if let Some(fixed) = &element.fixed_boolean {
-            if let Some(val) = resource.get(&field_name).and_then(|v| v.as_bool()) {
-                if val != *fixed {
-                    errors.push(format!("{}: expected {}, got {}", element.path, fixed, val));
-                }
-            }
+        if let Some(fixed) = &element.fixed_boolean
+            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_bool())
+            && val != *fixed
+        {
+            errors.push(format!("{}: expected {}, got {}", element.path, fixed, val));
         }
-        if let Some(fixed) = &element.fixed_integer {
-            if let Some(val) = resource.get(&field_name).and_then(|v| v.as_i64()) {
-                if val != *fixed as i64 {
-                    errors.push(format!("{}: expected {}, got {}", element.path, fixed, val));
-                }
-            }
+        if let Some(fixed) = &element.fixed_integer
+            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_i64())
+            && val != *fixed as i64
+        {
+            errors.push(format!("{}: expected {}, got {}", element.path, fixed, val));
         }
 
         // Check pattern values
-        if let Some(pattern) = &element.pattern_string {
-            if let Some(val) = resource.get(&field_name).and_then(|v| v.as_str()) {
-                if val != pattern {
-                    errors.push(format!(
-                        "{}: pattern expected '{}', got '{}'",
-                        element.path, pattern, val
-                    ));
-                }
-            }
+        if let Some(pattern) = &element.pattern_string
+            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_str())
+            && val != pattern
+        {
+            errors.push(format!(
+                "{}: pattern expected '{}', got '{}'",
+                element.path, pattern, val
+            ));
         }
-        if let Some(pattern) = &element.pattern_code {
-            if let Some(val) = resource.get(&field_name).and_then(|v| v.as_str()) {
-                if val != pattern {
-                    errors.push(format!(
-                        "{}: pattern code expected '{}', got '{}'",
-                        element.path, pattern, val
-                    ));
-                }
-            }
+        if let Some(pattern) = &element.pattern_code
+            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_str())
+            && val != pattern
+        {
+            errors.push(format!(
+                "{}: pattern code expected '{}', got '{}'",
+                element.path, pattern, val
+            ));
         }
     }
 
@@ -273,9 +266,11 @@ mod tests {
             "resourceType": "Patient"
         });
         let errors = validate_against_profile(&resource, &profile);
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("name") && e.contains("Missing required")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("name") && e.contains("Missing required"))
+        );
     }
 
     #[test]
@@ -328,8 +323,10 @@ mod tests {
             "gender": "female"
         });
         let errors = validate_against_profile(&resource, &profile);
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("gender") && e.contains("expected code 'male'")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("gender") && e.contains("expected code 'male'"))
+        );
     }
 }

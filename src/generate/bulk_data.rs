@@ -286,21 +286,19 @@ pub fn generate_supplement_resource(
 fn normalize_supplement_references(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(obj) => {
-            if let Some(ref_val) = obj.get_mut("reference") {
-                if let Some(s) = ref_val.as_str() {
-                    if let Some((rtype, _id)) = s.split_once('/') {
-                        // Map the abstract FHIR `Resource` base type to a concrete
-                        // type that is always present from bulk data.
-                        let concrete_type = if rtype == "Resource" {
-                            "Organization"
-                        } else {
-                            rtype
-                        };
-                        let new_id = format!("{}-1", concrete_type.to_lowercase());
-                        *ref_val =
-                            serde_json::Value::String(format!("{}/{}", concrete_type, new_id));
-                    }
-                }
+            if let Some(ref_val) = obj.get_mut("reference")
+                && let Some(s) = ref_val.as_str()
+                && let Some((rtype, _id)) = s.split_once('/')
+            {
+                // Map the abstract FHIR `Resource` base type to a concrete
+                // type that is always present from bulk data.
+                let concrete_type = if rtype == "Resource" {
+                    "Organization"
+                } else {
+                    rtype
+                };
+                let new_id = format!("{}-1", concrete_type.to_lowercase());
+                *ref_val = serde_json::Value::String(format!("{}/{}", concrete_type, new_id));
             }
             for v in obj.values_mut() {
                 normalize_supplement_references(v);
@@ -620,12 +618,12 @@ fn walk_for_mutables(
 
 /// Check if a field is a FHIR reference (has `reference` key with a value like "ResourceType/id").
 fn is_reference_field(key: &str, val: &serde_json::Value) -> bool {
-    if key == "reference" {
-        if let Some(s) = val.as_str() {
-            if s.contains('/') && !s.starts_with("http") {
-                return true;
-            }
-        }
+    if key == "reference"
+        && let Some(s) = val.as_str()
+        && s.contains('/')
+        && !s.starts_with("http")
+    {
+        return true;
     }
     // Also skip managingOrganization, providedBy, practitioner, etc. as whole objects
     // since they contain references — but we still want to mutate their display field.

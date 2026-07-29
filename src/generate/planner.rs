@@ -1286,23 +1286,23 @@ fn build_negative_test(
 /// definition is found.
 fn infer_reference_target(param_name: &str, search_params: &[SearchParameter]) -> Option<String> {
     // Try to find the SearchParameter by code and extract from its expression
-    if let Some(sp) = search_params.iter().find(|sp| sp.code == param_name) {
-        if let Some(expression) = sp.expression.as_deref() {
-            let types: Vec<&str> = expression
-                .split('|')
-                .filter_map(|part| {
-                    let part = part.trim();
-                    let rtype = part.split('.').next()?;
-                    if rtype.chars().next()?.is_uppercase() && !rtype.contains('-') {
-                        Some(rtype)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if !types.is_empty() {
-                return Some(types.first()?.to_string());
-            }
+    if let Some(sp) = search_params.iter().find(|sp| sp.code == param_name)
+        && let Some(expression) = sp.expression.as_deref()
+    {
+        let types: Vec<&str> = expression
+            .split('|')
+            .filter_map(|part| {
+                let part = part.trim();
+                let rtype = part.split('.').next()?;
+                if rtype.chars().next()?.is_uppercase() && !rtype.contains('-') {
+                    Some(rtype)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !types.is_empty() {
+            return Some(types.first()?.to_string());
         }
     }
 
@@ -1456,52 +1456,68 @@ mod tests {
         let group = patient_group;
 
         // Should have interaction tests
-        assert!(group
-            .tests
-            .iter()
-            .any(|t| matches!(t.kind, TestCaseKind::Interaction)));
+        assert!(
+            group
+                .tests
+                .iter()
+                .any(|t| matches!(t.kind, TestCaseKind::Interaction))
+        );
 
         // Should have single search param tests
-        assert!(group
-            .tests
-            .iter()
-            .any(|t| matches!(t.kind, TestCaseKind::SearchSingle { .. })));
+        assert!(
+            group
+                .tests
+                .iter()
+                .any(|t| matches!(t.kind, TestCaseKind::SearchSingle { .. }))
+        );
 
         // Should have modifier tests (string params get :exact and :contains)
-        assert!(group
-            .tests
-            .iter()
-            .any(|t| matches!(t.kind, TestCaseKind::SearchModifier { .. })));
+        assert!(
+            group
+                .tests
+                .iter()
+                .any(|t| matches!(t.kind, TestCaseKind::SearchModifier { .. }))
+        );
 
         // Should have prefix tests (date params get eq, ne, gt, etc.)
-        assert!(group
-            .tests
-            .iter()
-            .any(|t| matches!(t.kind, TestCaseKind::SearchPrefix { .. })));
+        assert!(
+            group
+                .tests
+                .iter()
+                .any(|t| matches!(t.kind, TestCaseKind::SearchPrefix { .. }))
+        );
 
         // Should have combo tests (name + birthdate)
-        assert!(group
-            .tests
-            .iter()
-            .any(|t| matches!(t.kind, TestCaseKind::SearchCombo { .. })));
+        assert!(
+            group
+                .tests
+                .iter()
+                .any(|t| matches!(t.kind, TestCaseKind::SearchCombo { .. }))
+        );
 
         // Should have operation tests ($everything)
-        assert!(group
-            .tests
-            .iter()
-            .any(|t| matches!(t.kind, TestCaseKind::Operation { .. })));
+        assert!(
+            group
+                .tests
+                .iter()
+                .any(|t| matches!(t.kind, TestCaseKind::Operation { .. }))
+        );
 
         // Should have negative tests
-        assert!(group
-            .tests
-            .iter()
-            .any(|t| matches!(t.kind, TestCaseKind::Negative { .. })));
+        assert!(
+            group
+                .tests
+                .iter()
+                .any(|t| matches!(t.kind, TestCaseKind::Negative { .. }))
+        );
 
         // Should have result param tests
-        assert!(group
-            .tests
-            .iter()
-            .any(|t| matches!(t.kind, TestCaseKind::ResultParam { .. })));
+        assert!(
+            group
+                .tests
+                .iter()
+                .any(|t| matches!(t.kind, TestCaseKind::ResultParam { .. }))
+        );
     }
 
     #[test]

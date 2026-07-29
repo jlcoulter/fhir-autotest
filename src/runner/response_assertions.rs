@@ -40,21 +40,21 @@ pub fn assert_response(
     if let Some(body) = body {
         if let Some(entries) = body.get("entry").and_then(|v| v.as_array()) {
             let count = entries.len();
-            if let Some(min) = assertion.min_entries {
-                if count < min {
-                    errors.push(format!(
-                        "Bundle has {} entries, expected at least {}",
-                        count, min
-                    ));
-                }
+            if let Some(min) = assertion.min_entries
+                && count < min
+            {
+                errors.push(format!(
+                    "Bundle has {} entries, expected at least {}",
+                    count, min
+                ));
             }
-            if let Some(max) = assertion.max_entries {
-                if count > max {
-                    errors.push(format!(
-                        "Bundle has {} entries, expected at most {}",
-                        count, max
-                    ));
-                }
+            if let Some(max) = assertion.max_entries
+                && count > max
+            {
+                errors.push(format!(
+                    "Bundle has {} entries, expected at most {}",
+                    count, max
+                ));
             }
 
             // --- Resource types present ---
@@ -193,13 +193,13 @@ pub fn assert_response(
             // --- Absent fields (for _summary) ---
             for field in &assertion.absent_fields {
                 for entry in entries.iter() {
-                    if let Some(resource) = entry.get("resource") {
-                        if resource.get(field).is_some() {
-                            errors.push(format!(
-                                "Resource contains field '{}' which should be absent with _summary",
-                                field
-                            ));
-                        }
+                    if let Some(resource) = entry.get("resource")
+                        && resource.get(field).is_some()
+                    {
+                        errors.push(format!(
+                            "Resource contains field '{}' which should be absent with _summary",
+                            field
+                        ));
                     }
                 }
             }
@@ -278,15 +278,14 @@ pub fn assert_response(
     }
 
     // --- Top-level key presence ---
-    if let Some(key) = &assertion.response_contains_key {
-        if let Some(body) = body {
-            if body.get(key).is_none() {
-                errors.push(format!(
-                    "Expected response to contain key '{}', but it was not found",
-                    key
-                ));
-            }
-        }
+    if let Some(key) = &assertion.response_contains_key
+        && let Some(body) = body
+        && body.get(key).is_none()
+    {
+        errors.push(format!(
+            "Expected response to contain key '{}', but it was not found",
+            key
+        ));
     }
 
     // --- Top-level response resourceType allow-list ---
@@ -381,10 +380,10 @@ fn resolve_json_path(value: &Value, path: &str) -> Option<Value> {
     //    This handles cases where the target sub-path is in a later element.
     if let Some(arr) = value.as_array() {
         // Fast path: try first element
-        if let Some(first) = arr.first() {
-            if let Some(result) = resolve_json_path(first, path) {
-                return Some(result);
-            }
+        if let Some(first) = arr.first()
+            && let Some(result) = resolve_json_path(first, path)
+        {
+            return Some(result);
         }
         // Fallback: search remaining elements
         for elem in arr.iter().skip(1) {
@@ -471,9 +470,11 @@ mod tests {
             "entry": []
         });
         let errors = assert_response(&assertion, 200, &Some(body));
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("batch") && e.contains("searchset")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("batch") && e.contains("searchset"))
+        );
     }
 
     #[test]
@@ -573,9 +574,11 @@ mod tests {
             }]
         });
         let errors = assert_response(&assertion, 200, &Some(body));
-        assert!(errors
-            .iter()
-            .any(|e| e.contains("family") && e.contains("Smith")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("family") && e.contains("Smith"))
+        );
     }
 
     #[test]

@@ -537,7 +537,7 @@ fn add_write_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::Body, extract::Request, http::StatusCode, routing::any, Router};
+    use axum::{Router, body::Body, extract::Request, http::StatusCode, routing::any};
     use std::io::Write;
     use std::sync::{Arc, Mutex};
 

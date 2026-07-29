@@ -1,8 +1,8 @@
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, post, put},
-    Json, Router,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -43,13 +43,12 @@ async fn read_resource(
     Path((rtype, id)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let store = store.lock().unwrap();
-    if let Some(resources) = store.get(&rtype) {
-        if let Some(resource) = resources
+    if let Some(resources) = store.get(&rtype)
+        && let Some(resource) = resources
             .iter()
             .find(|r| r.get("id").and_then(|v| v.as_str()) == Some(&id))
-        {
-            return (StatusCode::OK, Json(resource.clone()));
-        }
+    {
+        return (StatusCode::OK, Json(resource.clone()));
     }
     (
         StatusCode::NOT_FOUND,
@@ -191,17 +190,16 @@ async fn search_resources(
                     for reference in refs {
                         if let Some(ref_str) = reference.get("reference").and_then(|v| v.as_str()) {
                             // Parse "ResourceType/id" from the reference
-                            if let Some((ref_type, ref_id)) = ref_str.split_once('/') {
-                                if let Some(ref_resources) = store.get(ref_type) {
-                                    if let Some(found) = ref_resources.iter().find(|rr| {
-                                        rr.get("id").and_then(|v| v.as_str()) == Some(ref_id)
-                                    }) {
-                                        included_resources.push(serde_json::json!({
+                            if let Some((ref_type, ref_id)) = ref_str.split_once('/')
+                                && let Some(ref_resources) = store.get(ref_type)
+                                && let Some(found) = ref_resources.iter().find(|rr| {
+                                    rr.get("id").and_then(|v| v.as_str()) == Some(ref_id)
+                                })
+                            {
+                                included_resources.push(serde_json::json!({
                                             "resource": found,
                                             "fullUrl": format!("http://localhost/fhir/{}/{}", ref_type, ref_id)
                                         }));
-                                    }
-                                }
                             }
                         }
                     }
@@ -227,16 +225,15 @@ async fn search_resources(
                             for reference in refs {
                                 if let Some(ref_str) =
                                     reference.get("reference").and_then(|v| v.as_str())
+                                    && ref_str == format!("{}/{}", rtype, rid)
                                 {
-                                    if ref_str == format!("{}/{}", rtype, rid) {
-                                        let sid =
-                                            source.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                        rev_included.push(serde_json::json!({
+                                    let sid =
+                                        source.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                    rev_included.push(serde_json::json!({
                                             "resource": source,
                                             "fullUrl": format!("http://localhost/fhir/{}/{}", source_type, sid)
                                         }));
-                                        break;
-                                    }
+                                    break;
                                 }
                             }
                         }
@@ -265,44 +262,42 @@ fn match_field(resource: &serde_json::Value, param: &str, value: &str) -> bool {
     let value_lower = value.to_lowercase();
 
     // Direct top-level match
-    if let Some(v) = resource.get(param) {
-        if json_contains(v, &value_lower) {
-            return true;
-        }
+    if let Some(v) = resource.get(param)
+        && json_contains(v, &value_lower)
+    {
+        return true;
     }
 
     // Token-style: check coding.code and coding.display
-    if param == "code" || param.ends_with("-code") {
-        if let Some(codings) = find_all_codings(resource) {
-            return codings.iter().any(|c| {
-                c.get("code")
-                    .or_else(|| c.get("display"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| {
-                        s.to_lowercase() == value_lower || s.to_lowercase().contains(&value_lower)
-                    })
-                    .unwrap_or(false)
-            });
-        }
+    if (param == "code" || param.ends_with("-code"))
+        && let Some(codings) = find_all_codings(resource)
+    {
+        return codings.iter().any(|c| {
+            c.get("code")
+                .or_else(|| c.get("display"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_lowercase() == value_lower || s.to_lowercase().contains(&value_lower))
+                .unwrap_or(false)
+        });
     }
 
     // Name search: check HumanName arrays
-    if param == "name" || param == "family" || param == "given" {
-        if let Some(names) = resource.get("name").and_then(|n| n.as_array()) {
-            for name in names {
-                if let Some(family) = name.get("family").and_then(|f| f.as_str()) {
-                    if family.to_lowercase().contains(&value_lower) {
+    if (param == "name" || param == "family" || param == "given")
+        && let Some(names) = resource.get("name").and_then(|n| n.as_array())
+    {
+        for name in names {
+            if let Some(family) = name.get("family").and_then(|f| f.as_str())
+                && family.to_lowercase().contains(&value_lower)
+            {
+                return true;
+            }
+            if let Some(given) = name.get("given").and_then(|g| g.as_array()) {
+                for g in given {
+                    if g.as_str()
+                        .map(|s| s.to_lowercase().contains(&value_lower))
+                        .unwrap_or(false)
+                    {
                         return true;
-                    }
-                }
-                if let Some(given) = name.get("given").and_then(|g| g.as_array()) {
-                    for g in given {
-                        if g.as_str()
-                            .map(|s| s.to_lowercase().contains(&value_lower))
-                            .unwrap_or(false)
-                        {
-                            return true;
-                        }
                     }
                 }
             }
@@ -310,15 +305,15 @@ fn match_field(resource: &serde_json::Value, param: &str, value: &str) -> bool {
     }
 
     // Identifier search
-    if param == "identifier" {
-        if let Some(ids) = resource.get("identifier").and_then(|i| i.as_array()) {
-            return ids.iter().any(|id| {
-                id.get("value")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_lowercase().contains(&value_lower))
-                    .unwrap_or(false)
-            });
-        }
+    if param == "identifier"
+        && let Some(ids) = resource.get("identifier").and_then(|i| i.as_array())
+    {
+        return ids.iter().any(|id| {
+            id.get("value")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_lowercase().contains(&value_lower))
+                .unwrap_or(false)
+        });
     }
 
     false
