@@ -495,6 +495,58 @@ pub fn find_slicing_info<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile;
+
+    /// Helper to set up a temporary cache directory for testing.
+    /// Returns the temp dir (kept alive for the duration of the test) and the
+    /// path to the cache directory.
+    fn setup_test_cache() -> (tempfile::TempDir, std::path::PathBuf) {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let cache_dir = temp_dir
+            .path()
+            .join(".cache")
+            .join("fhir-autotest")
+            .join("packages");
+        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache dir");
+        (temp_dir, cache_dir)
+    }
+
+    /// Write a StructureDefinition JSON file to the cache directory.
+    fn write_profile_to_cache(cache_dir: &std::path::Path, name: &str, sd: &StructureDefinition) {
+        let path = cache_dir.join(format!("{}.json", name));
+        let json = serde_json::to_string_pretty(sd).expect("Failed to serialize profile");
+        std::fs::write(&path, &json).expect("Failed to write cache file");
+    }
+
+    /// Create a minimal StructureDefinition for testing.
+    fn make_test_profile(
+        url: &str,
+        name: &str,
+        base_type: &str,
+        base_definition: Option<&str>,
+        elements: Vec<ElementDefinition>,
+    ) -> StructureDefinition {
+        StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: url.to_string(),
+            name: name.to_string(),
+            base_type: base_type.to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: base_definition.map(|s| s.to_string()),
+            snapshot: Some(Snapshot { element: elements }),
+            differential: None,
+        }
+    }
+
+    /// Create a minimal ElementDefinition for testing.
+    fn make_element(id: &str, path: &str) -> ElementDefinition {
+        ElementDefinition {
+            id: id.to_string(),
+            path: path.to_string(),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn test_url_to_package_id() {
@@ -673,5 +725,272 @@ mod tests {
         assert_eq!(slicing.discriminator[0].path, "system");
         assert_eq!(slices.len(), 1);
         assert_eq!(slices[0].slice_name.as_deref(), Some("abn"));
+    }
+
+    #[tokio::test]
+    async fn test_download_profile_cache_hit() {
+        // Override HOME to a temp directory so cache_dir() points to our test cache
+        let (temp_dir, cache_dir) = setup_test_cache();
+
+        // Create a test profile and write it to the cache
+        let profile = make_test_profile(
+            "http://example.org/StructureDefinition/TestProfile",
+            "TestProfile",
+            "Patient",
+            None,
+            vec![make_element("Patient", "Patient")],
+        );
+        write_profile_to_cache(&cache_dir, "TestProfile", &profile);
+
+        // Set HOME to the temp dir so cache_dir() resolves there
+        // SAFETY: test-only, single-threaded, no concurrent env access
+        unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
+
+        // download_profile should read from cache without making network calls
+        let result = download_profile("http://example.org/StructureDefinition/TestProfile")
+            .await
+            .expect("download_profile should succeed from cache");
+
+        assert_eq!(result.name, "TestProfile");
+        assert_eq!(
+            result.url,
+            "http://example.org/StructureDefinition/TestProfile"
+        );
+        assert_eq!(result.base_type, "Patient");
+    }
+
+    #[tokio::test]
+    async fn test_download_profile_cache_hit_with_version_suffix() {
+        let (temp_dir, cache_dir) = setup_test_cache();
+
+        let profile = make_test_profile(
+            "http://example.org/StructureDefinition/TestProfile",
+            "TestProfile",
+            "Patient",
+            None,
+            vec![make_element("Patient", "Patient")],
+        );
+        write_profile_to_cache(&cache_dir, "TestProfile", &profile);
+
+        // SAFETY: test-only, single-threaded, no concurrent env access
+        unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
+
+        // URL with FHIR version suffix — should still hit cache (stripped before lookup)
+        let result = download_profile("http://example.org/StructureDefinition/TestProfile|4.0.1")
+            .await
+            .expect("download_profile should succeed from cache with version suffix");
+
+        assert_eq!(result.name, "TestProfile");
+    }
+
+    #[tokio::test]
+    async fn test_download_profile_cache_miss_returns_error() {
+        let (temp_dir, _cache_dir) = setup_test_cache();
+        // SAFETY: test-only, single-threaded, no concurrent env access
+        unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
+
+        // No cache file exists — should fail with network error (no server running)
+        let result = download_profile("http://example.org/StructureDefinition/NonExistent").await;
+
+        assert!(
+            result.is_err(),
+            "Expected error when profile not in cache and no network"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_parent_chain_with_cached_parent() {
+        let (temp_dir, cache_dir) = setup_test_cache();
+        // SAFETY: test-only, single-threaded, no concurrent env access
+        unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
+
+        // Create a parent profile with snapshot elements
+        let parent = make_test_profile(
+            "http://hl7.org/fhir/StructureDefinition/Patient",
+            "Patient",
+            "Patient",
+            None,
+            vec![
+                make_element("Patient", "Patient"),
+                make_element("Patient.identifier", "Patient.identifier"),
+                make_element("Patient.name", "Patient.name"),
+            ],
+        );
+        write_profile_to_cache(&cache_dir, "Patient", &parent);
+
+        // Create a child profile that references the parent
+        let child = make_test_profile(
+            "http://example.org/StructureDefinition/ChildProfile",
+            "ChildProfile",
+            "Patient",
+            Some("http://hl7.org/fhir/StructureDefinition/Patient"),
+            vec![
+                make_element("Patient", "Patient"),
+                // Child constrains identifier to min=1
+                ElementDefinition {
+                    id: "Patient.identifier".to_string(),
+                    path: "Patient.identifier".to_string(),
+                    min: Some(1),
+                    ..Default::default()
+                },
+            ],
+        );
+
+        let mut profiles = vec![child.clone()];
+        resolve_parent_chain(&mut profiles)
+            .await
+            .expect("resolve_parent_chain should succeed");
+
+        // The parent should have been resolved and added to the profiles list
+        assert!(
+            profiles.len() >= 2,
+            "Expected at least 2 profiles (child + parent), got {}",
+            profiles.len()
+        );
+
+        // The parent should be in the list
+        let parent_in_list = profiles
+            .iter()
+            .any(|p| p.url == "http://hl7.org/fhir/StructureDefinition/Patient");
+        assert!(
+            parent_in_list,
+            "Parent profile should be in the resolved list"
+        );
+
+        // The child's snapshot should have parent elements merged in
+        let child_result = profiles
+            .iter()
+            .find(|p| p.url == "http://example.org/StructureDefinition/ChildProfile")
+            .unwrap();
+        let snapshot = child_result
+            .snapshot
+            .as_ref()
+            .expect("Child should have snapshot");
+        assert!(
+            snapshot.element.iter().any(|e| e.id == "Patient.name"),
+            "Parent element Patient.name should be merged into child snapshot"
+        );
+        // Child's constraint should be preserved
+        let ident = snapshot
+            .element
+            .iter()
+            .find(|e| e.id == "Patient.identifier")
+            .unwrap();
+        assert_eq!(
+            ident.min,
+            Some(1),
+            "Child's min=1 constraint on identifier should be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_parent_chain_second_pass_resolves_profiled_types() {
+        let (temp_dir, cache_dir) = setup_test_cache();
+        // SAFETY: test-only, single-threaded, no concurrent env access
+        unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
+
+        // Create a profiled type profile (e.g. an Identifier profile)
+        let profiled_type = make_test_profile(
+            "http://example.org/StructureDefinition/ProfiledIdentifier",
+            "ProfiledIdentifier",
+            "Identifier",
+            None,
+            vec![make_element("Identifier", "Identifier")],
+        );
+        write_profile_to_cache(&cache_dir, "ProfiledIdentifier", &profiled_type);
+
+        // Create a child profile whose elements reference the profiled type
+        let child = make_test_profile(
+            "http://example.org/StructureDefinition/MainProfile",
+            "MainProfile",
+            "Patient",
+            None,
+            vec![
+                make_element("Patient", "Patient"),
+                ElementDefinition {
+                    id: "Patient.identifier".to_string(),
+                    path: "Patient.identifier".to_string(),
+                    type_: vec![ElementDefinitionType {
+                        code: "Identifier".to_string(),
+                        profile: vec![
+                            "http://example.org/StructureDefinition/ProfiledIdentifier".to_string(),
+                        ],
+                        target_profile: Vec::new(),
+                        versioning: None,
+                    }],
+                    ..Default::default()
+                },
+            ],
+        );
+
+        let mut profiles = vec![child.clone()];
+        resolve_parent_chain(&mut profiles)
+            .await
+            .expect("resolve_parent_chain should succeed");
+
+        // The profiled type should have been resolved in the second pass
+        assert!(
+            profiles
+                .iter()
+                .any(|p| p.url == "http://example.org/StructureDefinition/ProfiledIdentifier"),
+            "Profiled type should be resolved in second pass"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_parent_chain_missing_parent_warns_not_errors() {
+        let (temp_dir, _cache_dir) = setup_test_cache();
+        // SAFETY: test-only, single-threaded, no concurrent env access
+        unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
+
+        // Create a child profile that references a non-existent parent
+        // (no cache file, no network — should warn and continue)
+        let child = make_test_profile(
+            "http://example.org/StructureDefinition/OrphanProfile",
+            "OrphanProfile",
+            "Patient",
+            Some("http://hl7.org/fhir/StructureDefinition/NonExistentParent"),
+            vec![make_element("Patient", "Patient")],
+        );
+
+        let mut profiles = vec![child];
+        // Should not return an error — missing parents should warn and continue
+        let result = resolve_parent_chain(&mut profiles).await;
+        assert!(
+            result.is_ok(),
+            "resolve_parent_chain should not error on missing parent"
+        );
+
+        // The orphan profile should still be in the list
+        assert!(
+            profiles
+                .iter()
+                .any(|p| p.url == "http://example.org/StructureDefinition/OrphanProfile"),
+            "Orphan profile should remain in the list"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_parent_chain_no_base_definition() {
+        let (temp_dir, _cache_dir) = setup_test_cache();
+        // SAFETY: test-only, single-threaded, no concurrent env access
+        unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
+
+        // Profile with no baseDefinition — should be skipped gracefully
+        let profile = make_test_profile(
+            "http://example.org/StructureDefinition/Standalone",
+            "Standalone",
+            "Patient",
+            None,
+            vec![make_element("Patient", "Patient")],
+        );
+
+        let mut profiles = vec![profile];
+        let result = resolve_parent_chain(&mut profiles).await;
+        assert!(
+            result.is_ok(),
+            "resolve_parent_chain should succeed with no baseDefinition"
+        );
+        assert_eq!(profiles.len(), 1, "Should not add any profiles");
     }
 }
