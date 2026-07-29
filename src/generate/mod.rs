@@ -14,6 +14,29 @@ pub use planner::*;
 pub use resource_generator::*;
 
 // ---------------------------------------------------------------------------
+// FHIR data types that are not independently creatable resources.
+// Some CapabilityStatements list types like Extension or Identifier which
+// are structural types, not top-level FHIR resources.
+// ---------------------------------------------------------------------------
+pub const NON_RESOURCE_TYPES: &[&str] = &[
+    "Extension",
+    "Identifier",
+    "Coding",
+    "CodeableConcept",
+    "Address",
+    "HumanName",
+    "ContactPoint",
+    "Period",
+    "Quantity",
+    "Range",
+    "Ratio",
+    "Attachment",
+    "Annotation",
+    "Signature",
+    "Timing",
+];
+
+// ---------------------------------------------------------------------------
 // Australian locality data shared across generators
 // ---------------------------------------------------------------------------
 

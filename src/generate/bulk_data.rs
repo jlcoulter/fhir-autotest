@@ -332,24 +332,6 @@ pub fn write_supplement_ndjson(
 ) -> Result<IdStore> {
     use std::io::{BufWriter, Write};
 
-    const NON_RESOURCE_TYPES: &[&str] = &[
-        "Extension",
-        "Identifier",
-        "Coding",
-        "CodeableConcept",
-        "Address",
-        "HumanName",
-        "ContactPoint",
-        "Period",
-        "Quantity",
-        "Range",
-        "Ratio",
-        "Attachment",
-        "Annotation",
-        "Signature",
-        "Timing",
-    ];
-
     let data_dir = output_dir.join("data");
     std::fs::create_dir_all(&data_dir)?;
 
@@ -365,7 +347,7 @@ pub fn write_supplement_ndjson(
 
     for resource_type in creation_order {
         let count = bulk_counts.get(resource_type).copied().unwrap_or(0);
-        if count > 0 || NON_RESOURCE_TYPES.contains(&resource_type.as_str()) {
+        if count > 0 || super::NON_RESOURCE_TYPES.contains(&resource_type.as_str()) {
             continue;
         }
 
