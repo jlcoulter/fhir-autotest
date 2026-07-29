@@ -217,7 +217,7 @@ fn generate_from_minimal_package() {
     let config_path = temp_dir.path().join("config.toml");
     write_config(&config_path, &tgz_path, &output_dir);
 
-    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
     cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
         .assert()
         .success();
@@ -254,7 +254,7 @@ fn generated_resources_satisfy_profiles() {
     let config_path = temp_dir.path().join("config.toml");
     write_config(&config_path, &tgz_path, &output_dir);
 
-    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
     cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
         .assert()
         .success();
@@ -313,7 +313,7 @@ fn dependency_order_is_correct() {
     let config_path = temp_dir.path().join("config.toml");
     write_config(&config_path, &tgz_path, &output_dir);
 
-    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
     cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
         .assert()
         .success();
@@ -360,7 +360,7 @@ fn validate_command_with_valid_resource() {
     let config_path = temp_dir.path().join("config.toml");
     write_config(&config_path, &tgz_path, &output_dir);
 
-    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
     cmd.args([
         "--config",
         config_path.to_str().unwrap(),
@@ -394,7 +394,7 @@ fn validate_command_with_invalid_resource() {
     let config_path = temp_dir.path().join("config.toml");
     write_config(&config_path, &tgz_path, &output_dir);
 
-    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
     let output = cmd
         .args([
             "--config",
@@ -424,7 +424,7 @@ fn test_plan_contains_all_test_kinds() {
     let config_path = temp_dir.path().join("config.toml");
     write_config(&config_path, &tgz_path, &output_dir);
 
-    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
     cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
         .assert()
         .success();
@@ -609,11 +609,11 @@ fn test_plan_contains_all_test_kinds() {
 
 #[tokio::test]
 async fn run_against_mock_fhir_server() {
-    use fhir_ig_testgen::config::models::TestConfig;
-    use fhir_ig_testgen::runner::orchestrator::Orchestrator;
+    use fhir_autotest::config::models::TestConfig;
+    use fhir_autotest::runner::orchestrator::Orchestrator;
 
     // 1. Start the mock FHIR server on a random port
-    let addr = fhir_ig_testgen::mock_server::start_mock_server(0)
+    let addr = fhir_autotest::mock_server::start_mock_server(0)
         .await
         .unwrap();
     let mock_url = format!("http://{}", addr);
@@ -629,13 +629,13 @@ async fn run_against_mock_fhir_server() {
         package: Some(tgz_path.to_str().unwrap().to_string()),
         output: temp_dir.path().join("output").to_str().unwrap().to_string(),
         dry_run: false,
-        server: fhir_ig_testgen::config::models::ServerConfig {
+        server: fhir_autotest::config::models::ServerConfig {
             base_url: format!("{}/fhir", mock_url),
             headers: HashMap::new(),
         },
         repository: None,
-        overrides: fhir_ig_testgen::config::models::OverrideConfig::default(),
-        data_generation: fhir_ig_testgen::config::models::DataGenerationConfig::default(),
+        overrides: fhir_autotest::config::models::OverrideConfig::default(),
+        data_generation: fhir_autotest::config::models::DataGenerationConfig::default(),
         mock: false,
         mock_port: 0,
     };
@@ -741,7 +741,7 @@ fn dry_run_prints_all_test_urls() {
     let config_path = temp_dir.path().join("config.toml");
     write_config(&config_path, &tgz_path, &output_dir);
 
-    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
     let output = cmd
         .args(["--config", config_path.to_str().unwrap(), "--dry-run"])
         .output()
@@ -772,8 +772,8 @@ fn dry_run_prints_all_test_urls() {
 
 #[tokio::test]
 async fn bulk_data_generates_ndjson_files() {
-    use fhir_ig_testgen::config::models::*;
-    use fhir_ig_testgen::runner::orchestrator::Orchestrator;
+    use fhir_autotest::config::models::*;
+    use fhir_autotest::runner::orchestrator::Orchestrator;
     use std::collections::HashMap;
 
     let tgz_data = create_test_ig_package();
@@ -782,7 +782,7 @@ async fn bulk_data_generates_ndjson_files() {
     std::fs::write(&tgz_path, &tgz_data).unwrap();
 
     // Start mock server so the orchestrator can run
-    let addr = fhir_ig_testgen::mock_server::start_mock_server(0)
+    let addr = fhir_autotest::mock_server::start_mock_server(0)
         .await
         .unwrap();
     let mock_url = format!("http://{}", addr);
@@ -872,7 +872,7 @@ base_url = "http://localhost:8080/fhir"
 "#;
     std::fs::write(&config_path, config_content).unwrap();
 
-    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
     cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
         .assert()
         .failure();
@@ -889,7 +889,7 @@ base_url = "http://localhost:8080/fhir"
 "#;
     std::fs::write(&config_path, config_content).unwrap();
 
-    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
     cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
         .assert()
         .failure();
@@ -901,7 +901,7 @@ fn fails_on_malformed_config() {
     let config_path = temp_dir.path().join("config.toml");
     std::fs::write(&config_path, "this is not valid toml {{{").unwrap();
 
-    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
     cmd.args(["--config", config_path.to_str().unwrap()])
         .assert()
         .failure();
@@ -933,7 +933,7 @@ base_url = "http://localhost:8080/fhir"
     let config_path = temp_dir.path().join("config.toml");
     std::fs::write(&config_path, &config_content).unwrap();
 
-    let mut cmd = Command::cargo_bin("fhir-ig-testgen").unwrap();
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
     let _output = cmd
         .args(["--config", config_path.to_str().unwrap()])
         .output()

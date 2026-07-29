@@ -1,7 +1,7 @@
 # FHIR IG Test Generator — Configuration
 #
 # The config file is the single source of truth. Once defined, running the tool
-# is as simple as: fhir-ig-testgen
+# is as simple as: fhir-autotest
 #
 # CLI flags (--package, --output, --dry-run, --generate, --mock)
 # override the corresponding config fields when provided.

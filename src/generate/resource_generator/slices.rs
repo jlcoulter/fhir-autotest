@@ -70,21 +70,21 @@ pub fn populate_required_slices(
             // Replace the first generic value with a value matching the first
             // required slice, then add values for remaining required slices.
             // This avoids having a non-slice-matching generic value in the array.
-            if let Some(first_slice) = required_slices.first() {
-                if let Some(val) = generate_slice_value(
+            if let Some(first_slice) = required_slices.first()
+                && let Some(val) = generate_slice_value(
                     first_slice,
                     resource_type,
                     discriminator_path.as_deref(),
                     all_profiles,
                     elements,
                     value_set_systems,
-                ) {
-                    // Replace the first generic value
-                    if slice_values.is_empty() {
-                        slice_values.push(val);
-                    } else {
-                        slice_values[0] = val;
-                    }
+                )
+            {
+                // Replace the first generic value
+                if slice_values.is_empty() {
+                    slice_values.push(val);
+                } else {
+                    slice_values[0] = val;
                 }
             }
             // Add values for remaining required slices
@@ -146,129 +146,126 @@ fn generate_slice_value(
     let mut value = generate_typed_value(&type_code, &[], slice, value_set_systems);
 
     // HumanName slice support
-    if type_code == "HumanName" {
-        if let Some(slice_name) = &slice.slice_name {
-            if let Some(use_code) = find_human_name_use(slice_name, elements) {
-                if let Some(obj) = value.as_object_mut() {
-                    obj.insert("use".to_string(), serde_json::json!(use_code));
-                }
-            }
-        }
+    if type_code == "HumanName"
+        && let Some(slice_name) = &slice.slice_name
+        && let Some(use_code) = find_human_name_use(slice_name, elements)
+        && let Some(obj) = value.as_object_mut()
+    {
+        obj.insert("use".to_string(), serde_json::json!(use_code));
     }
 
     // Apply pattern values from the slice definition
-    if let Some(val) = &slice.pattern_uri {
-        if let Some(obj) = value.as_object_mut() {
-            if type_code == "Identifier" {
-                obj.insert("system".to_string(), serde_json::json!(val));
-            } else {
-                obj.insert("value".to_string(), serde_json::json!(val));
-            }
-        }
-    }
-
-    if let Some(val) = &slice.pattern_code {
-        if let Some(obj) = value.as_object_mut() {
-            match type_code.as_str() {
-                "HumanName" => {
-                    obj.insert("use".to_string(), serde_json::json!(val));
-                }
-                "Address" => {
-                    obj.insert("type".to_string(), serde_json::json!(val));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    if let Some(val) = &slice.pattern_string {
-        if let Some(obj) = value.as_object_mut() {
+    if let Some(val) = &slice.pattern_uri
+        && let Some(obj) = value.as_object_mut()
+    {
+        if type_code == "Identifier" {
+            obj.insert("system".to_string(), serde_json::json!(val));
+        } else {
             obj.insert("value".to_string(), serde_json::json!(val));
         }
     }
 
-    if let Some(val) = &slice.pattern_coding {
-        if let Some(obj) = value.as_object_mut() {
-            obj.insert("coding".to_string(), val.clone());
+    if let Some(val) = &slice.pattern_code
+        && let Some(obj) = value.as_object_mut()
+    {
+        match type_code.as_str() {
+            "HumanName" => {
+                obj.insert("use".to_string(), serde_json::json!(val));
+            }
+            "Address" => {
+                obj.insert("type".to_string(), serde_json::json!(val));
+            }
+            _ => {}
         }
     }
 
-    if let Some(val) = &slice.pattern_codeable_concept {
-        if let Some(obj) = value.as_object_mut() {
-            obj.insert("coding".to_string(), val.clone());
-        }
+    if let Some(val) = &slice.pattern_string
+        && let Some(obj) = value.as_object_mut()
+    {
+        obj.insert("value".to_string(), serde_json::json!(val));
+    }
+
+    if let Some(val) = &slice.pattern_coding
+        && let Some(obj) = value.as_object_mut()
+    {
+        obj.insert("coding".to_string(), val.clone());
+    }
+
+    if let Some(val) = &slice.pattern_codeable_concept
+        && let Some(obj) = value.as_object_mut()
+    {
+        obj.insert("coding".to_string(), val.clone());
     }
 
     // Identifier slice handling
-    if type_code == "Identifier" {
-        if let Some(obj) = value.as_object_mut() {
-            let profile_url = slice
-                .type_
-                .first()
-                .and_then(|t| {
-                    t.profile
-                        .first()
-                        .or_else(|| t.target_profile.first())
-                        .map(|s| s.as_str())
-                })
-                .unwrap_or("");
+    if type_code == "Identifier"
+        && let Some(obj) = value.as_object_mut()
+    {
+        let profile_url = slice
+            .type_
+            .first()
+            .and_then(|t| {
+                t.profile
+                    .first()
+                    .or_else(|| t.target_profile.first())
+                    .map(|s| s.as_str())
+            })
+            .unwrap_or("");
 
-            if let Some(system) = find_identifier_system(profile_url, all_profiles) {
-                if !obj.contains_key("system")
-                    || obj
-                        .get("system")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(is_generic_identifier_system)
+        if let Some(system) = find_identifier_system(profile_url, all_profiles)
+            && (!obj.contains_key("system")
+                || obj
+                    .get("system")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(is_generic_identifier_system))
+        {
+            obj.insert("system".to_string(), serde_json::json!(system));
+        }
+
+        // Some IG slices define Identifier.system at nested paths without
+        // repeating a discriminator. Use slice-specific nested constraints
+        // as a direct source of truth when available.
+        if let Some(slice_name) = &slice.slice_name
+            && let Some(system) = find_slice_system(slice_name, elements)
+        {
+            obj.insert("system".to_string(), serde_json::json!(system));
+        }
+
+        if let Some(identifier_type) = find_identifier_type(profile_url, all_profiles)
+            && !obj.contains_key("type")
+        {
+            obj.insert("type".to_string(), identifier_type);
+        }
+
+        match discriminator_path {
+            Some("system") => {
+                if let Some(slice_name) = &slice.slice_name
+                    && let Some(system) = find_slice_system(slice_name, elements)
                 {
                     obj.insert("system".to_string(), serde_json::json!(system));
+                    return Some(value);
                 }
             }
 
-            // Some IG slices define Identifier.system at nested paths without
-            // repeating a discriminator. Use slice-specific nested constraints
-            // as a direct source of truth when available.
-            if let Some(slice_name) = &slice.slice_name {
-                if let Some(system) = find_slice_system(slice_name, elements) {
-                    obj.insert("system".to_string(), serde_json::json!(system));
-                }
-            }
-
-            if let Some(identifier_type) = find_identifier_type(profile_url, all_profiles) {
-                if !obj.contains_key("type") {
+            Some(path) if path.starts_with("type") && !obj.contains_key("type") => {
+                if let Some(identifier_type) = find_identifier_type(profile_url, all_profiles) {
                     obj.insert("type".to_string(), identifier_type);
                 }
+
+                if !obj.contains_key("type") {
+                    obj.insert(
+                        "type".to_string(),
+                        serde_json::json!({
+                            "coding": [{
+                                "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                                "code": "XX"
+                            }]
+                        }),
+                    );
+                }
             }
 
-            match discriminator_path {
-                Some("system") => {
-                    if let Some(slice_name) = &slice.slice_name {
-                        if let Some(system) = find_slice_system(slice_name, elements) {
-                            obj.insert("system".to_string(), serde_json::json!(system));
-                            return Some(value);
-                        }
-                    }
-                }
-
-                Some(path) if path.starts_with("type") && !obj.contains_key("type") => {
-                    if let Some(identifier_type) = find_identifier_type(profile_url, all_profiles) {
-                        obj.insert("type".to_string(), identifier_type);
-                    }
-
-                    if !obj.contains_key("type") {
-                        obj.insert(
-                            "type".to_string(),
-                            serde_json::json!({
-                                "coding": [{
-                                    "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
-                                    "code": "XX"
-                                }]
-                            }),
-                        );
-                    }
-                }
-
-                _ => {}
-            }
+            _ => {}
         }
     }
 
@@ -309,20 +306,20 @@ pub fn apply_slices_for_path(
     }
 
     if !required_slices.is_empty() {
-        if let Some(first_slice) = required_slices.first() {
-            if let Some(v) = generate_slice_value(
+        if let Some(first_slice) = required_slices.first()
+            && let Some(v) = generate_slice_value(
                 first_slice,
                 "",
                 discriminator_path.as_deref(),
                 all_profiles,
                 elements,
                 value_set_systems,
-            ) {
-                if slice_values.is_empty() {
-                    slice_values.push(v);
-                } else {
-                    slice_values[0] = v;
-                }
+            )
+        {
+            if slice_values.is_empty() {
+                slice_values.push(v);
+            } else {
+                slice_values[0] = v;
             }
         }
 

@@ -1,4 +1,4 @@
-use crate::config::models::{default_concurrency, default_upload_method, WriteEndpoint};
+use crate::config::models::{WriteEndpoint, default_concurrency, default_upload_method};
 use crate::generate::model::*;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -6,7 +6,7 @@ use std::collections::HashMap;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{extract::Request, http::StatusCode, routing::any, Json, Router};
+    use axum::{Json, Router, extract::Request, http::StatusCode, routing::any};
     use http_body_util::BodyExt;
     use std::sync::{Arc, Mutex};
 

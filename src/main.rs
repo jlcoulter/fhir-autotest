@@ -1,7 +1,7 @@
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "fhir-ig-testgen")]
+#[command(name = "fhir-autotest")]
 #[command(
     about = "FHIR R4 IG test generator — parse Implementation Guide packages and generate/run conformance tests"
 )]
@@ -80,18 +80,18 @@ async fn main() -> anyhow::Result<()> {
     // Handle the validate subcommand separately — it doesn't need a full config
     if let Some(Commands::Validate { resource, profile }) = cli.command {
         // Load config just to get the package path
-        let config = fhir_ig_testgen::TestConfig::load(&cli.config)?;
+        let config = fhir_autotest::TestConfig::load(&cli.config)?;
         let package = cli.package.or(config.package).ok_or_else(|| {
             anyhow::anyhow!(
                 "No IG package path specified. Set 'package' in the config file or use --package."
             )
         })?;
-        fhir_ig_testgen::run_validate(&package, &resource, profile.as_deref()).await?;
+        fhir_autotest::run_validate(&package, &resource, profile.as_deref()).await?;
         return Ok(());
     }
 
     // Load config — the single source of truth
-    let mut config = fhir_ig_testgen::TestConfig::load(&cli.config)?;
+    let mut config = fhir_autotest::TestConfig::load(&cli.config)?;
 
     // If --mock is set or config.mock is true, start the mock server and redirect
     let use_mock = cli.mock || config.mock;
@@ -101,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
         config.mock_port
     };
     if use_mock {
-        let addr = fhir_ig_testgen::mock_server::start_mock_server(mock_port).await?;
+        let addr = fhir_autotest::mock_server::start_mock_server(mock_port).await?;
         let mock_url = format!("http://{}", addr);
         println!("Mock FHIR server running at {}", mock_url);
         config.server.base_url = mock_url.clone();
@@ -130,12 +130,12 @@ async fn main() -> anyhow::Result<()> {
     // Determine mode: --generate, --dry_run, or full run
     if cli.generate {
         // Generate-only mode: no server needed, just produce test plan + resources
-        fhir_ig_testgen::run_generate(package, &config).await?;
+        fhir_autotest::run_generate(package, &config).await?;
     } else if config.dry_run {
-        fhir_ig_testgen::run_dry_run(package, &config).await?;
+        fhir_autotest::run_dry_run(package, &config).await?;
     } else {
-        fhir_ig_testgen::run_generate(package, &config).await?;
-        fhir_ig_testgen::run_tests(package, &config).await?;
+        fhir_autotest::run_generate(package, &config).await?;
+        fhir_autotest::run_tests(package, &config).await?;
     }
 
     Ok(())

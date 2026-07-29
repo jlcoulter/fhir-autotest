@@ -532,17 +532,15 @@ impl Orchestrator {
                             status_icon, test.request.method, test.request.url, result.status_code
                         );
                         // Profile validation
-                        if let Some(profile_url) = &test.validation.profile_url {
-                            if let Some(response_body) = &result.response_body {
-                                if let Some(profile) = pkg
-                                    .structure_definitions
-                                    .iter()
-                                    .find(|sd| &sd.url == profile_url)
-                                {
-                                    let errors = validate_against_profile(response_body, profile);
-                                    result.validation_errors.extend(errors);
-                                }
-                            }
+                        if let Some(profile_url) = &test.validation.profile_url
+                            && let Some(response_body) = &result.response_body
+                            && let Some(profile) = pkg
+                                .structure_definitions
+                                .iter()
+                                .find(|sd| &sd.url == profile_url)
+                        {
+                            let errors = validate_against_profile(response_body, profile);
+                            result.validation_errors.extend(errors);
                         }
 
                         // Response assertion validation
@@ -635,12 +633,11 @@ fn resolve_references(
         serde_json::Value::Object(obj) => {
             for (key, value) in obj.iter_mut() {
                 if key == "reference" {
-                    if let Some(s) = value.as_str() {
-                        if let Some(replacement) =
+                    if let Some(s) = value.as_str()
+                        && let Some(replacement) =
                             resolve_reference_value(s, resource_type, created_ids)
-                        {
-                            *value = serde_json::Value::String(replacement);
-                        }
+                    {
+                        *value = serde_json::Value::String(replacement);
                     }
                 } else {
                     resolve_references(value, resource_type, created_ids);
@@ -678,10 +675,10 @@ fn resolve_reference_value(
             return Some(format!("{}/{}", slash_type, id));
         }
         // urn:uuid:... or http://... absolute references — use context resource_type
-        if s.starts_with("urn:") || s.starts_with("http") {
-            if let Some(id) = created_ids.get(resource_type) {
-                return Some(format!("{}/{}", resource_type, id));
-            }
+        if (s.starts_with("urn:") || s.starts_with("http"))
+            && let Some(id) = created_ids.get(resource_type)
+        {
+            return Some(format!("{}/{}", resource_type, id));
         }
         tracing::warn!("Could not resolve reference: {} (unknown resource type)", s);
         return None;
@@ -948,10 +945,11 @@ mod tests {
         let cs = crate::select_capability_statement(&pkg, &env.config).unwrap();
         assert_eq!(cs.name.as_deref(), Some("TestIG"));
         // Should select server-mode with resources
-        assert!(cs
-            .rest
-            .iter()
-            .any(|r| r.mode == "server" && !r.resource.is_empty()));
+        assert!(
+            cs.rest
+                .iter()
+                .any(|r| r.mode == "server" && !r.resource.is_empty())
+        );
         // Should have Patient and Observation
         let resource_types: Vec<&str> = cs
             .rest

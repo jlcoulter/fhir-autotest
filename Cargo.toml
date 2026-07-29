@@ -1,8 +1,9 @@
 [package]
-name = "fhir-ig-testgen"
+name = "fhir-autotest"
 version = "0.1.0"
-edition = "2021"
-description = "FHIR R4 IG test generator — parse Implementation Guide packages and generate/run conformance tests"
+edition = "2024"
+description = "Automated FHIR R4 conformance testing from Implementation Guide packages"
+license = "Apache-2.0"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

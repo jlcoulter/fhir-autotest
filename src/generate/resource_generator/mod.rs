@@ -376,7 +376,7 @@ mod tests {
                         type_: vec![ElementDefinitionType {
                             code: "Reference".to_string(),
                             target_profile: vec![
-                                "http://hl7.org/fhir/StructureDefinition/Patient".to_string()
+                                "http://hl7.org/fhir/StructureDefinition/Patient".to_string(),
                             ],
                             profile: vec![],
                             versioning: None,
