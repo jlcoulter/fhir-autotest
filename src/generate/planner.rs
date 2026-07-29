@@ -1082,7 +1082,7 @@ fn infer_reference_target(param_name: &str) -> Option<String> {
 }
 
 fn search_param_assertion_paths(
-    resource_type: &str,
+    _resource_type: &str,
     param_name: &str,
     param_type: &str,
 ) -> Vec<String> {
@@ -1104,7 +1104,6 @@ fn search_param_assertion_paths(
         },
     }
     .into_iter()
-    .map(|p| if p.starts_with(resource_type) { p } else { p })
     .collect()
 }
 

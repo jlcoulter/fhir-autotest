@@ -132,16 +132,17 @@ pub fn generate_bulk_data(
                     &endpoint_ids,
                     &mut rng,
                 );
-                apply_hcpd_bulk_fixes(
-                    &mut r,
-                    resource_type,
-                    id,
-                    &mut practitioner_registration_by_id,
-                    value_set_systems,
-                    &code_system_codes,
-                    &mut rng,
-                    hcpd_ig,
-                );
+                if hcpd_ig {
+                    apply_hcpd_bulk_fixes(
+                        &mut r,
+                        resource_type,
+                        id,
+                        &mut practitioner_registration_by_id,
+                        value_set_systems,
+                        &code_system_codes,
+                        &mut rng,
+                    );
+                }
                 r
             } else {
                 match resource_type.as_str() {
@@ -238,16 +239,17 @@ pub fn generate_supplement_resource(
         let mut r = generate_resource_with_value_sets(profile, profiles, value_set_systems)?;
         r["id"] = serde_json::Value::String(id.clone());
         let mut dummy_reg: HashMap<String, String> = HashMap::new();
-        apply_hcpd_bulk_fixes(
-            &mut r,
-            resource_type,
-            &id,
-            &mut dummy_reg,
-            value_set_systems,
-            &build_code_system_first_code_map(raw_resources),
-            &mut rng,
-            is_hcpd_ig(profile_urls),
-        );
+        if is_hcpd_ig(profile_urls) {
+            apply_hcpd_bulk_fixes(
+                &mut r,
+                resource_type,
+                &id,
+                &mut dummy_reg,
+                value_set_systems,
+                &build_code_system_first_code_map(raw_resources),
+                &mut rng,
+            );
+        }
         r
     } else {
         match resource_type {
@@ -420,11 +422,7 @@ fn apply_hcpd_bulk_fixes(
     value_set_systems: &HashMap<String, String>,
     code_system_codes: &HashMap<String, (String, Option<String>)>,
     rng: &mut impl Rng,
-    hcpd_ig: bool,
 ) {
-    if !hcpd_ig {
-        return;
-    }
     match resource_type {
         "Organization" => {
             resource["identifier"] = serde_json::json!([

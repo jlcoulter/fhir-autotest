@@ -367,6 +367,6 @@ pub fn random_au_locality<R: rand::Rng>(rng: &mut R) -> &'static AuLocality {
 /// Pick a random Australian locality using a thread-local RNG (for contexts without an explicit RNG).
 pub fn random_au_locality_thread() -> &'static AuLocality {
     use rand::Rng;
-    let mut rng = rand::thread_rng();
-    &AU_LOCALITIES[rng.gen_range(0..AU_LOCALITIES.len())]
+    let mut rng = rand::rng();
+    &AU_LOCALITIES[rng.random_range(0..AU_LOCALITIES.len())]
 }
