@@ -79,7 +79,7 @@ pub(crate) fn select_capability_statement(
 ///
 /// Generates one resource per profile, named after the profile (e.g.
 /// `TestPatient.json`), and includes `meta.profile` with the profile URL.
-pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
+pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
     let pkg = parse_package(package_path)?;
     let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
     let cs = select_capability_statement(&pkg, config)?;
@@ -88,7 +88,7 @@ pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
     // from the FHIR package registry and merge their snapshots so that
     // slice definitions with discriminator patterns are available.
     let mut profiles = pkg.structure_definitions;
-    resolve_parent_chain(&mut profiles)?;
+    resolve_parent_chain(&mut profiles).await?;
 
     // Resolve dependencies (by resource type)
     let auto_deps = extract_dependencies(&profiles);
@@ -213,14 +213,14 @@ pub async fn run_tests(package_path: &str, config: &TestConfig) -> Result<()> {
 }
 
 /// Dry-run: generate the test plan and print all test URLs without executing them.
-pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
+pub async fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
     let pkg = parse_package(package_path)?;
     let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
     let cs = select_capability_statement(&pkg, config)?;
 
     // Resolve parent profile chains
     let mut profiles = pkg.structure_definitions;
-    resolve_parent_chain(&mut profiles)?;
+    resolve_parent_chain(&mut profiles).await?;
 
     let auto_deps = extract_dependencies(&profiles);
     let auto_order = resolve_creation_order(&auto_deps)?;
@@ -325,7 +325,7 @@ pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
 }
 
 /// Validate a JSON resource against a profile from the IG package.
-pub fn run_validate(
+pub async fn run_validate(
     package_path: &str,
     resource_path: &str,
     profile_url: Option<&str>,
@@ -334,7 +334,7 @@ pub fn run_validate(
 
     // Resolve parent profile chains
     let mut profiles = pkg.structure_definitions;
-    resolve_parent_chain(&mut profiles)?;
+    resolve_parent_chain(&mut profiles).await?;
 
     let resource_content = std::fs::read_to_string(resource_path)?;
     let resource: serde_json::Value = serde_json::from_str(&resource_content)?;

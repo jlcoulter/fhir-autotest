@@ -86,9 +86,7 @@ async fn main() -> anyhow::Result<()> {
                 "No IG package path specified. Set 'package' in the config file or use --package."
             )
         })?;
-        tokio::task::block_in_place(|| {
-            fhir_ig_testgen::run_validate(&package, &resource, profile.as_deref())
-        })?;
+        fhir_ig_testgen::run_validate(&package, &resource, profile.as_deref()).await?;
         return Ok(());
     }
 
@@ -132,11 +130,11 @@ async fn main() -> anyhow::Result<()> {
     // Determine mode: --generate, --dry_run, or full run
     if cli.generate {
         // Generate-only mode: no server needed, just produce test plan + resources
-        tokio::task::block_in_place(|| fhir_ig_testgen::run_generate(package, &config))?;
+        fhir_ig_testgen::run_generate(package, &config).await?;
     } else if config.dry_run {
-        tokio::task::block_in_place(|| fhir_ig_testgen::run_dry_run(package, &config))?;
+        fhir_ig_testgen::run_dry_run(package, &config).await?;
     } else {
-        tokio::task::block_in_place(|| fhir_ig_testgen::run_generate(package, &config))?;
+        fhir_ig_testgen::run_generate(package, &config).await?;
         fhir_ig_testgen::run_tests(package, &config).await?;
     }
 
