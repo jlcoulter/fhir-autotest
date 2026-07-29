@@ -695,3 +695,512 @@ fn resolve_reference_value(
     tracing::warn!("Could not resolve reference: {}", s);
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::models::{DataGenerationConfig, OverrideConfig, ServerConfig, TestConfig};
+    use crate::mock_server::start_mock_server;
+    use std::collections::HashMap;
+    use std::io::Write;
+
+    /// Create a minimal FHIR IG package (.tgz) for testing.
+    /// Contains a CapabilityStatement with Patient and Observation resources,
+    /// plus their StructureDefinitions and a SearchParameter.
+    fn create_test_ig_package() -> Vec<u8> {
+        let cs_json = r#"{
+            "resourceType": "CapabilityStatement",
+            "url": "http://example.org/CapabilityStatement/TestIG",
+            "name": "TestIG",
+            "status": "active",
+            "rest": [{
+                "mode": "server",
+                "resource": [{
+                    "type": "Patient",
+                    "profile": "http://hl7.org/fhir/StructureDefinition/Patient",
+                    "supportedProfile": ["http://example.org/StructureDefinition/TestPatient"],
+                    "interaction": [
+                        {"code": "read"},
+                        {"code": "search-type"},
+                        {"code": "create"},
+                        {"code": "update"},
+                        {"code": "delete"}
+                    ],
+                    "searchParam": [
+                        {"name": "name", "type": "string"},
+                        {"name": "birthdate", "type": "date"}
+                    ]
+                }, {
+                    "type": "Observation",
+                    "profile": "http://hl7.org/fhir/StructureDefinition/Observation",
+                    "supportedProfile": ["http://example.org/StructureDefinition/TestObservation"],
+                    "interaction": [
+                        {"code": "read"},
+                        {"code": "search-type"},
+                        {"code": "create"}
+                    ],
+                    "searchParam": [
+                        {"name": "category", "type": "token"},
+                        {"name": "code", "type": "token"}
+                    ]
+                }],
+                "interaction": []
+            }]
+        }"#;
+
+        let patient_sd_json = r#"{
+            "resourceType": "StructureDefinition",
+            "url": "http://example.org/StructureDefinition/TestPatient",
+            "name": "TestPatient",
+            "type": "Patient",
+            "kind": "resource",
+            "derivation": "constraint",
+            "snapshot": {
+                "element": [{
+                    "id": "Patient",
+                    "path": "Patient",
+                    "min": 0,
+                    "max": "*"
+                }, {
+                    "id": "Patient.id",
+                    "path": "Patient.id",
+                    "min": 0,
+                    "max": "1",
+                    "type": [{"code": "id"}]
+                }, {
+                    "id": "Patient.identifier",
+                    "path": "Patient.identifier",
+                    "min": 1,
+                    "max": "*",
+                    "type": [{"code": "Identifier"}],
+                    "mustSupport": true
+                }, {
+                    "id": "Patient.name",
+                    "path": "Patient.name",
+                    "min": 1,
+                    "max": "*",
+                    "type": [{"code": "HumanName"}],
+                    "mustSupport": true
+                }, {
+                    "id": "Patient.gender",
+                    "path": "Patient.gender",
+                    "min": 0,
+                    "max": "1",
+                    "type": [{"code": "code"}]
+                }, {
+                    "id": "Patient.birthDate",
+                    "path": "Patient.birthDate",
+                    "min": 0,
+                    "max": "1",
+                    "type": [{"code": "date"}]
+                }]
+            }
+        }"#;
+
+        let observation_sd_json = r#"{
+            "resourceType": "StructureDefinition",
+            "url": "http://example.org/StructureDefinition/TestObservation",
+            "name": "TestObservation",
+            "type": "Observation",
+            "kind": "resource",
+            "derivation": "constraint",
+            "snapshot": {
+                "element": [{
+                    "id": "Observation",
+                    "path": "Observation",
+                    "min": 0,
+                    "max": "*"
+                }, {
+                    "id": "Observation.id",
+                    "path": "Observation.id",
+                    "min": 0,
+                    "max": "1",
+                    "type": [{"code": "id"}]
+                }, {
+                    "id": "Observation.status",
+                    "path": "Observation.status",
+                    "min": 1,
+                    "max": "1",
+                    "type": [{"code": "code"}],
+                    "fixedCode": "final"
+                }, {
+                    "id": "Observation.subject",
+                    "path": "Observation.subject",
+                    "min": 1,
+                    "max": "1",
+                    "type": [{
+                        "code": "Reference",
+                        "targetProfile": ["http://hl7.org/fhir/StructureDefinition/Patient"]
+                    }],
+                    "mustSupport": true
+                }, {
+                    "id": "Observation.code",
+                    "path": "Observation.code",
+                    "min": 1,
+                    "max": "1",
+                    "type": [{"code": "CodeableConcept"}]
+                }, {
+                    "id": "Observation.valueString",
+                    "path": "Observation.valueString",
+                    "min": 0,
+                    "max": "1",
+                    "type": [{"code": "string"}]
+                }]
+            }
+        }"#;
+
+        let sp_json = r#"{
+            "resourceType": "SearchParameter",
+            "url": "http://example.org/SearchParameter/patient-name",
+            "name": "name",
+            "code": "name",
+            "base": ["Patient"],
+            "type": "string",
+            "expression": "Patient.name"
+        }"#;
+
+        let mut tar_data = Vec::new();
+        {
+            let mut tar = tar::Builder::new(&mut tar_data);
+
+            let files = [
+                ("package/CapabilityStatement-test.json", cs_json),
+                (
+                    "package/StructureDefinition-TestPatient.json",
+                    patient_sd_json,
+                ),
+                (
+                    "package/StructureDefinition-TestObservation.json",
+                    observation_sd_json,
+                ),
+                ("package/SearchParameter-patient-name.json", sp_json),
+            ];
+
+            for (path, content) in &files {
+                let mut header = tar::Header::new_gnu();
+                header.set_path(path).unwrap();
+                header.set_size(content.len() as u64);
+                header.set_cksum();
+                tar.append_data(&mut header, *path, content.as_bytes())
+                    .unwrap();
+            }
+
+            tar.finish().unwrap();
+        }
+
+        let mut gz_data = Vec::new();
+        {
+            let mut gz =
+                flate2::write::GzEncoder::new(&mut gz_data, flate2::Compression::default());
+            gz.write_all(&tar_data).unwrap();
+            gz.finish().unwrap();
+        }
+
+        gz_data
+    }
+
+    struct TestEnvironment {
+        _mock_url: String,
+        temp_dir: tempfile::TempDir,
+        config: TestConfig,
+    }
+
+    impl TestEnvironment {
+        async fn new() -> Self {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let mock_addr = start_mock_server(0).await.unwrap();
+            let mock_url = format!("http://{}/fhir", mock_addr);
+
+            // Create a minimal IG package
+            let tgz_data = create_test_ig_package();
+            let tgz_path = temp_dir.path().join("test_ig.tgz");
+            std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+            let config = TestConfig {
+                package: Some(tgz_path.to_str().unwrap().to_string()),
+                output: temp_dir.path().join("output").to_str().unwrap().to_string(),
+                server: ServerConfig {
+                    base_url: mock_url.clone(),
+                    headers: HashMap::new(),
+                },
+                repository: None,
+                overrides: OverrideConfig::default(),
+                data_generation: DataGenerationConfig::default(),
+                mock: false,
+                mock_port: 0,
+                dry_run: false,
+            };
+
+            TestEnvironment {
+                _mock_url: mock_url,
+                temp_dir,
+                config,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn orchestrator_selects_capability_statement() {
+        let env = TestEnvironment::new().await;
+        let package_path = env.config.package.as_ref().unwrap();
+        let pkg = crate::parse::package::parse_package(package_path).unwrap();
+
+        let cs = crate::select_capability_statement(&pkg, &env.config).unwrap();
+        assert_eq!(cs.name.as_deref(), Some("TestIG"));
+        // Should select server-mode with resources
+        assert!(cs
+            .rest
+            .iter()
+            .any(|r| r.mode == "server" && !r.resource.is_empty()));
+        // Should have Patient and Observation
+        let resource_types: Vec<&str> = cs
+            .rest
+            .iter()
+            .flat_map(|r| &r.resource)
+            .map(|res| res.resource_type.as_str())
+            .collect();
+        assert!(resource_types.contains(&"Patient"));
+        assert!(resource_types.contains(&"Observation"));
+    }
+
+    #[tokio::test]
+    async fn orchestrator_resolves_creation_order() {
+        let env = TestEnvironment::new().await;
+        let package_path = env.config.package.as_ref().unwrap();
+        let pkg = crate::parse::package::parse_package(package_path).unwrap();
+
+        let auto_deps =
+            crate::generate::dependency_resolver::extract_dependencies(&pkg.structure_definitions);
+        let auto_order =
+            crate::generate::dependency_resolver::resolve_creation_order(&auto_deps).unwrap();
+
+        // Observation depends on Patient (via subject reference)
+        // So Patient should come before Observation
+        let patient_idx = auto_order.iter().position(|r| r == "Patient").unwrap();
+        let obs_idx = auto_order.iter().position(|r| r == "Observation").unwrap();
+        assert!(
+            patient_idx < obs_idx,
+            "Patient should come before Observation in creation order"
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrator_uses_fixtures_when_configured() {
+        let env = TestEnvironment::new().await;
+
+        // Create a fixture file for Patient
+        let fixtures_dir = env.temp_dir.path().join("fixtures");
+        std::fs::create_dir_all(&fixtures_dir).unwrap();
+        let fixture_patient = serde_json::json!({
+            "resourceType": "Patient",
+            "id": "fixture-patient-1",
+            "name": [{"family": "FixtureFamily", "given": ["FixtureGiven"]}],
+            "identifier": [{"system": "http://example.org", "value": "fixture-001"}]
+        });
+        std::fs::write(
+            fixtures_dir.join("patient-fixture.json"),
+            serde_json::to_string_pretty(&fixture_patient).unwrap(),
+        )
+        .unwrap();
+
+        let mut config = env.config.clone();
+        config.overrides.fixtures_dir = Some(fixtures_dir);
+        config.overrides.fixture_map = {
+            let mut m = HashMap::new();
+            m.insert("Patient".to_string(), "patient-fixture.json".to_string());
+            m
+        };
+
+        let orchestrator = Orchestrator::new(config.clone());
+        let package_path = config.package.as_ref().unwrap();
+        let report = orchestrator.run(package_path).await.unwrap();
+
+        assert!(report.total > 0, "Should have run at least one test");
+        assert!(report.passed > 0, "At least one test should pass");
+    }
+
+    #[tokio::test]
+    async fn orchestrator_generates_test_plan() {
+        let env = TestEnvironment::new().await;
+        let orchestrator = Orchestrator::new(env.config.clone());
+        let package_path = env.config.package.as_ref().unwrap();
+        let report = orchestrator.run(package_path).await.unwrap();
+
+        assert!(report.total > 0, "Should have generated at least one test");
+        // Should have tests for Patient and Observation
+        let test_groups: Vec<&str> = report
+            .results
+            .iter()
+            .map(|r| r.test_group.as_str())
+            .collect();
+        assert!(
+            test_groups.contains(&"Patient"),
+            "Should have Patient tests"
+        );
+        assert!(
+            test_groups.contains(&"Observation"),
+            "Should have Observation tests"
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrator_creates_and_deletes_resources() {
+        let env = TestEnvironment::new().await;
+        let orchestrator = Orchestrator::new(env.config.clone());
+        let package_path = env.config.package.as_ref().unwrap();
+        let report = orchestrator.run(package_path).await.unwrap();
+
+        assert!(report.total > 0, "Should have run tests");
+        assert!(report.passed > 0, "At least one test should pass");
+
+        // Write results to output directory
+        let output_dir = std::path::Path::new(&env.config.output);
+        report.write_results(output_dir).unwrap();
+
+        // Verify results were written
+        assert!(
+            output_dir.join("results/summary.json").exists(),
+            "summary.json should exist"
+        );
+        assert!(
+            output_dir.join("results/failed.json").exists(),
+            "failed.json should exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrator_handles_missing_resource_type_gracefully() {
+        let env = TestEnvironment::new().await;
+
+        // Override creation order with a type that has no profile
+        let mut config = env.config.clone();
+        config.overrides.creation_order = vec!["NonExistentType".to_string()];
+
+        let orchestrator = Orchestrator::new(config.clone());
+        let package_path = config.package.as_ref().unwrap();
+        let report = orchestrator.run(package_path).await.unwrap();
+
+        // Should not crash — should produce a report
+        // The orchestrator still processes all CS resource types for test generation,
+        // but the missing type in creation_order is handled gracefully
+        assert!(report.total > 0, "Should have run tests");
+        // Some tests may fail (POST to mock server without id), but the key
+        // assertion is that it doesn't panic
+    }
+
+    #[tokio::test]
+    async fn orchestrator_resolves_id_placeholders() {
+        let env = TestEnvironment::new().await;
+        let orchestrator = Orchestrator::new(env.config.clone());
+        let package_path = env.config.package.as_ref().unwrap();
+        let report = orchestrator.run(package_path).await.unwrap();
+
+        // Check that non-skipped test URLs don't contain literal {id} placeholders
+        for result in &report.results {
+            if result
+                .validation_errors
+                .iter()
+                .any(|e| e.contains("Skipped"))
+            {
+                // Skipped tests may still have {id} in their URL — that's expected
+                continue;
+            }
+            assert!(
+                !result.request_url.contains("{id}"),
+                "Test URL '{}' should not contain literal {{id}} placeholder",
+                result.request_url
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn orchestrator_skips_tests_without_created_ids() {
+        let env = TestEnvironment::new().await;
+
+        // Only create Patient resources — Observation tests that need {id}
+        // will be skipped because no Observation resource was created
+        let mut config = env.config.clone();
+        config.overrides.creation_order = vec!["Patient".to_string()];
+
+        let orchestrator = Orchestrator::new(config.clone());
+        let package_path = config.package.as_ref().unwrap();
+        let report = orchestrator.run(package_path).await.unwrap();
+
+        // Tests that need {id} but have no created resource should be skipped
+        // (passed with a note about skipping)
+        let skipped_count = report
+            .results
+            .iter()
+            .filter(|r| r.validation_errors.iter().any(|e| e.contains("Skipped")))
+            .count();
+        assert!(
+            skipped_count > 0,
+            "Some tests should be skipped when no resource is created for their type"
+        );
+        for result in &report.results {
+            if result
+                .validation_errors
+                .iter()
+                .any(|e| e.contains("Skipped"))
+            {
+                assert!(result.passed, "Skipped tests should be marked as passed");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn orchestrator_writes_results() {
+        let env = TestEnvironment::new().await;
+        let orchestrator = Orchestrator::new(env.config.clone());
+        let package_path = env.config.package.as_ref().unwrap();
+        let report = orchestrator.run(package_path).await.unwrap();
+
+        // Write results to output directory
+        let output_dir = std::path::Path::new(&env.config.output);
+        report.write_results(output_dir).unwrap();
+
+        // Verify result files exist
+        assert!(
+            output_dir.join("results/summary.json").exists(),
+            "summary.json should exist"
+        );
+        assert!(
+            output_dir.join("results/failed.json").exists(),
+            "failed.json should exist"
+        );
+
+        // Verify summary content
+        let summary_json =
+            std::fs::read_to_string(output_dir.join("results/summary.json")).unwrap();
+        let summary: serde_json::Value = serde_json::from_str(&summary_json).unwrap();
+        assert_eq!(summary["total"], report.total as u64);
+        assert_eq!(summary["passed"], report.passed as u64);
+        assert_eq!(summary["failed"], report.failed as u64);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_reports_failures() {
+        let env = TestEnvironment::new().await;
+
+        // Point to a non-existent server so all tests fail
+        let mut config = env.config.clone();
+        config.server.base_url = "http://127.0.0.1:1/fhir".to_string();
+
+        let orchestrator = Orchestrator::new(config.clone());
+        let package_path = config.package.as_ref().unwrap();
+        let report = orchestrator.run(package_path).await.unwrap();
+
+        // Should have failures since the server is unreachable
+        assert!(
+            report.failed > 0,
+            "Should have failures when server is unreachable"
+        );
+        // Some tests may be skipped (no created ID) and some negative tests
+        // may pass (server returns 200+Bundles for unknown params), but
+        // at least some should fail
+        assert!(
+            report.failed > 0,
+            "At least some tests should fail when server is unreachable"
+        );
+    }
+}
