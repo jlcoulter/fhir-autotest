@@ -4,7 +4,7 @@ use crate::model::*;
 use std::collections::HashMap;
 
 /// Build a ResponseAssertion appropriate for the test case kind.
-pub fn assertion_for_kind(kind: &TestCaseKind, _resource_type: &str) -> Option<ResponseAssertion> {
+pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<ResponseAssertion> {
     match kind {
         // CRUD interactions: expect a single resource, not a Bundle
         TestCaseKind::Interaction => None,
@@ -60,13 +60,22 @@ pub fn assertion_for_kind(kind: &TestCaseKind, _resource_type: &str) -> Option<R
         }),
 
         // _summary: expect Bundle searchset, resources should lack text field
+        // but still include id, meta, and resourceType
         TestCaseKind::ResultParam { param } => match param.as_str() {
-            "_summary" => Some(ResponseAssertion {
-                bundle_type: Some("searchset".to_string()),
-                min_entries: Some(0),
-                absent_fields: vec!["text".to_string()],
-                ..ResponseAssertion::none()
-            }),
+            "_summary" => {
+                let mut required = HashMap::new();
+                required.insert(
+                    resource_type.to_string(),
+                    vec!["id".to_string(), "meta".to_string()],
+                );
+                Some(ResponseAssertion {
+                    bundle_type: Some("searchset".to_string()),
+                    min_entries: Some(0),
+                    absent_fields: vec!["text".to_string()],
+                    required_fields: required,
+                    ..ResponseAssertion::none()
+                })
+            }
             "_count" => Some(ResponseAssertion {
                 bundle_type: Some("searchset".to_string()),
                 max_entries: Some(1), // we request _count=1
