@@ -179,6 +179,11 @@ pub fn apply_hcpd_bulk_fixes(
             // Fix suppressedBy extension coding — the HCPD profile requires a code
             // from the responsible-party-type ValueSet, not NullFlavor.
             fix_suppressed_by_coding(resource, value_set_systems, code_system_codes);
+
+            // Fix serviceProvisionCode — the profile-aware generator uses code
+            // "unknown" which doesn't exist in the HCPD service-provision CodeSystem.
+            // Replace with the first valid code from the CodeSystem.
+            fix_service_provision_code(resource, code_system_codes);
         }
         "Location" => {
             resource["type"] = serde_json::json!([
@@ -297,6 +302,45 @@ fn fix_suppressed_by_coding(
                     }],
                     "text": display
                 });
+            }
+        }
+    }
+}
+
+/// Fix `serviceProvisionCode` on a HealthcareService resource.
+///
+/// The profile-aware generator uses code "unknown" which doesn't exist in the
+/// HCPD service-provision CodeSystem. Replace it with the first valid code
+/// from the CodeSystem, falling back to a hardcoded valid code if the map
+/// doesn't contain the system.
+fn fix_service_provision_code(
+    resource: &mut serde_json::Value,
+    code_system_codes: &HashMap<String, (String, Option<String>)>,
+) {
+    let system = "http://digitalhealth.gov.au/fhir/hcpd/CodeSystem/service-provision-cs";
+    let (code, display_str) = code_system_codes
+        .get(system)
+        .map(|(c, d)| {
+            let code: &str = c.as_str();
+            let display: &str = d.as_deref().unwrap_or(c.as_str());
+            (code.to_string(), display.to_string())
+        })
+        .unwrap_or(("inperson".to_string(), "In person".to_string()));
+
+    let Some(spc) = resource
+        .get_mut("serviceProvisionCode")
+        .and_then(|v| v.as_array_mut())
+    else {
+        return;
+    };
+    for entry in spc.iter_mut() {
+        let Some(codings) = entry.get_mut("coding").and_then(|c| c.as_array_mut()) else {
+            continue;
+        };
+        for coding in codings.iter_mut() {
+            if coding.get("code").and_then(|c| c.as_str()) == Some("unknown") {
+                coding["code"] = serde_json::Value::String(code.clone());
+                coding["display"] = serde_json::Value::String(display_str.clone());
             }
         }
     }
