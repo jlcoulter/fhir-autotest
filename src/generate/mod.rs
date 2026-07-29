@@ -4,6 +4,7 @@ pub mod dependency_resolver;
 pub mod model;
 pub mod planner;
 pub mod resource_generator;
+pub mod value_resolver;
 
 pub use bulk_data::*;
 pub use conformance::*;

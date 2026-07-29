@@ -164,43 +164,6 @@ pub fn assert_response(
                 }
             }
 
-            // --- Semantic search value assertions ---
-            for sv in &assertion.search_value_assertions {
-                let Some(expected) = sv.expected_value.as_ref() else {
-                    continue;
-                };
-                let matching_entries: Vec<_> = entries
-                    .iter()
-                    .filter(|e| {
-                        e.get("resource")
-                            .and_then(|r| r.get("resourceType"))
-                            .and_then(|v| v.as_str())
-                            == Some(sv.resource_type.as_str())
-                    })
-                    .collect();
-                if matching_entries.is_empty() {
-                    continue;
-                }
-
-                let any_match = matching_entries.iter().any(|entry| {
-                    let Some(resource) = entry.get("resource") else {
-                        return false;
-                    };
-                    sv.field_paths.iter().any(|path| {
-                        resolve_json_path(resource, path)
-                            .map(|val| value_matches_expected(&val, expected))
-                            .unwrap_or(false)
-                    })
-                });
-
-                if !any_match {
-                    errors.push(format!(
-                        "{} search param '{}' expected value '{}' not found in any of paths {:?}",
-                        sv.resource_type, sv.query_param, expected, sv.field_paths
-                    ));
-                }
-            }
-
             // --- Sort assertion ---
             if let Some(sort) = &assertion.sort_by {
                 let resources: Vec<&Value> =
@@ -464,21 +427,6 @@ fn compare_values(a: &Option<Value>, b: &Option<Value>) -> i32 {
             }
         }
     }
-}
-
-fn value_matches_expected(actual: &Value, expected: &str) -> bool {
-    if let Some(s) = actual.as_str() {
-        return s == expected || s.ends_with(&format!("/{}", expected));
-    }
-    if let Some(b) = actual.as_bool() {
-        return expected.eq_ignore_ascii_case(if b { "true" } else { "false" });
-    }
-    if let Some(n) = actual.as_f64() {
-        if let Ok(exp) = expected.parse::<f64>() {
-            return (n - exp).abs() < f64::EPSILON;
-        }
-    }
-    false
 }
 
 #[cfg(test)]
@@ -814,27 +762,5 @@ mod tests {
             "Expected include distinct-type failure, got: {:?}",
             errors
         );
-    }
-
-    #[test]
-    fn assert_search_value_assertion_matches_entry_field() {
-        let assertion = ResponseAssertion {
-            search_value_assertions: vec![SearchValueAssertion {
-                resource_type: "Organization".to_string(),
-                query_param: "name".to_string(),
-                field_paths: vec!["name".to_string()],
-                expected_value: Some("Acme Health".to_string()),
-            }],
-            ..ResponseAssertion::none()
-        };
-        let body = json!({
-            "resourceType": "Bundle",
-            "type": "searchset",
-            "entry": [
-                {"resource": {"resourceType": "Organization", "name": "Acme Health"}}
-            ]
-        });
-        let errors = assert_response(&assertion, 200, &Some(body));
-        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
     }
 }

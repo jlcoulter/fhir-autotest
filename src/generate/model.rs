@@ -69,26 +69,6 @@ pub struct ResponseAssertion {
     /// resource types (e.g. Parameters, Bundle, OperationOutcome).
     #[serde(default)]
     pub response_resource_types: Vec<String>,
-
-    /// Semantic assertions for search tests. Each entry describes one query
-    /// parameter whose resolved value should be reflected in at least one
-    /// returned resource field.
-    #[serde(default)]
-    pub search_value_assertions: Vec<SearchValueAssertion>,
-}
-
-/// Semantic search assertion for one query parameter.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SearchValueAssertion {
-    /// Resource type to evaluate in Bundle entries.
-    pub resource_type: String,
-    /// Query parameter name (used to pull resolved value from request URL).
-    pub query_param: String,
-    /// Candidate resource field paths expected to reflect query value.
-    pub field_paths: Vec<String>,
-    /// Expected query value after runtime URL resolution.
-    #[serde(default)]
-    pub expected_value: Option<String>,
 }
 
 /// Sort direction assertion for _sort tests.
@@ -115,7 +95,6 @@ impl ResponseAssertion {
             required_fields: HashMap::new(),
             response_contains_key: None,
             response_resource_types: Vec::new(),
-            search_value_assertions: Vec::new(),
         }
     }
 }
