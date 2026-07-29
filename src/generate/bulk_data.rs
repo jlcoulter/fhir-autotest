@@ -811,6 +811,19 @@ fn overlay_cross_references(
                     serde_json::json!([{ "reference": ref_str }]),
                 );
             }
+            // Replace coverageArea references — the profile-aware generator
+            // extracts the resource type from the target profile URL, but
+            // profile names like "hcpd-service-coverage-area" are not valid
+            // FHIR resource types. coverageArea should reference Location.
+            if !loc_ids.is_empty() {
+                let ref_str = random_ref("Location", loc_ids, rng);
+                obj.insert(
+                    "coverageArea".to_string(),
+                    serde_json::json!([{ "reference": ref_str }]),
+                );
+            } else {
+                obj.remove("coverageArea");
+            }
         }
         "Endpoint" if !org_ids.is_empty() => {
             let ref_str = random_ref("Organization", org_ids, rng);
