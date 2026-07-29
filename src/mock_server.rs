@@ -11,6 +11,20 @@ use std::sync::{Arc, Mutex};
 
 type MockStore = Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>;
 
+/// Stamp FHIR meta fields (versionId, lastUpdated) on a resource.
+fn stamp_meta(body: &mut serde_json::Value) {
+    if body.get("meta").is_none() {
+        body["meta"] = serde_json::json!({});
+    }
+    let meta = body.get_mut("meta").unwrap();
+    if meta.get("versionId").is_none() {
+        meta["versionId"] = serde_json::Value::String("1".to_string());
+    }
+    if meta.get("lastUpdated").is_none() {
+        meta["lastUpdated"] = serde_json::Value::String(chrono::Utc::now().to_rfc3339());
+    }
+}
+
 async fn create_resource(
     State(store): State<MockStore>,
     Path(rtype): Path<String>,
@@ -18,6 +32,7 @@ async fn create_resource(
 ) -> (StatusCode, Json<serde_json::Value>) {
     let id = uuid::Uuid::new_v4().to_string();
     body["id"] = serde_json::Value::String(id.clone());
+    stamp_meta(&mut body);
     let mut store = store.lock().unwrap();
     store.entry(rtype.clone()).or_default().push(body.clone());
     (StatusCode::CREATED, Json(body))
@@ -51,6 +66,14 @@ struct SearchParams {
     _count: Option<u32>,
     #[serde(default)]
     _summary: Option<String>,
+    #[serde(default)]
+    _sort: Option<String>,
+    #[serde(default)]
+    _include: Option<String>,
+    #[serde(default)]
+    _revinclude: Option<String>,
+    #[serde(default)]
+    _elements: Option<String>,
     // Accept any other params without erroring
     #[serde(flatten)]
     _rest: HashMap<String, String>,
@@ -84,13 +107,68 @@ async fn search_resources(
         });
     }
 
-    // Apply _count
-    let total = resources.len();
+    // Apply _sort
+    if let Some(sort_param) = params._sort.as_deref() {
+        let ascending = !sort_param.starts_with('-');
+        let field = sort_param.trim_start_matches('-');
+        resources.sort_by(|a, b| {
+            let a_val = a.get(field).and_then(|v| v.as_str()).unwrap_or("");
+            let b_val = b.get(field).and_then(|v| v.as_str()).unwrap_or("");
+            if ascending {
+                a_val.cmp(b_val)
+            } else {
+                b_val.cmp(a_val)
+            }
+        });
+    }
+
+    // Apply _summary
+    if params._summary.as_deref() == Some("true") {
+        resources = resources
+            .into_iter()
+            .map(|r| {
+                let summary = serde_json::json!({
+                    "resourceType": r["resourceType"],
+                    "id": r["id"],
+                    "meta": r["meta"],
+                });
+                // Preserve any fields explicitly marked as summary elements
+                // For now, keep id, meta, resourceType as per FHIR _summary=true
+                summary
+            })
+            .collect();
+    }
+
+    // Apply _elements
+    if let Some(elements_str) = params._elements.as_deref() {
+        let elements: Vec<&str> = elements_str.split(',').map(|s| s.trim()).collect();
+        if !elements.is_empty() {
+            resources = resources
+                .into_iter()
+                .map(|r| {
+                    let mut filtered = serde_json::json!({
+                        "resourceType": r["resourceType"],
+                        "id": r["id"],
+                    });
+                    for elem in &elements {
+                        if let Some(val) = r.get(*elem) {
+                            filtered[elem] = val.clone();
+                        }
+                    }
+                    filtered
+                })
+                .collect();
+        }
+    }
+
+    // Apply _count (save total before truncation)
+    let total_before_count = resources.len();
     if let Some(count) = params._count {
         resources.truncate(count as usize);
     }
 
-    let entries: Vec<serde_json::Value> = resources
+    // Build entries
+    let mut entries: Vec<serde_json::Value> = resources
         .iter()
         .map(|r| {
             serde_json::json!({
@@ -100,12 +178,81 @@ async fn search_resources(
         })
         .collect();
 
+    // Handle _include: include referenced resources in the same Bundle
+    if let Some(include_param) = params._include.as_deref() {
+        // Format: ResourceType:search-parameter or ResourceType:search-parameter:targetType
+        let parts: Vec<&str> = include_param.split(':').collect();
+        if parts.len() >= 2 {
+            let search_param = parts[1];
+            // Collect referenced resource IDs from the matching resources
+            let mut included_resources = Vec::new();
+            for r in &resources {
+                if let Some(refs) = r.get(search_param).and_then(|v| v.as_array()) {
+                    for reference in refs {
+                        if let Some(ref_str) = reference.get("reference").and_then(|v| v.as_str()) {
+                            // Parse "ResourceType/id" from the reference
+                            if let Some((ref_type, ref_id)) = ref_str.split_once('/') {
+                                if let Some(ref_resources) = store.get(ref_type) {
+                                    if let Some(found) = ref_resources.iter().find(|rr| {
+                                        rr.get("id").and_then(|v| v.as_str()) == Some(ref_id)
+                                    }) {
+                                        included_resources.push(serde_json::json!({
+                                            "resource": found,
+                                            "fullUrl": format!("http://localhost/fhir/{}/{}", ref_type, ref_id)
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            entries.extend(included_resources);
+        }
+    }
+
+    // Handle _revinclude: include resources that reference the matched resources
+    if let Some(revinclude_param) = params._revinclude.as_deref() {
+        // Format: SourceType:search-parameter
+        let parts: Vec<&str> = revinclude_param.split(':').collect();
+        if parts.len() >= 2 {
+            let source_type = parts[0];
+            let search_param = parts[1];
+            if let Some(source_resources) = store.get(source_type) {
+                let mut rev_included = Vec::new();
+                for r in &resources {
+                    let rid = r.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    for source in source_resources {
+                        if let Some(refs) = source.get(search_param).and_then(|v| v.as_array()) {
+                            for reference in refs {
+                                if let Some(ref_str) =
+                                    reference.get("reference").and_then(|v| v.as_str())
+                                {
+                                    if ref_str == format!("{}/{}", rtype, rid) {
+                                        let sid =
+                                            source.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                        rev_included.push(serde_json::json!({
+                                            "resource": source,
+                                            "fullUrl": format!("http://localhost/fhir/{}/{}", source_type, sid)
+                                        }));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                entries.extend(rev_included);
+            }
+        }
+    }
+
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "resourceType": "Bundle",
             "type": "searchset",
-            "total": total,
+            "total": total_before_count,
             "entry": entries
         })),
     )
@@ -224,6 +371,7 @@ async fn update_resource(
     Json(mut body): Json<serde_json::Value>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     body["id"] = serde_json::Value::String(id.clone());
+    stamp_meta(&mut body);
     let mut store = store.lock().unwrap();
     let resources = store.entry(rtype.clone()).or_default();
     if let Some(idx) = resources
