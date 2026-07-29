@@ -46,8 +46,14 @@ pub fn build_code_system_first_code_map(
                     .and_then(|c| c.as_array())
                     .and_then(|a| a.first());
                 if let Some(concept) = first_concept {
-                    let code = concept.get("code").and_then(|c| c.as_str()).map(|s| s.to_string());
-                    let display = concept.get("display").and_then(|d| d.as_str()).map(|s| s.to_string());
+                    let code = concept
+                        .get("code")
+                        .and_then(|c| c.as_str())
+                        .map(|s| s.to_string());
+                    let display = concept
+                        .get("display")
+                        .and_then(|d| d.as_str())
+                        .map(|s| s.to_string());
                     if let Some(code) = code {
                         map.insert(url.to_string(), (code, display));
                     }
@@ -1400,12 +1406,15 @@ fn populate_extension_slices(
                     if vt == "CodeableConcept" {
                         let sub_name = sub_slice.slice_name.as_deref().unwrap_or("");
                         let slice_name_str = slice.slice_name.as_deref().unwrap_or("");
-                        let fixed_coding = elements.iter().find(|e| {
-                            e.id.contains(&format!(":{}", slice_name_str))
-                                && e.id.contains(&format!(":{}", sub_name))
-                                && (e.id.ends_with(".value[x].coding")
-                                    || e.path.ends_with("value[x].coding"))
-                        }).and_then(|e| e.fixed_coding.as_ref().or(e.pattern_coding.as_ref()));
+                        let fixed_coding = elements
+                            .iter()
+                            .find(|e| {
+                                e.id.contains(&format!(":{}", slice_name_str))
+                                    && e.id.contains(&format!(":{}", sub_name))
+                                    && (e.id.ends_with(".value[x].coding")
+                                        || e.path.ends_with("value[x].coding"))
+                            })
+                            .and_then(|e| e.fixed_coding.as_ref().or(e.pattern_coding.as_ref()));
 
                         if let Some(coding) = fixed_coding {
                             value = serde_json::json!({

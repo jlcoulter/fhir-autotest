@@ -154,11 +154,7 @@ impl RunReport {
 
         // Write failed.json — all failing tests across every group in one file,
         // ordered by group then test name, for easy review.
-        let failed_results: Vec<&TestResult> = self
-            .results
-            .iter()
-            .filter(|r| !r.passed)
-            .collect();
+        let failed_results: Vec<&TestResult> = self.results.iter().filter(|r| !r.passed).collect();
         let failed_path = results_dir.join("failed.json");
         let json = serde_json::to_string_pretty(&failed_results)?;
         std::fs::write(&failed_path, json)?;
@@ -273,7 +269,10 @@ impl Orchestrator {
                 output_path,
             )?;
             if !supplement_ids.is_empty() {
-                println!("  Generated {} supplement resource type(s):", supplement_ids.len());
+                println!(
+                    "  Generated {} supplement resource type(s):",
+                    supplement_ids.len()
+                );
                 for rt in supplement_ids.keys() {
                     println!("    {}: {}-1", rt, rt.to_lowercase());
                 }
@@ -282,7 +281,10 @@ impl Orchestrator {
             // Merge supplement IDs so update.ndjson includes them too.
             let mut all_ids = generated_ids;
             for (rt, ids) in supplement_ids.iter() {
-                all_ids.entry(rt.clone()).or_default().extend(ids.iter().cloned());
+                all_ids
+                    .entry(rt.clone())
+                    .or_default()
+                    .extend(ids.iter().cloned());
             }
 
             // Generate update.ndjson with the same resources but 1-2
@@ -298,9 +300,9 @@ impl Orchestrator {
                 // Pre-upload required R5 extension StructureDefinitions if the IG
                 // references them. These are only needed for HCPD (which uses R5 extension
                 // profile URIs as slicing discriminators on Practitioner.extension).
-                let needs_r5_profiles = profile_urls.values().any(|url| {
-                    url.contains("digitalhealth.gov.au") || url.contains("/hcpd/")
-                });
+                let needs_r5_profiles = profile_urls
+                    .values()
+                    .any(|url| url.contains("digitalhealth.gov.au") || url.contains("/hcpd/"));
                 if needs_r5_profiles {
                     println!("\n── Ensuring R5 extension profiles are available ──");
                     ensure_r5_extension_profiles(&write_endpoint).await?;
@@ -319,13 +321,9 @@ impl Orchestrator {
                     "\n── Uploading bulk data to {} ({}) ──",
                     write_url, upload_method
                 );
-                let uploaded_ids = upload_ndjson_files(
-                    &data_dir,
-                    &upload_order,
-                    &write_endpoint,
-                    concurrency,
-                )
-                .await?;
+                let uploaded_ids =
+                    upload_ndjson_files(&data_dir, &upload_order, &write_endpoint, concurrency)
+                        .await?;
 
                 bulk_ids = uploaded_ids;
                 println!("  Bulk data upload complete");
@@ -533,6 +531,12 @@ impl Orchestrator {
 
                 // Populate response assertion field_values from created resources
                 if let Some(ref mut assertion) = test.validation.response_assertion {
+                    for search_assertion in &mut assertion.search_value_assertions {
+                        if search_assertion.expected_value.is_none() {
+                            search_assertion.expected_value =
+                                query_param_value(&test.request.url, &search_assertion.query_param);
+                        }
+                    }
                     if let Some(fields) = resource_field_values.get(&test.resource_type) {
                         let mut type_fields: HashMap<String, serde_json::Value> = HashMap::new();
                         for (path, value) in fields.iter() {
@@ -616,13 +620,7 @@ impl Orchestrator {
                 "\n── Cleanup: bulk-deleting resources from {} ──",
                 write_url
             );
-            delete_all_resources(
-                &bulk_ids,
-                &creation_order,
-                &write_endpoint,
-                concurrency,
-            )
-            .await?;
+            delete_all_resources(&bulk_ids, &creation_order, &write_endpoint, concurrency).await?;
             println!("  Bulk deletion complete");
         } else {
             // Delete individual setup resources in reverse order
@@ -755,4 +753,15 @@ fn resolve_url_params(
     }
 
     result
+}
+
+fn query_param_value(url: &str, key: &str) -> Option<String> {
+    let (_path, query) = url.split_once('?')?;
+    for pair in query.split('&') {
+        let (k, v) = pair.split_once('=')?;
+        if k == key {
+            return Some(v.to_string());
+        }
+    }
+    None
 }

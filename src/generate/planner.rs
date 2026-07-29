@@ -524,7 +524,14 @@ fn build_search_single_test(
     profile_url: &Option<String>,
 ) -> TestCase {
     let value = sample_value(param_type);
-    let url = format!("/{resource_type}?{param_name}={value}");
+    let url = format!("/{resource_type}?{param_name}={value}&_id={{id}}");
+
+    let search_value_assertions = vec![SearchValueAssertion {
+        resource_type: resource_type.to_string(),
+        query_param: param_name.to_string(),
+        field_paths: search_param_assertion_paths(resource_type, param_name, param_type),
+        expected_value: None,
+    }];
 
     TestCase {
         name: format!(
@@ -550,7 +557,12 @@ fn build_search_single_test(
             profile_url: None,
             required_elements: Vec::new(),
             forbidden_elements: Vec::new(),
-            response_assertion: None,
+            response_assertion: Some(ResponseAssertion {
+                bundle_type: Some("searchset".to_string()),
+                min_entries: Some(0),
+                search_value_assertions,
+                ..ResponseAssertion::none()
+            }),
         },
     }
 }
@@ -794,6 +806,11 @@ fn build_include_test(
     if let Some(include_type) = expected_include_type {
         include_types.insert(include_type, param_name.to_string());
     }
+    let include_requires_distinct_from = if include_types.is_empty() {
+        Some(resource_type.to_string())
+    } else {
+        None
+    };
 
     TestCase {
         name: format!(
@@ -824,6 +841,7 @@ fn build_include_test(
                 bundle_type: Some("searchset".to_string()),
                 min_entries: Some(0),
                 include_types,
+                include_requires_distinct_from,
                 ..ResponseAssertion::none()
             }),
         },
@@ -977,7 +995,8 @@ fn build_operation_test(
         .unwrap_or(false)
     {
         assertion.response_contains_key = Some("parameter".to_string());
-        assertion.response_resource_types = vec!["Parameters".to_string(), "OperationOutcome".to_string()];
+        assertion.response_resource_types =
+            vec!["Parameters".to_string(), "OperationOutcome".to_string()];
     }
 
     TestCase {
@@ -1060,6 +1079,32 @@ fn infer_reference_target(param_name: &str) -> Option<String> {
         "specimen" => Some("Specimen".to_string()),
         _ => None,
     }
+}
+
+fn search_param_assertion_paths(
+    _resource_type: &str,
+    param_name: &str,
+    param_type: &str,
+) -> Vec<String> {
+    match param_name {
+        "name" => vec!["name.family".to_string(), "name.given".to_string()],
+        "identifier" => vec!["identifier.value".to_string()],
+        "active" => vec!["active".to_string()],
+        "status" => vec!["status".to_string()],
+        "birthdate" => vec!["birthDate".to_string()],
+        "gender" => vec!["gender".to_string()],
+        "target" => vec!["target.reference".to_string()],
+        "organization" => vec!["organization.reference".to_string()],
+        "location" => vec!["location.reference".to_string()],
+        "endpoint" => vec!["endpoint.reference".to_string()],
+        "_id" => vec!["id".to_string()],
+        _ => match param_type {
+            "reference" => vec![format!("{}.reference", param_name)],
+            _ => vec![param_name.to_string()],
+        },
+    }
+    .into_iter()
+    .collect()
 }
 
 #[cfg(test)]
@@ -1447,8 +1492,11 @@ mod tests {
         );
         let near_test = near_test.unwrap();
         assert!(
-            near_test.request.url.contains("near=0.0|0.0"),
-            "Near test URL should contain coordinate format, got {}",
+            near_test
+                .request
+                .url
+                .contains("near=-25.0%7C133.0%7C3000%7Ckm"),
+            "Near test URL should contain encoded near coordinate format, got {}",
             near_test.request.url
         );
         assert!(

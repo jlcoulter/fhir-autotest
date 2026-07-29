@@ -96,8 +96,8 @@ These tests verify that the server actually meets the obligations it declares in
 | **CapabilityStatement validation** | CS has required fields (`status`, server-mode `rest`, resource `type`, search param `name`/`type`) | CS missing `status` → error; resource entry without `type` → error |
 | **MustSupport field presence** | Fields marked `mustSupport=true` in declared profiles appear in search responses | `Patient.name` is mustSupport → `GET /Patient?_count=10` must return entries containing `name` |
 | **Cardinality enforcement** | `min` and `max` constraints from profile ElementDefinitions are respected | `Patient.name` has min=1 → responses must include `name`; `Patient.birthDate` has max=1 → responses must not have multiple `birthDate` |
-| **Undeclared interaction rejection** | Interactions NOT in the CS are properly rejected (non-2xx status + OperationOutcome) | CS declares only `read` and `search-type` for Patient → `POST /Patient` (create) must be rejected |
-| **Undeclared search param rejection** | Search parameters NOT in the CS are properly rejected | `GET /Patient?__invalid_conformance_test__=value` must return an error |
+| **Undeclared interaction rejection** | Interactions NOT in the CS are rejected (non-2xx expected) | CS declares only `read` and `search-type` for Patient → `POST /Patient` (create) must be rejected |
+| **Undeclared search param handling** | Search parameters NOT in the CS are either rejected OR ignored by the server | `GET /Patient?__invalid_conformance_test__=value` may return `4xx/5xx` or `200 Bundle` |
 
 **How profile matching works:**
 
@@ -105,7 +105,7 @@ These tests verify that the server actually meets the obligations it declares in
 2. If the CS references `supportedProfile` URLs, use those
 3. Otherwise, fall back to any StructureDefinition whose `base_type` matches the resource type
 
-**Negative conformance tests** use `expected_status: 0` as a sentinel meaning "any non-2xx status is a pass." The test also checks for an `OperationOutcome` with severity `error` in the response body.
+**Negative conformance tests** use `expected_status: 0` as a sentinel meaning "expect non-2xx." For undeclared search parameters, the harness also accepts `200` with a `Bundle` (server ignored unknown param), which is allowed by FHIR behavior.
 
 ### Response Assertions
 
@@ -120,6 +120,20 @@ Every test case carries a `ResponseAssertion` that validates the server response
 - **Sort order**: `_sort` results are ordered by the specified field
 - **Absent fields**: `_summary=true` strips `text` div
 - **OperationOutcome**: negative tests verify severity `"error"`
+
+### What A Passing Run Means (And Does Not Mean)
+
+A full pass means the server satisfied the rules in this harness for this dataset and CapabilityStatement.
+It does **not** prove complete FHIR conformance in the formal certification sense.
+
+Known limitations of strictness:
+
+- **Undeclared search params are permissive**: `200 + Bundle` can pass (treated as "ignored unknown param").
+- **Some conformance checks allow empty search results**: MustSupport/cardinality checks use `min_entries = 0`, so they validate entries when present but do not fail solely for no matches.
+- **Include/revinclude checks are type-presence focused**: they verify expected included types appear, not full join provenance for every primary hit.
+- **Semantic search checks are existential**: they require at least one matching entry/path, not universal match across every returned entry.
+
+Use this tool as high-signal interoperability testing, and complement it with stricter profile validation and certification-aligned test suites when required.
 
 At runtime, the orchestrator resolves sentinel search values (e.g. `Patient/test-id` → `Patient/actual-id`, `?name=test-value` → `?name=GeneratedFamily`) using field values extracted from generated resources.
 
@@ -290,10 +304,11 @@ counts.HealthcareService = 100_000
 
 Key features:
 
-- **Cross-references**: PractitionerRole references Practitioner and Organization; HealthcareService references Organization and Location. All IDs are pre-allocated so references resolve correctly.
+- **Cross-references**: PractitionerRole references Practitioner/Organization/Location/HealthcareService/Endpoint; HealthcareService references Organization/Location/Endpoint; Location references Organization/Endpoint.
 - **Realistic data**: Names, addresses, NPIs, specialties, and coordinates are generated using the `fake` crate.
 - **Coordinate coverage**: Locations are spread across 20 US cities with lat/lon jitter, enabling `near` search tests.
-- **Dependency order**: Resources are created in the correct order (Organization/Location first, then Practitioner, then PractitionerRole/HealthcareService) and deleted in reverse.
+- **Dependency order**: Resources are created in dependency-safe order (Organization → Practitioner → Endpoint → Location → HealthcareService → PractitionerRole → Provenance) and deleted in reverse.
+- **Revinclude seeding**: Provenance targets are seeded to cover `*-1` resources for Organization, Practitioner, Location, HealthcareService, and PractitionerRole, then randomized across remaining IDs.
 - **Concurrent uploads**: 20 parallel requests during upload and deletion for throughput.
 
 When `data_generation.counts` is set, the single-resource setup phase is skipped — only bulk data is used.

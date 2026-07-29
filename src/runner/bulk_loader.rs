@@ -151,11 +151,7 @@ pub async fn ensure_r5_extension_profiles(write_endpoint: &WriteEndpoint) -> Res
                 println!("  Uploaded R5 profile: {}", canonical_url);
             }
             Ok(r) => {
-                tracing::warn!(
-                    "Failed to upload R5 profile {} (HTTP {})",
-                    id,
-                    r.status()
-                );
+                tracing::warn!("Failed to upload R5 profile {} (HTTP {})", id, r.status());
             }
             Err(e) => {
                 tracing::warn!("Error uploading R5 profile {}: {}", id, e);
@@ -209,9 +205,21 @@ pub async fn upload_supplement_resources(
         // Some CapabilityStatements list types like Extension or Identifier which
         // are structural types, not top-level FHIR resources.
         const NON_RESOURCE_TYPES: &[&str] = &[
-            "Extension", "Identifier", "Coding", "CodeableConcept", "Address",
-            "HumanName", "ContactPoint", "Period", "Quantity", "Range",
-            "Ratio", "Attachment", "Annotation", "Signature", "Timing",
+            "Extension",
+            "Identifier",
+            "Coding",
+            "CodeableConcept",
+            "Address",
+            "HumanName",
+            "ContactPoint",
+            "Period",
+            "Quantity",
+            "Range",
+            "Ratio",
+            "Attachment",
+            "Annotation",
+            "Signature",
+            "Timing",
         ];
         if NON_RESOURCE_TYPES.contains(&resource_type.as_str()) {
             continue;
@@ -227,7 +235,11 @@ pub async fn upload_supplement_resources(
         ) {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!("Could not generate supplement resource for {}: {}", resource_type, e);
+                tracing::warn!(
+                    "Could not generate supplement resource for {}: {}",
+                    resource_type,
+                    e
+                );
                 continue;
             }
         };

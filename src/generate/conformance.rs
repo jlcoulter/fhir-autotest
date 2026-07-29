@@ -288,10 +288,13 @@ pub fn generate_conformance_tests(
 
             for (code, method) in &all_interactions {
                 if !declared_interactions.contains(*code) {
-                    let url = if *code == "create" {
-                        format!("/{}", resource.resource_type)
-                    } else {
-                        format!("/{}/{{id}}", resource.resource_type)
+                    let url = match *code {
+                        "create" => format!("/{}", resource.resource_type),
+                        "vread" => format!("/{}/{{id}}/_history/1", resource.resource_type),
+                        "history-instance" => {
+                            format!("/{}/{{id}}/_history", resource.resource_type)
+                        }
+                        _ => format!("/{}/{{id}}", resource.resource_type),
                     };
 
                     tests.push(ConformanceTest {
