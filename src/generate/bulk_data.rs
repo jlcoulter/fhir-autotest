@@ -1113,8 +1113,67 @@ fn overlay_cross_references(
                 serde_json::json!({ "reference": ref_str }),
             );
         }
+        "Provenance" => {
+            let target_ref = first_available_ref(org_ids, prac_ids, loc_ids, hs_ids, rng);
+
+            if let Some(ref_str) = target_ref.as_deref() {
+                obj.insert(
+                    "target".to_string(),
+                    serde_json::json!([{ "reference": ref_str }]),
+                );
+            }
+
+            if !org_ids.is_empty() {
+                obj.insert(
+                    "agent".to_string(),
+                    serde_json::json!([
+                        {
+                            "who": {
+                                "reference": random_ref("Organization", org_ids, rng)
+                            }
+                        }
+                    ]),
+                );
+            }
+
+            if let Some(ref_str) = target_ref {
+                obj.insert(
+                    "entity".to_string(),
+                    serde_json::json!([
+                        {
+                            "role": "source",
+                            "what": {
+                                "reference": ref_str
+                            }
+                        }
+                    ]),
+                );
+            }
+        }
         _ => {}
     }
+}
+
+fn first_available_ref(
+    org_ids: &[String],
+    prac_ids: &[String],
+    loc_ids: &[String],
+    hs_ids: &[String],
+    rng: &mut impl Rng,
+) -> Option<String> {
+    if !org_ids.is_empty() {
+        return Some(random_ref("Organization", org_ids, rng));
+    }
+    if !prac_ids.is_empty() {
+        return Some(random_ref("Practitioner", prac_ids, rng));
+    }
+    if !loc_ids.is_empty() {
+        return Some(random_ref("Location", loc_ids, rng));
+    }
+    if !hs_ids.is_empty() {
+        return Some(random_ref("HealthcareService", hs_ids, rng));
+    }
+    None
 }
 
 fn random_ref(resource_type: &str, ids: &[String], rng: &mut impl Rng) -> String {
@@ -2052,5 +2111,52 @@ mod tests {
                 "Profile-aware generation should use the StructureDefinition URL"
             );
         }
+    }
+
+    #[test]
+    fn provenance_overlay_uses_existing_ids() {
+        let mut provenance = serde_json::json!({
+            "resourceType": "Provenance",
+            "id": "provenance-1",
+            "target": [{ "reference": "Organization/random-uuid" }],
+            "agent": [{ "who": { "reference": "Organization/random-uuid" } }],
+            "entity": [{ "role": "source", "what": { "reference": "Resource/random-uuid" } }]
+        });
+
+        let org_ids = vec!["organization-1".to_string(), "organization-2".to_string()];
+        let prac_ids = vec!["practitioner-1".to_string()];
+        let mut rng = rand::rng();
+
+        overlay_cross_references(
+            &mut provenance,
+            "Provenance",
+            "provenance-1",
+            &org_ids,
+            &prac_ids,
+            &[],
+            &[],
+            &mut rng,
+        );
+
+        let target_ref = provenance["target"][0]["reference"].as_str().unwrap();
+        let agent_ref = provenance["agent"][0]["who"]["reference"]
+            .as_str()
+            .unwrap();
+        let entity_ref = provenance["entity"][0]["what"]["reference"]
+            .as_str()
+            .unwrap();
+
+        assert!(
+            target_ref == "Organization/organization-1" || target_ref == "Organization/organization-2",
+            "target should reference an existing Organization ID"
+        );
+        assert!(
+            agent_ref == "Organization/organization-1" || agent_ref == "Organization/organization-2",
+            "agent.who should reference an existing Organization ID"
+        );
+        assert!(
+            entity_ref == "Organization/organization-1" || entity_ref == "Organization/organization-2",
+            "entity.what should reference an existing resource ID"
+        );
     }
 }

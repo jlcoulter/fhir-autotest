@@ -6,7 +6,7 @@ use crate::runner::executor::*;
 use crate::runner::response_assertions::assert_response;
 use crate::runner::validator::*;
 use crate::runner::value_resolver::extract_field_values;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -178,24 +178,10 @@ impl Orchestrator {
         let pkg = parse_package(ig_package_path)?;
         let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
 
-        // Prefer a server-mode CapabilityStatement; fall back to first if none found
-        let cs = pkg
-            .capability_statements
-            .iter()
-            .find(|cs| {
-                cs.rest
-                    .iter()
-                    .any(|r| r.mode == "server" && !r.resource.is_empty())
-            })
-            .or_else(|| {
-                pkg.capability_statements
-                    .iter()
-                    .find(|cs| cs.rest.iter().any(|r| !r.resource.is_empty()))
-            })
-            .or(pkg.capability_statements.first())
-            .context("No CapabilityStatement found in IG package")?;
+        // 2. Select responder CapabilityStatement (config override or package fallback)
+        let cs = crate::select_capability_statement(&pkg, &self.config)?;
 
-        // 2. Extract dependencies and determine creation order
+        // 3. Extract dependencies and determine creation order
         let auto_deps = extract_dependencies(&pkg.structure_definitions);
         let auto_order = resolve_creation_order(&auto_deps)?;
         let creation_order =
@@ -203,7 +189,7 @@ impl Orchestrator {
 
         tracing::info!("Resource creation order: {:?}", creation_order);
 
-        // 3. Determine data setup strategy
+        // 4. Determine data setup strategy
         let has_bulk_data = !self.config.data_generation.counts.is_empty();
         let write_endpoint = self.config.write_endpoint();
         let upload_method = match &write_endpoint {
@@ -384,7 +370,7 @@ impl Orchestrator {
 
         // 6. Generate test plan
         let mut plan = generate_test_plan(
-            cs,
+            &cs,
             &pkg.structure_definitions,
             &pkg.search_parameters,
             Some(&pkg.operation_definitions),
@@ -393,7 +379,7 @@ impl Orchestrator {
         plan.creation_order = creation_order.clone();
 
         // 6b. Validate CapabilityStatement well-formedness
-        let cs_validation = validate_capability_statement(cs);
+        let cs_validation = validate_capability_statement(&cs);
         for warning in &cs_validation.warnings {
             tracing::warn!("CapabilityStatement warning: {}", warning);
         }
@@ -402,7 +388,7 @@ impl Orchestrator {
         }
 
         // 6c. Generate conformance tests and add them to the plan
-        let conformance_tests = generate_conformance_tests(cs, &pkg.structure_definitions);
+        let conformance_tests = generate_conformance_tests(&cs, &pkg.structure_definitions);
         if !conformance_tests.is_empty() {
             // Convert conformance tests into regular test cases and add to plan
             let mut conformance_group = TestGroup {

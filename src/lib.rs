@@ -15,24 +15,48 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Generate a test plan and resources from an IG package.
-/// Writes output to the config's output directory.
+/// Select the CapabilityStatement used to generate responder-driven tests.
 ///
-/// Generates one resource per profile, named after the profile (e.g.
-/// `TestPatient.json`), and includes `meta.profile` with the profile URL.
-pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
-    let pkg = parse_package(package_path)?;
-    let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
+/// If `overrides.capability_statement_file` is configured, that JSON file is
+/// loaded and used. Otherwise, the best match from the IG package is selected:
+/// server-mode first, then any with resources, then the first entry.
+pub(crate) fn select_capability_statement(
+    pkg: &IgPackage,
+    config: &TestConfig,
+) -> Result<CapabilityStatement> {
+    if let Some(path) = &config.overrides.capability_statement_file {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read CapabilityStatement override: {}", path.display()))?;
+        let json: serde_json::Value = serde_json::from_str(&content).with_context(|| {
+            format!(
+                "CapabilityStatement override is not valid JSON: {}",
+                path.display()
+            )
+        })?;
+        let resource_type = json
+            .get("resourceType")
+            .and_then(|v| v.as_str())
+            .context("CapabilityStatement override JSON is missing 'resourceType'")?;
+        if resource_type != "CapabilityStatement" {
+            anyhow::bail!(
+                "CapabilityStatement override must have resourceType='CapabilityStatement' (found '{}')",
+                resource_type
+            );
+        }
+        let cs: CapabilityStatement = serde_json::from_value(json).with_context(|| {
+            format!(
+                "Failed to deserialize CapabilityStatement override: {}",
+                path.display()
+            )
+        })?;
+        tracing::info!(
+            "Using CapabilityStatement override from {}",
+            path.display()
+        );
+        return Ok(cs);
+    }
 
-    // Resolve parent profile chains — download missing parent profiles
-    // from the FHIR package registry and merge their snapshots so that
-    // slice definitions with discriminator patterns are available.
-    let mut profiles = pkg.structure_definitions;
-    resolve_parent_chain(&mut profiles)?;
-
-    // Prefer a server-mode CapabilityStatement; fall back to first if none found
-    let cs = pkg
-        .capability_statements
+    pkg.capability_statements
         .iter()
         .find(|cs| {
             cs.rest
@@ -45,7 +69,25 @@ pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
                 .find(|cs| cs.rest.iter().any(|r| !r.resource.is_empty()))
         })
         .or(pkg.capability_statements.first())
-        .context("No CapabilityStatement found in IG package")?;
+        .cloned()
+        .context("No CapabilityStatement found in IG package")
+}
+
+/// Generate a test plan and resources from an IG package.
+/// Writes output to the config's output directory.
+///
+/// Generates one resource per profile, named after the profile (e.g.
+/// `TestPatient.json`), and includes `meta.profile` with the profile URL.
+pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
+    let pkg = parse_package(package_path)?;
+    let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
+    let cs = select_capability_statement(&pkg, config)?;
+
+    // Resolve parent profile chains — download missing parent profiles
+    // from the FHIR package registry and merge their snapshots so that
+    // slice definitions with discriminator patterns are available.
+    let mut profiles = pkg.structure_definitions;
+    resolve_parent_chain(&mut profiles)?;
 
     // Resolve dependencies (by resource type)
     let auto_deps = extract_dependencies(&profiles);
@@ -102,7 +144,7 @@ pub fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
 
     // Generate test plan
     let mut plan = generate_test_plan(
-        cs,
+        &cs,
         &profiles,
         &pkg.search_parameters,
         Some(&pkg.operation_definitions),
@@ -173,26 +215,11 @@ pub async fn run_tests(package_path: &str, config: &TestConfig) -> Result<()> {
 pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
     let pkg = parse_package(package_path)?;
     let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
+    let cs = select_capability_statement(&pkg, config)?;
 
     // Resolve parent profile chains
     let mut profiles = pkg.structure_definitions;
     resolve_parent_chain(&mut profiles)?;
-
-    let cs = pkg
-        .capability_statements
-        .iter()
-        .find(|cs| {
-            cs.rest
-                .iter()
-                .any(|r| r.mode == "server" && !r.resource.is_empty())
-        })
-        .or_else(|| {
-            pkg.capability_statements
-                .iter()
-                .find(|cs| cs.rest.iter().any(|r| !r.resource.is_empty()))
-        })
-        .or(pkg.capability_statements.first())
-        .context("No CapabilityStatement found in IG package")?;
 
     let auto_deps = extract_dependencies(&profiles);
     let auto_order = resolve_creation_order(&auto_deps)?;
@@ -217,7 +244,7 @@ pub fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
     }
 
     let mut plan = generate_test_plan(
-        cs,
+        &cs,
         &profiles,
         &pkg.search_parameters,
         Some(&pkg.operation_definitions),

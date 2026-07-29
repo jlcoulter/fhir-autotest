@@ -237,6 +237,7 @@ Key settings:
 | `repository.password` | Basic auth password for the repository | None |
 | `repository.upload_method` | HTTP method for uploading resources: `PUT` or `POST` | `PUT` |
 | `repository.concurrency` | Parallel requests for upload/delete (1 = sequential) | `1` |
+| `overrides.capability_statement_file` | Path to responder CapabilityStatement JSON to replace package-selected CS | None |
 | `overrides.creation_order` | Manual resource creation order | Auto-resolved |
 | `overrides.fixtures_dir` | Directory for fixture JSON files | None |
 | `overrides.fixture_map` | Map resource type → fixture filename | None |

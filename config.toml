@@ -71,6 +71,11 @@ concurrency = 1
 
 [overrides]
 
+# Optional path to a responder CapabilityStatement JSON file.
+# When set, this file replaces the CapabilityStatement selected from the IG
+# package for test planning/conformance checks.
+capability_statement_file = "./package/metadata.json"
+
 # Manual creation order. If set, this replaces the auto-resolved dependency
 # order. Resource types not listed here are appended in their original order.
 # Uncomment to override.
@@ -115,4 +120,5 @@ counts.Practitioner = 100
 counts.PractitionerRole = 300
 counts.Location = 20
 counts.HealthcareService = 100
-# counts.Endpoint = 5_000
+counts.Endpoint = 50
+counts.Provenance = 100

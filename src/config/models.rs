@@ -131,6 +131,12 @@ pub struct OverrideConfig {
     /// Manual creation order (overrides auto-resolved order).
     #[serde(default)]
     pub creation_order: Vec<String>,
+    /// Optional path to a CapabilityStatement JSON file.
+    ///
+    /// When set, this file is used as the responder CapabilityStatement
+    /// instead of selecting one from the IG package.
+    #[serde(default)]
+    pub capability_statement_file: Option<PathBuf>,
     /// Path to fixture JSON files directory.
     #[serde(default)]
     pub fixtures_dir: Option<PathBuf>,
