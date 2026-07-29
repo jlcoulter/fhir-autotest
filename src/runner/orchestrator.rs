@@ -366,6 +366,14 @@ impl Orchestrator {
                     }
                 }
             }
+        } else {
+            // In bulk mode, use the first uploaded ID for each type so tests
+            // that use {_id={id}} placeholders can run against real resources.
+            for (resource_type, ids) in &bulk_ids {
+                if let Some(id) = ids.first() {
+                    created_ids.insert(resource_type.clone(), id.clone());
+                }
+            }
         }
 
         // 6. Generate test plan

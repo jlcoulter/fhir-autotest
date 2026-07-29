@@ -264,6 +264,30 @@ pub fn assert_response(
         }
     }
 
+    // --- Top-level response resourceType allow-list ---
+    if !assertion.response_resource_types.is_empty() {
+        if let Some(body) = body {
+            match body.get("resourceType").and_then(|v| v.as_str()) {
+                Some(actual)
+                    if assertion
+                        .response_resource_types
+                        .iter()
+                        .any(|allowed| allowed == actual) => {}
+                Some(actual) => {
+                    errors.push(format!(
+                        "Response resourceType '{}' not in allowed set {:?}",
+                        actual, assertion.response_resource_types
+                    ));
+                }
+                None => {
+                    errors.push("Response has no resourceType".to_string());
+                }
+            }
+        } else {
+            errors.push("No response body for resourceType assertion".to_string());
+        }
+    }
+
     // --- MustSupport required field presence ---
     // Checks that specified fields exist in Bundle entries, regardless of their value.
     for (resource_type, fields) in &assertion.required_fields {
@@ -662,5 +686,33 @@ mod tests {
     fn resolve_json_path_missing() {
         let v = json!({"id": "123"});
         assert_eq!(resolve_json_path(&v, "missing"), None);
+    }
+
+    #[test]
+    fn assert_response_resource_type_allow_list() {
+        let assertion = ResponseAssertion {
+            response_resource_types: vec!["Parameters".to_string(), "OperationOutcome".to_string()],
+            ..ResponseAssertion::none()
+        };
+        let body = json!({"resourceType": "Parameters", "parameter": []});
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_response_resource_type_allow_list_rejects_unexpected_type() {
+        let assertion = ResponseAssertion {
+            response_resource_types: vec!["Parameters".to_string()],
+            ..ResponseAssertion::none()
+        };
+        let body = json!({"resourceType": "Bundle", "type": "searchset", "entry": []});
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("not in allowed set") && e.contains("Bundle")),
+            "Expected allow-list failure, got: {:?}",
+            errors
+        );
     }
 }

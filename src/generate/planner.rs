@@ -344,10 +344,12 @@ fn build_test_group(
             // FHIR search parameter codes are lowercase, so normalise the
             // param portion (e.g. "partOf" → "partof") to match the server.
             if let Some((_res, param)) = include_spec.split_once(':') {
+                let expected_include_type = infer_reference_target(&param.to_lowercase());
                 tests.push(build_include_test(
                     &resource.resource_type,
                     &param.to_lowercase(),
                     false,
+                    expected_include_type,
                     profile_url,
                 ));
             }
@@ -424,7 +426,10 @@ fn build_test_group(
 
     // Stamp response assertions based on test kind
     for test in &mut tests {
-        test.validation.response_assertion = assertion_for_kind(&test.kind, &test.resource_type);
+        if test.validation.response_assertion.is_none() {
+            test.validation.response_assertion =
+                assertion_for_kind(&test.kind, &test.resource_type);
+        }
     }
 
     TestGroup {
@@ -770,6 +775,7 @@ fn build_include_test(
     resource_type: &str,
     param_name: &str,
     revinclude: bool,
+    expected_include_type: Option<String>,
     profile_url: &Option<String>,
 ) -> TestCase {
     let param = if revinclude {
@@ -782,7 +788,12 @@ fn build_include_test(
     } else {
         format!("{resource_type}:{param_name}")
     };
-    let url = format!("/{resource_type}?{param}={target}&_id=nonexistent-id-99999");
+    let url = format!("/{resource_type}?{param}={target}&_id={{id}}");
+
+    let mut include_types = HashMap::new();
+    if let Some(include_type) = expected_include_type {
+        include_types.insert(include_type, param_name.to_string());
+    }
 
     TestCase {
         name: format!(
@@ -809,7 +820,12 @@ fn build_include_test(
             profile_url: None,
             required_elements: Vec::new(),
             forbidden_elements: Vec::new(),
-            response_assertion: None,
+            response_assertion: Some(ResponseAssertion {
+                bundle_type: Some("searchset".to_string()),
+                min_entries: Some(0),
+                include_types,
+                ..ResponseAssertion::none()
+            }),
         },
     }
 }
@@ -821,7 +837,10 @@ fn build_revinclude_test(
     profile_url: &Option<String>,
 ) -> TestCase {
     let target = format!("{source_resource}:{param_name}");
-    let url = format!("/{resource_type}?_revinclude={target}&_id=nonexistent-id-99999");
+    let url = format!("/{resource_type}?_revinclude={target}&_id={{id}}");
+
+    let mut include_types = HashMap::new();
+    include_types.insert(source_resource.to_string(), param_name.to_string());
 
     TestCase {
         name: format!(
@@ -848,7 +867,12 @@ fn build_revinclude_test(
             profile_url: None,
             required_elements: Vec::new(),
             forbidden_elements: Vec::new(),
-            response_assertion: None,
+            response_assertion: Some(ResponseAssertion {
+                bundle_type: Some("searchset".to_string()),
+                min_entries: Some(0),
+                include_types,
+                ..ResponseAssertion::none()
+            }),
         },
     }
 }
@@ -935,6 +959,27 @@ fn build_operation_test(
         format!("/${code}")
     };
 
+    let mut assertion = ResponseAssertion {
+        response_contains_key: Some("resourceType".to_string()),
+        response_resource_types: vec![
+            "Bundle".to_string(),
+            "Parameters".to_string(),
+            "OperationOutcome".to_string(),
+        ],
+        ..ResponseAssertion::none()
+    };
+    if op_def
+        .map(|d| {
+            d.parameter
+                .iter()
+                .any(|p| p.use_.as_deref() == Some("out") && p.min.unwrap_or(0) > 0)
+        })
+        .unwrap_or(false)
+    {
+        assertion.response_contains_key = Some("parameter".to_string());
+        assertion.response_resource_types = vec!["Parameters".to_string(), "OperationOutcome".to_string()];
+    }
+
     TestCase {
         name: format!(
             "{}_operation_{}",
@@ -958,7 +1003,7 @@ fn build_operation_test(
             profile_url: None,
             required_elements: Vec::new(),
             forbidden_elements: Vec::new(),
-            response_assertion: None,
+            response_assertion: Some(assertion),
         },
     }
 }
@@ -1005,9 +1050,12 @@ fn infer_reference_target(param_name: &str) -> Option<String> {
         "subject" | "patient" => Some("Patient".to_string()),
         "encounter" => Some("Encounter".to_string()),
         "organization" => Some("Organization".to_string()),
+        "partof" => Some("Organization".to_string()),
         "practitioner" => Some("Practitioner".to_string()),
         "device" => Some("Device".to_string()),
         "location" => Some("Location".to_string()),
+        "service" => Some("HealthcareService".to_string()),
+        "endpoint" => Some("Endpoint".to_string()),
         "group" => Some("Group".to_string()),
         "specimen" => Some("Specimen".to_string()),
         _ => None,

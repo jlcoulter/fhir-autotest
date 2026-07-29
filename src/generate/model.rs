@@ -57,6 +57,12 @@ pub struct ResponseAssertion {
     /// For $operation: response MUST contain this top-level key.
     #[serde(default)]
     pub response_contains_key: Option<String>,
+
+    /// Top-level response resourceType MUST be one of these values.
+    /// Useful for operation responses that may legally return one of several
+    /// resource types (e.g. Parameters, Bundle, OperationOutcome).
+    #[serde(default)]
+    pub response_resource_types: Vec<String>,
 }
 
 /// Sort direction assertion for _sort tests.
@@ -81,6 +87,7 @@ impl ResponseAssertion {
             outcome_severity: None,
             required_fields: HashMap::new(),
             response_contains_key: None,
+            response_resource_types: Vec::new(),
         }
     }
 }
