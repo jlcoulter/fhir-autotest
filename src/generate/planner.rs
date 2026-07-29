@@ -1492,8 +1492,11 @@ mod tests {
         );
         let near_test = near_test.unwrap();
         assert!(
-            near_test.request.url.contains("near=0.0|0.0"),
-            "Near test URL should contain coordinate format, got {}",
+            near_test
+                .request
+                .url
+                .contains("near=-25.0%7C133.0%7C3000%7Ckm"),
+            "Near test URL should contain encoded near coordinate format, got {}",
             near_test.request.url
         );
         assert!(

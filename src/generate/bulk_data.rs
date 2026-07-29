@@ -2089,15 +2089,15 @@ mod tests {
             let loc: serde_json::Value = serde_json::from_str(line).unwrap();
             let lat = loc["position"]["latitude"].as_f64().unwrap();
             let lon = loc["position"]["longitude"].as_f64().unwrap();
-            // Should be in US range
+            // Generated localities are AU-based.
             assert!(
-                (20.0..=55.0).contains(&lat),
-                "Latitude {} should be in US range",
+                (-45.0..=-9.0).contains(&lat),
+                "Latitude {} should be in AU range",
                 lat
             );
             assert!(
-                (-130.0..=-60.0).contains(&lon),
-                "Longitude {} should be in US range",
+                (110.0..=156.0).contains(&lon),
+                "Longitude {} should be in AU range",
                 lon
             );
         }
