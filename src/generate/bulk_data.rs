@@ -827,6 +827,7 @@ fn overlay_cross_references(
                 loc_ids,
                 hs_ids,
                 practitioner_role_ids,
+                endpoint_ids,
                 rng,
             );
 
@@ -868,6 +869,7 @@ fn overlay_cross_references(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn provenance_target_for_id(
     provenance_id: &str,
     org_ids: &[String],
@@ -875,6 +877,7 @@ fn provenance_target_for_id(
     loc_ids: &[String],
     hs_ids: &[String],
     practitioner_role_ids: &[String],
+    endpoint_ids: &[String],
     rng: &mut impl Rng,
 ) -> Option<String> {
     // Deterministically seed coverage for _revinclude=Provenance:target checks
@@ -885,6 +888,7 @@ fn provenance_target_for_id(
         ("Location", loc_ids),
         ("HealthcareService", hs_ids),
         ("PractitionerRole", practitioner_role_ids),
+        ("Endpoint", endpoint_ids),
     ];
     if let Some(seed_index) = provenance_sequence_number(provenance_id) {
         let mut available: Vec<(&str, &str)> = Vec::new();
@@ -912,6 +916,7 @@ fn provenance_target_for_id(
             .iter()
             .map(|id| format!("PractitionerRole/{}", id)),
     );
+    candidates.extend(endpoint_ids.iter().map(|id| format!("Endpoint/{}", id)));
 
     if candidates.is_empty() {
         None

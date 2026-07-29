@@ -84,6 +84,19 @@ pub fn generate_resource_with_value_sets(
         value_set_systems,
     );
 
+    // Fifth pass: populate mustSupport fields with min=0 that are not
+    // BackboneElements (e.g. Organization.telecom, Location.alias,
+    // Provenance.activity). These are optional in the profile but marked
+    // mustSupport, so the conformance checker expects them in responses.
+    // We generate a single default value for each to satisfy the check.
+    fields::populate_must_support_optional_fields(
+        &mut resource,
+        elements,
+        &profile.base_type,
+        all_profiles,
+        value_set_systems,
+    );
+
     Ok(resource)
 }
 
