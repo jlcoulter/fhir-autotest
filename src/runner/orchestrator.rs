@@ -261,6 +261,7 @@ impl Orchestrator {
                 &profile_urls,
                 &pkg.structure_definitions,
                 &value_set_systems,
+                &pkg.raw_resources,
                 output_path,
             )?;
             let data_creation_order = bulk_data_creation_order(&counts);
@@ -282,6 +283,7 @@ impl Orchestrator {
                 &profile_urls,
                 &pkg.structure_definitions,
                 &value_set_systems,
+                &pkg.raw_resources,
                 output_path,
             )?;
             if !supplement_ids.is_empty() {
@@ -307,11 +309,16 @@ impl Orchestrator {
                 println!("\n  generate_only = true: skipping upload and deletion");
                 println!("  NDJSON files are in {}/data/", self.config.output);
             } else {
-                // Pre-upload required R5 extension StructureDefinitions so the HAPI
-                // validator can resolve profile URIs used in slicing discriminators
-                // (e.g. individual-recordedSexOrGender on Practitioner.extension).
-                println!("\n── Ensuring R5 extension profiles are available ──");
-                ensure_r5_extension_profiles(&write_endpoint).await?;
+                // Pre-upload required R5 extension StructureDefinitions if the IG
+                // references them. These are only needed for HCPD (which uses R5 extension
+                // profile URIs as slicing discriminators on Practitioner.extension).
+                let needs_r5_profiles = profile_urls.values().any(|url| {
+                    url.contains("digitalhealth.gov.au") || url.contains("/hcpd/")
+                });
+                if needs_r5_profiles {
+                    println!("\n── Ensuring R5 extension profiles are available ──");
+                    ensure_r5_extension_profiles(&write_endpoint).await?;
+                }
 
                 // Upload bulk data + supplement resources (all read from NDJSON files on disk).
                 // Extend the creation order with supplement types so they are uploaded too.

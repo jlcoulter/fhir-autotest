@@ -223,6 +223,7 @@ pub async fn upload_supplement_resources(
             profile_urls,
             profiles,
             value_set_systems,
+            &std::collections::HashMap::new(),
         ) {
             Ok(r) => r,
             Err(e) => {

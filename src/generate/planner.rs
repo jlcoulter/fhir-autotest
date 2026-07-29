@@ -507,7 +507,7 @@ fn sample_value(param_type: &str) -> &'static str {
         "quantity" => "5.0||http://unitsofmeasure.org|kg",
         "uri" => "http://example.org",
         "composite" => "test-value",
-        "special" => "-33.86|151.21", // conservative near format: lat|lon
+        "special" => "-25.0%7C133.0%7C3000%7Ckm", // near format: lat%7Clon%7Cdistance%7Cunits (pipes must be %-encoded for HAPI)
         _ => "test-value",
     }
 }
@@ -655,8 +655,9 @@ fn build_search_near_test(
     param_name: &str,
     profile_url: &Option<String>,
 ) -> TestCase {
-    // Test with coordinates only; some servers reject optional distance/unit segments.
-    let url = format!("/{resource_type}?{param_name}=-33.86|151.21");
+    // Include distance|units — HAPI FHIR R4 requires all four components.
+    // Pipes must be %-encoded (%7C) because HAPI's servlet rejects bare | in query strings.
+    let url = format!("/{resource_type}?{param_name}=-25.0%7C133.0%7C3000%7Ckm");
 
     TestCase {
         name: format!(
@@ -1398,7 +1399,7 @@ mod tests {
         );
         let near_test = near_test.unwrap();
         assert!(
-            near_test.request.url.contains("near=-33.86|151.21"),
+            near_test.request.url.contains("near=0.0|0.0"),
             "Near test URL should contain coordinate format, got {}",
             near_test.request.url
         );

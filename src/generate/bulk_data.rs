@@ -1,4 +1,6 @@
-use crate::generate::resource_generator::generate_resource_with_value_sets;
+use crate::generate::resource_generator::{
+    build_code_system_first_code_map, generate_resource_with_value_sets,
+};
 use crate::model::profile::StructureDefinition;
 use anyhow::Result;
 use chrono::{Duration, Utc};
@@ -6,6 +8,7 @@ use fake::Fake;
 use rand::Rng;
 use serde::Serialize;
 use std::collections::HashMap;
+use super::random_au_locality;
 use std::io::Write;
 use std::path::Path;
 
@@ -25,6 +28,7 @@ pub fn generate_bulk_data(
     profile_urls: &HashMap<String, String>,
     profiles: &[StructureDefinition],
     value_set_systems: &HashMap<String, String>,
+    raw_resources: &HashMap<String, serde_json::Value>,
     output_dir: &Path,
 ) -> Result<IdStore> {
     use std::io::BufWriter;
@@ -32,6 +36,14 @@ pub fn generate_bulk_data(
     let data_dir = output_dir.join("data");
     std::fs::create_dir_all(&data_dir)?;
     let mut rng = rand::rng();
+
+    // Detect whether this is an HCPD/AU IG so we only apply HCPD-specific fixes
+    // when appropriate. Any other IG should not have AU-specific identifiers injected.
+    let hcpd_ig = is_hcpd_ig(profile_urls);
+
+    // Pre-compute CodeSystem first-code map for use in coding lookups
+    // (e.g. responsible-party-type for suppressedBy extension).
+    let code_system_codes = build_code_system_first_code_map(raw_resources);
 
     // Determine creation order: dependent types first.
     // Organizations and Locations have no FHIR references, so they go first.
@@ -121,7 +133,10 @@ pub fn generate_bulk_data(
                     resource_type,
                     id,
                     &mut practitioner_registration_by_id,
+                    value_set_systems,
+                    &code_system_codes,
                     &mut rng,
+                    hcpd_ig,
                 );
                 r
             } else {
@@ -189,12 +204,13 @@ pub fn generate_bulk_data(
 /// expected ID pattern (`{resourcetype}-1`). Works with any FHIR IG by using the
 /// profile-aware generator as the primary source and falling back to generic generation.
 ///
-/// Applies IG-specific fixes (e.g. HCPD identifiers) when a matching profile exists.
+/// Applies IG-specific fixes (e.g. HCPD identifiers) only when the IG is detected as HCPD/AU.
 pub fn generate_supplement_resource(
     resource_type: &str,
     profile_urls: &HashMap<String, String>,
     profiles: &[StructureDefinition],
     value_set_systems: &HashMap<String, String>,
+    raw_resources: &HashMap<String, serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let id = format!("{}-1", resource_type.to_lowercase());
     let mut rng = rand::rng();
@@ -218,7 +234,16 @@ pub fn generate_supplement_resource(
         let mut r = generate_resource_with_value_sets(profile, profiles, value_set_systems)?;
         r["id"] = serde_json::Value::String(id.clone());
         let mut dummy_reg: HashMap<String, String> = HashMap::new();
-        apply_hcpd_bulk_fixes(&mut r, resource_type, &id, &mut dummy_reg, &mut rng);
+        apply_hcpd_bulk_fixes(
+            &mut r,
+            resource_type,
+            &id,
+            &mut dummy_reg,
+            value_set_systems,
+            &build_code_system_first_code_map(raw_resources),
+            &mut rng,
+            is_hcpd_ig(profile_urls),
+        );
         r
     } else {
         match resource_type {
@@ -295,6 +320,7 @@ pub fn write_supplement_ndjson(
     profile_urls: &HashMap<String, String>,
     profiles: &[StructureDefinition],
     value_set_systems: &HashMap<String, String>,
+    raw_resources: &HashMap<String, serde_json::Value>,
     output_dir: &Path,
 ) -> Result<IdStore> {
     use std::io::{BufWriter, Write};
@@ -329,6 +355,7 @@ pub fn write_supplement_ndjson(
             profile_urls,
             profiles,
             value_set_systems,
+            raw_resources,
         ) {
             Ok(r) => r,
             Err(e) => {
@@ -363,13 +390,24 @@ pub fn write_supplement_ndjson(
     Ok(supplement_ids)
 }
 
+/// Apply HCPD/AU-specific overrides to a generated resource.
+///
+/// This function is ONLY called when `hcpd_ig` is true (i.e. the loaded IG package
+/// is the HCPD/AU IG). For all other IGs, the profile-aware generator produces
+/// conformant resources without needing IG-specific identifier augmentation.
 fn apply_hcpd_bulk_fixes(
     resource: &mut serde_json::Value,
     resource_type: &str,
     id: &str,
     practitioner_registration_by_id: &mut HashMap<String, String>,
+    value_set_systems: &HashMap<String, String>,
+    code_system_codes: &HashMap<String, (String, Option<String>)>,
     rng: &mut impl Rng,
+    hcpd_ig: bool,
 ) {
+    if !hcpd_ig {
+        return;
+    }
     match resource_type {
         "Organization" => {
             resource["identifier"] = serde_json::json!([
@@ -521,6 +559,10 @@ fn apply_hcpd_bulk_fixes(
                     }
                 ]);
             }
+
+            // Fix suppressedBy extension coding — the HCPD profile requires a code
+            // from the responsible-party-type ValueSet, not NullFlavor.
+            fix_suppressed_by_coding(resource, value_set_systems, code_system_codes);
         }
         "Location" => {
             resource["type"] = serde_json::json!([
@@ -569,7 +611,7 @@ fn apply_hcpd_bulk_fixes(
 
             // Fix suppressedBy extension coding — the HCPD profile requires a code
             // from the responsible-party-type ValueSet, not NullFlavor.
-            fix_suppressed_by_coding(resource);
+            fix_suppressed_by_coding(resource, value_set_systems, code_system_codes);
         }
         _ => {}
     }
@@ -582,10 +624,26 @@ fn extract_reference_id(reference: &str) -> Option<&str> {
 /// Fix the `suppressedBy.valueCodeableConcept.coding` in the `suppressed` extension
 /// to use a valid code from the responsible-party-type CodeSystem.
 ///
-/// The profile requires `coding[0]` from
-/// `http://digitalhealth.gov.au/fhir/cc/CodeSystem/responsible-party-type`.
-/// The generic resource generator falls back to NullFlavor which is not in the ValueSet.
-fn fix_suppressed_by_coding(resource: &mut serde_json::Value) {
+/// The code is looked up from `value_set_systems` (ValueSet URL → system URL) and
+/// `code_system_codes` (system URL → first valid code), falling back to `"UNK"` if
+/// neither map contains the relevant entries. This avoids any hardcoded HCPD codes.
+fn fix_suppressed_by_coding(
+    resource: &mut serde_json::Value,
+    value_set_systems: &HashMap<String, String>,
+    code_system_codes: &HashMap<String, (String, Option<String>)>,
+) {
+    // Find the system URL bound to the suppressedBy coding
+    // (typically via responsible-party-type ValueSet in HCPD)
+    let vs_url = "http://digitalhealth.gov.au/fhir/cc/ValueSet/responsible-party-type";
+    let system = value_set_systems
+        .get(vs_url)
+        .map(|s| s.as_str())
+        .unwrap_or("http://digitalhealth.gov.au/fhir/cc/CodeSystem/responsible-party-type");
+    let (code, display) = code_system_codes
+        .get(system)
+        .map(|(c, d)| (c.as_str(), d.as_deref().unwrap_or(c.as_str())))
+        .unwrap_or(("UNK", "Unknown"));
+
     let Some(exts) = resource.get_mut("extension").and_then(|e| e.as_array_mut()) else {
         return;
     };
@@ -600,12 +658,28 @@ fn fix_suppressed_by_coding(resource: &mut serde_json::Value) {
         for sub_ext in sub_exts.iter_mut() {
             let sub_url = sub_ext.get("url").and_then(|u| u.as_str()).unwrap_or("");
             if sub_url == "suppressedBy" {
+                // Only override if the current coding is the generic NullFlavor fallback.
+                // When populate_extension_slices has already applied a fixedCoding from the
+                // profile (e.g. organisation-initiated for Organization/HealthcareService),
+                // leave it intact.
+                let already_valid = sub_ext
+                    .get("valueCodeableConcept")
+                    .and_then(|v| v.get("coding"))
+                    .and_then(|c| c.as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|c| c.get("system"))
+                    .and_then(|s| s.as_str())
+                    .map(|s| !s.contains("NullFlavor"))
+                    .unwrap_or(false);
+                if already_valid {
+                    continue;
+                }
                 sub_ext["valueCodeableConcept"] = serde_json::json!({
                     "coding": [{
-                        "system": "http://digitalhealth.gov.au/fhir/cc/CodeSystem/responsible-party-type",
-                        "code": "organisation-initiated"
+                        "system": system,
+                        "code": code
                     }],
-                    "text": "Organisation initiated"
+                    "text": display
                 });
             }
         }
@@ -653,6 +727,17 @@ fn luhn_with_prefix(prefix: &str, total_len: usize, rng: &mut impl Rng) -> Strin
 /// Return a creation order that respects dependencies.
 /// Organizations and Locations first, then Practitioners, then
 /// PractitionerRoles and HealthcareServices, then everything else.
+/// Returns true when the profile URLs in a loaded IG indicate an HCPD/AU implementation
+/// guide, so that HCPD-specific identifier and extension overrides are applied only
+/// when appropriate.
+fn is_hcpd_ig(profile_urls: &HashMap<String, String>) -> bool {
+    profile_urls.values().any(|url| {
+        url.contains("digitalhealth.gov.au")
+            || url.contains("/hcpd/")
+            || url.contains("hl7.org.au")
+    })
+}
+
 pub fn bulk_data_creation_order(counts: &HashMap<String, u64>) -> Vec<String> {
     let mut order = Vec::new();
 
@@ -1279,8 +1364,7 @@ fn gen_organization(id: &str, rng: &mut impl Rng) -> serde_json::Value {
         "prov", "dept", "team", "govt", "ins", "pay", "edu", "reli", "crs",
     ];
     let org_type = org_types[rng.random_range(0..org_types.len())];
-    let city: String = fake::faker::address::en::CityName().fake();
-    let state: String = fake::faker::address::en::StateAbbr().fake();
+    let locality = random_au_locality(rng);
 
     let org = FhirOrganization {
         resource_type: "Organization".to_string(),
@@ -1316,10 +1400,10 @@ fn gen_organization(id: &str, rng: &mut impl Rng) -> serde_json::Value {
         address: Some(vec![Address {
             addr_type: "physical".to_string(),
             line: vec![fake::faker::address::en::StreetName().fake()],
-            city,
-            state,
-            postal_code: fake::faker::address::en::ZipCode().fake(),
-            country: "US".to_string(),
+            city: locality.city.to_string(),
+            state: locality.state.to_string(),
+            postal_code: locality.postcode.to_string(),
+            country: "AU".to_string(),
         }]),
     };
     serde_json::to_value(org).unwrap()
@@ -1491,33 +1575,10 @@ fn gen_location(id: &str, rng: &mut impl Rng) -> serde_json::Value {
     let loc_type = loc_types[rng.random_range(0..loc_types.len())];
     let phys_type = phys_types[rng.random_range(0..phys_types.len())];
 
-    // Spread locations around major US cities for realistic near searches
-    let city_centers: Vec<(f64, f64, &str)> = vec![
-        (40.7128, -74.0060, "New York"),
-        (34.0522, -118.2437, "Los Angeles"),
-        (41.8781, -87.6298, "Chicago"),
-        (29.7604, -95.3698, "Houston"),
-        (33.4484, -112.0740, "Phoenix"),
-        (39.9526, -75.1652, "Philadelphia"),
-        (29.4241, -98.4936, "San Antonio"),
-        (32.7157, -117.1611, "San Diego"),
-        (32.7767, -96.7970, "Dallas"),
-        (37.3382, -121.8863, "San Jose"),
-        (47.6062, -122.3321, "Seattle"),
-        (42.3601, -71.0589, "Boston"),
-        (38.9072, -77.0369, "Washington"),
-        (39.7392, -104.9903, "Denver"),
-        (25.7617, -80.1918, "Miami"),
-        (33.7490, -84.3880, "Atlanta"),
-        (35.2271, -80.8431, "Charlotte"),
-        (36.1627, -86.7816, "Nashville"),
-        (45.5051, -122.6750, "Portland"),
-        (35.4676, -97.5164, "Oklahoma City"),
-    ];
-    let center = &city_centers[rng.random_range(0..city_centers.len())];
-    let lat = center.0 + (rng.random_range(-50..50) as f64 / 1000.0);
-    let lon = center.1 + (rng.random_range(-50..50) as f64 / 1000.0);
-    let city_name = center.2.to_string();
+    // Spread locations around Australian localities for realistic near searches
+    let locality = random_au_locality(rng);
+    let lat = locality.lat + (rng.random_range(-50..50) as f64 / 1000.0);
+    let lon = locality.lon + (rng.random_range(-50..50) as f64 / 1000.0);
 
     let statuses = ["active", "suspended", "inactive"];
     let status = statuses[rng.random_range(0..2)]; // weight toward active
@@ -1535,7 +1596,7 @@ fn gen_location(id: &str, rng: &mut impl Rng) -> serde_json::Value {
         name: format!(
             "{} Clinic - {}",
             fake::faker::name::en::LastName().fake::<String>(),
-            city_name
+            locality.suburb
         ),
         loc_type: vec![CodeableConcept {
             coding: vec![Coding {
@@ -1562,10 +1623,10 @@ fn gen_location(id: &str, rng: &mut impl Rng) -> serde_json::Value {
                 rng.random_range(100..9999),
                 fake::faker::name::en::LastName().fake::<String>()
             )],
-            city: city_name,
-            state: fake::faker::address::en::StateAbbr().fake(),
-            postal_code: fake::faker::address::en::ZipCode().fake(),
-            country: "US".to_string(),
+            city: locality.city.to_string(),
+            state: locality.state.to_string(),
+            postal_code: locality.postcode.to_string(),
+            country: "AU".to_string(),
         }),
         managing_organization: None, // filled in bulk loader if org IDs available
     };
@@ -1737,7 +1798,7 @@ mod tests {
 
         let profile_urls = HashMap::new();
         let ids =
-            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), dir.path()).unwrap();
+            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), &HashMap::new(), dir.path()).unwrap();
 
         // Each type should have the right number of IDs
         assert_eq!(ids.get("Organization").unwrap().len(), 10);
@@ -1784,7 +1845,7 @@ mod tests {
 
         let profile_urls = HashMap::new();
         let ids =
-            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), dir.path()).unwrap();
+            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), &HashMap::new(), dir.path()).unwrap();
 
         // Check PractitionerRole references
         let pr_path = dir.path().join("data/PractitionerRole.ndjson");
@@ -1829,7 +1890,7 @@ mod tests {
         let mut counts = HashMap::new();
         counts.insert("Location".to_string(), 100);
 
-        generate_bulk_data(&counts, &HashMap::new(), &[], &HashMap::new(), dir.path()).unwrap();
+        generate_bulk_data(&counts, &HashMap::new(), &[], &HashMap::new(), &HashMap::new(), dir.path()).unwrap();
 
         let loc_path = dir.path().join("data/Location.ndjson");
         let contents = std::fs::read_to_string(&loc_path).unwrap();
@@ -1881,7 +1942,7 @@ mod tests {
         counts.insert("Patient".to_string(), 5);
 
         let ids =
-            generate_bulk_data(&counts, &HashMap::new(), &[], &HashMap::new(), dir.path()).unwrap();
+            generate_bulk_data(&counts, &HashMap::new(), &[], &HashMap::new(), &HashMap::new(), dir.path()).unwrap();
         assert_eq!(ids.get("Patient").unwrap().len(), 5);
 
         let path = dir.path().join("data/Patient.ndjson");
@@ -1905,7 +1966,7 @@ mod tests {
         );
 
         let ids =
-            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), dir.path()).unwrap();
+            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), &HashMap::new(), dir.path()).unwrap();
         assert_eq!(ids.get("Organization").unwrap().len(), 3);
 
         let path = dir.path().join("data/Organization.ndjson");
@@ -1930,7 +1991,7 @@ mod tests {
         // No profile_urls provided — should fall back to base FHIR profile
         let profile_urls = HashMap::new();
         let ids =
-            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), dir.path()).unwrap();
+            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), &HashMap::new(), dir.path()).unwrap();
         assert_eq!(ids.get("Organization").unwrap().len(), 2);
 
         let path = dir.path().join("data/Organization.ndjson");
@@ -1969,6 +2030,7 @@ mod tests {
             &counts,
             &HashMap::new(),
             &[profile],
+            &HashMap::new(),
             &HashMap::new(),
             dir.path(),
         )

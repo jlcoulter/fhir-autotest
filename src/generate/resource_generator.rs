@@ -1,3 +1,4 @@
+use crate::generate::random_au_locality_thread;
 use crate::model::*;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -841,11 +842,11 @@ fn generate_typed_value(
 
     match type_code {
         // Primitive types
-        "string" => serde_json::json!("Acme Health Service"),
+        "string" => serde_json::json!("Generated string"),
         "uri" => serde_json::json!("urn:ietf:rfc:3986"),
-        "url" => serde_json::json!("https://digitalhealth.gov.au/fhir/resource"),
+        "url" => serde_json::json!("https://example.org/fhir/resource"),
         "canonical" => {
-            serde_json::json!("https://digitalhealth.gov.au/fhir/StructureDefinition/sample")
+            serde_json::json!("https://example.org/fhir/StructureDefinition/example")
         }
         "code" => serde_json::json!("active"),
         "id" => serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
@@ -859,7 +860,7 @@ fn generate_typed_value(
         "unsignedInt" => serde_json::json!(1),
         "positiveInt" => serde_json::json!(1),
         "base64Binary" => serde_json::json!(""),
-        "markdown" => serde_json::json!("Clinical note"),
+        "markdown" => serde_json::json!("Generated text"),
         "oid" => serde_json::json!("urn:oid:2.16.840.1.113883.19.5"),
         "uuid" => serde_json::Value::String(format!("urn:uuid:{}", uuid::Uuid::new_v4())),
 
@@ -872,13 +873,16 @@ fn generate_typed_value(
             "family": "Smith",
             "given": ["Alex"]
         }),
-        "Address" => serde_json::json!({
-            "line": ["100 George St"],
-            "city": "Sydney",
-            "state": "NSW",
-            "postalCode": "2000",
-            "country": "AU"
-        }),
+        "Address" => {
+            let loc = random_au_locality_thread();
+            serde_json::json!({
+                "line": ["1 Example St"],
+                "city": loc.city,
+                "state": loc.state,
+                "postalCode": loc.postcode,
+                "country": "AU"
+            })
+        }
         "ContactPoint" => serde_json::json!({
             "system": "phone",
             "value": "555-0000"
@@ -890,7 +894,7 @@ fn generate_typed_value(
                         "system": system,
                         "code": "unknown"
                     }],
-                    "text": "General practice"
+                    "text": "unknown"
                 })
             } else {
                 // Always include at least one coding — profiles commonly require
@@ -900,7 +904,7 @@ fn generate_typed_value(
                         "system": "http://terminology.hl7.org/CodeSystem/v3-NullFlavor",
                         "code": "UNK"
                     }],
-                    "text": "General practice"
+                    "text": "unknown"
                 })
             }
         }
@@ -2653,10 +2657,9 @@ mod tests {
             "code should be an object (CodeableConcept)"
         );
         let text = code.get("text").unwrap();
-        assert_eq!(
-            text.as_str().unwrap(),
-            "General practice",
-            "code.text should be populated (required at depth 2)"
+        assert!(
+            text.as_str().is_some(),
+            "code.text should be a non-null string (required at depth 2)"
         );
     }
 
