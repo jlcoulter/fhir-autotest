@@ -25,8 +25,12 @@ pub(crate) fn select_capability_statement(
     config: &TestConfig,
 ) -> Result<CapabilityStatement> {
     if let Some(path) = &config.overrides.capability_statement_file {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read CapabilityStatement override: {}", path.display()))?;
+        let content = std::fs::read_to_string(path).with_context(|| {
+            format!(
+                "Failed to read CapabilityStatement override: {}",
+                path.display()
+            )
+        })?;
         let json: serde_json::Value = serde_json::from_str(&content).with_context(|| {
             format!(
                 "CapabilityStatement override is not valid JSON: {}",
@@ -49,10 +53,7 @@ pub(crate) fn select_capability_statement(
                 path.display()
             )
         })?;
-        tracing::info!(
-            "Using CapabilityStatement override from {}",
-            path.display()
-        );
+        tracing::info!("Using CapabilityStatement override from {}", path.display());
         return Ok(cs);
     }
 

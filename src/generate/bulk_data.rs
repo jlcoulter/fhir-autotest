@@ -1,3 +1,4 @@
+use super::random_au_locality;
 use crate::generate::resource_generator::{
     build_code_system_first_code_map, generate_resource_with_value_sets,
 };
@@ -8,7 +9,6 @@ use fake::Fake;
 use rand::Rng;
 use serde::Serialize;
 use std::collections::HashMap;
-use super::random_au_locality;
 use std::io::Write;
 use std::path::Path;
 
@@ -294,7 +294,8 @@ fn normalize_supplement_references(value: &mut serde_json::Value) {
                             rtype
                         };
                         let new_id = format!("{}-1", concrete_type.to_lowercase());
-                        *ref_val = serde_json::Value::String(format!("{}/{}", concrete_type, new_id));
+                        *ref_val =
+                            serde_json::Value::String(format!("{}/{}", concrete_type, new_id));
                     }
                 }
             }
@@ -330,9 +331,21 @@ pub fn write_supplement_ndjson(
     use std::io::{BufWriter, Write};
 
     const NON_RESOURCE_TYPES: &[&str] = &[
-        "Extension", "Identifier", "Coding", "CodeableConcept", "Address",
-        "HumanName", "ContactPoint", "Period", "Quantity", "Range",
-        "Ratio", "Attachment", "Annotation", "Signature", "Timing",
+        "Extension",
+        "Identifier",
+        "Coding",
+        "CodeableConcept",
+        "Address",
+        "HumanName",
+        "ContactPoint",
+        "Period",
+        "Quantity",
+        "Range",
+        "Ratio",
+        "Attachment",
+        "Annotation",
+        "Signature",
+        "Timing",
     ];
 
     let data_dir = output_dir.join("data");
@@ -734,9 +747,7 @@ fn luhn_with_prefix(prefix: &str, total_len: usize, rng: &mut impl Rng) -> Strin
 /// when appropriate.
 fn is_hcpd_ig(profile_urls: &HashMap<String, String>) -> bool {
     profile_urls.values().any(|url| {
-        url.contains("digitalhealth.gov.au")
-            || url.contains("/hcpd/")
-            || url.contains("hl7.org.au")
+        url.contains("digitalhealth.gov.au") || url.contains("/hcpd/") || url.contains("hl7.org.au")
     })
 }
 
@@ -1121,7 +1132,8 @@ fn overlay_cross_references(
         "Location" if !org_ids.is_empty() => {
             // Ensure at least one deterministic reverse include path for
             // Organization/_revinclude=Location:organization on organization-1.
-            let ref_str = if _id == "location-1" && org_ids.iter().any(|id| id == "organization-1") {
+            let ref_str = if _id == "location-1" && org_ids.iter().any(|id| id == "organization-1")
+            {
                 "Organization/organization-1".to_string()
             } else {
                 random_ref("Organization", org_ids, rng)
@@ -1956,8 +1968,15 @@ mod tests {
         counts.insert("HealthcareService".to_string(), 50);
 
         let profile_urls = HashMap::new();
-        let ids =
-            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), &HashMap::new(), dir.path()).unwrap();
+        let ids = generate_bulk_data(
+            &counts,
+            &profile_urls,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
 
         // Each type should have the right number of IDs
         assert_eq!(ids.get("Organization").unwrap().len(), 10);
@@ -2003,8 +2022,15 @@ mod tests {
         counts.insert("HealthcareService".to_string(), 10);
 
         let profile_urls = HashMap::new();
-        let ids =
-            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), &HashMap::new(), dir.path()).unwrap();
+        let ids = generate_bulk_data(
+            &counts,
+            &profile_urls,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
 
         // Check PractitionerRole references
         let pr_path = dir.path().join("data/PractitionerRole.ndjson");
@@ -2049,7 +2075,15 @@ mod tests {
         let mut counts = HashMap::new();
         counts.insert("Location".to_string(), 100);
 
-        generate_bulk_data(&counts, &HashMap::new(), &[], &HashMap::new(), &HashMap::new(), dir.path()).unwrap();
+        generate_bulk_data(
+            &counts,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
 
         let loc_path = dir.path().join("data/Location.ndjson");
         let contents = std::fs::read_to_string(&loc_path).unwrap();
@@ -2106,8 +2140,15 @@ mod tests {
         let mut counts = HashMap::new();
         counts.insert("Patient".to_string(), 5);
 
-        let ids =
-            generate_bulk_data(&counts, &HashMap::new(), &[], &HashMap::new(), &HashMap::new(), dir.path()).unwrap();
+        let ids = generate_bulk_data(
+            &counts,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
         assert_eq!(ids.get("Patient").unwrap().len(), 5);
 
         let path = dir.path().join("data/Patient.ndjson");
@@ -2130,8 +2171,15 @@ mod tests {
             "http://example.org/fhir/StructureDefinition/MyOrg".to_string(),
         );
 
-        let ids =
-            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), &HashMap::new(), dir.path()).unwrap();
+        let ids = generate_bulk_data(
+            &counts,
+            &profile_urls,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
         assert_eq!(ids.get("Organization").unwrap().len(), 3);
 
         let path = dir.path().join("data/Organization.ndjson");
@@ -2155,8 +2203,15 @@ mod tests {
 
         // No profile_urls provided — should fall back to base FHIR profile
         let profile_urls = HashMap::new();
-        let ids =
-            generate_bulk_data(&counts, &profile_urls, &[], &HashMap::new(), &HashMap::new(), dir.path()).unwrap();
+        let ids = generate_bulk_data(
+            &counts,
+            &profile_urls,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            dir.path(),
+        )
+        .unwrap();
         assert_eq!(ids.get("Organization").unwrap().len(), 2);
 
         let path = dir.path().join("data/Organization.ndjson");
@@ -2247,9 +2302,7 @@ mod tests {
         );
 
         let target_ref = provenance["target"][0]["reference"].as_str().unwrap();
-        let agent_ref = provenance["agent"][0]["who"]["reference"]
-            .as_str()
-            .unwrap();
+        let agent_ref = provenance["agent"][0]["who"]["reference"].as_str().unwrap();
         let entity_ref = provenance["entity"][0]["what"]["reference"]
             .as_str()
             .unwrap();
@@ -2264,7 +2317,8 @@ mod tests {
             "target should reference an existing resource ID"
         );
         assert!(
-            agent_ref == "Organization/organization-1" || agent_ref == "Organization/organization-2",
+            agent_ref == "Organization/organization-1"
+                || agent_ref == "Organization/organization-2",
             "agent.who should reference an existing Organization ID"
         );
         assert!(
@@ -2335,11 +2389,15 @@ mod tests {
             "Endpoint/endpoint-1"
         );
         assert_eq!(
-            healthcare_service["endpoint"][0]["reference"].as_str().unwrap(),
+            healthcare_service["endpoint"][0]["reference"]
+                .as_str()
+                .unwrap(),
             "Endpoint/endpoint-1"
         );
         assert_eq!(
-            practitioner_role["endpoint"][0]["reference"].as_str().unwrap(),
+            practitioner_role["endpoint"][0]["reference"]
+                .as_str()
+                .unwrap(),
             "Endpoint/endpoint-1"
         );
     }
@@ -2364,7 +2422,9 @@ mod tests {
         );
 
         assert_eq!(
-            location["managingOrganization"]["reference"].as_str().unwrap(),
+            location["managingOrganization"]["reference"]
+                .as_str()
+                .unwrap(),
             "Organization/organization-1"
         );
     }
@@ -2400,10 +2460,25 @@ mod tests {
             );
         }
 
-        assert_eq!(p1["target"][0]["reference"].as_str().unwrap(), "Organization/organization-1");
-        assert_eq!(p2["target"][0]["reference"].as_str().unwrap(), "Practitioner/practitioner-1");
-        assert_eq!(p3["target"][0]["reference"].as_str().unwrap(), "Location/location-1");
-        assert_eq!(p4["target"][0]["reference"].as_str().unwrap(), "HealthcareService/healthcareservice-1");
-        assert_eq!(p5["target"][0]["reference"].as_str().unwrap(), "PractitionerRole/practitionerrole-1");
+        assert_eq!(
+            p1["target"][0]["reference"].as_str().unwrap(),
+            "Organization/organization-1"
+        );
+        assert_eq!(
+            p2["target"][0]["reference"].as_str().unwrap(),
+            "Practitioner/practitioner-1"
+        );
+        assert_eq!(
+            p3["target"][0]["reference"].as_str().unwrap(),
+            "Location/location-1"
+        );
+        assert_eq!(
+            p4["target"][0]["reference"].as_str().unwrap(),
+            "HealthcareService/healthcareservice-1"
+        );
+        assert_eq!(
+            p5["target"][0]["reference"].as_str().unwrap(),
+            "PractitionerRole/practitionerrole-1"
+        );
     }
 }

@@ -995,7 +995,8 @@ fn build_operation_test(
         .unwrap_or(false)
     {
         assertion.response_contains_key = Some("parameter".to_string());
-        assertion.response_resource_types = vec!["Parameters".to_string(), "OperationOutcome".to_string()];
+        assertion.response_resource_types =
+            vec!["Parameters".to_string(), "OperationOutcome".to_string()];
     }
 
     TestCase {
@@ -1103,13 +1104,7 @@ fn search_param_assertion_paths(
         },
     }
     .into_iter()
-    .map(|p| {
-        if p.starts_with(resource_type) {
-            p
-        } else {
-            p
-        }
-    })
+    .map(|p| if p.starts_with(resource_type) { p } else { p })
     .collect()
 }
 
