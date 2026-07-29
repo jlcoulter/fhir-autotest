@@ -927,12 +927,27 @@ fn build_operation_test(
     });
 
     // Determine URL based on operation scope
-    let url = if op_def.map(|d| d.instance.unwrap_or(false)).unwrap_or(true)
-        || op_def.map(|d| d.type_.unwrap_or(false)).unwrap_or(false)
-    {
-        format!("/{resource_type}/${code}")
-    } else {
-        format!("/${code}")
+    let url = match op_def {
+        Some(def)
+            if def.system.unwrap_or(false)
+                && !def.type_.unwrap_or(false)
+                && !def.instance.unwrap_or(false) =>
+        {
+            format!("/${code}")
+        }
+        Some(def) if def.instance.unwrap_or(false) => {
+            format!("/{resource_type}/{{id}}/${code}")
+        }
+        Some(def) if def.type_.unwrap_or(false) => {
+            format!("/{resource_type}/${code}")
+        }
+        _ => {
+            tracing::warn!(
+                "Unknown operation scope for {}, defaulting to resource-level",
+                code
+            );
+            format!("/{resource_type}/${code}")
+        }
     };
 
     let mut assertion = ResponseAssertion {
