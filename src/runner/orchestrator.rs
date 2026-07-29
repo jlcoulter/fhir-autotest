@@ -433,7 +433,7 @@ impl Orchestrator {
             for resource_type in &creation_order {
                 if let Some(body) = resources.get(resource_type) {
                     let mut body = body.clone();
-                    resolve_references(&mut body, &created_ids);
+                    resolve_references(&mut body, resource_type, &created_ids);
 
                     let field_values = extract_field_values(resource_type, &body);
                     resource_field_values.insert(resource_type.clone(), field_values);
@@ -650,31 +650,81 @@ impl Orchestrator {
     }
 }
 
-/// Walk the JSON and replace "reference": "placeholder:ResourceType" with actual IDs.
-fn resolve_references(body: &mut serde_json::Value, created_ids: &HashMap<String, String>) {
+/// Walk the JSON and replace reference values with actual created resource IDs.
+///
+/// Handles multiple reference patterns:
+/// - `placeholder:ResourceType` → `ResourceType/actual-id`
+/// - `ResourceType/unknown-id` → `ResourceType/actual-id`
+/// - `urn:uuid:...` / `http://...` → `ResourceType/actual-id` (using context resource_type)
+/// - Bare `ResourceType` (no slash) → `ResourceType/actual-id`
+fn resolve_references(
+    body: &mut serde_json::Value,
+    resource_type: &str,
+    created_ids: &HashMap<String, String>,
+) {
     match body {
         serde_json::Value::Object(obj) => {
             for (key, value) in obj.iter_mut() {
                 if key == "reference" {
                     if let Some(s) = value.as_str() {
-                        if let Some(rest) = s.strip_prefix("placeholder:") {
-                            if let Some(id) = created_ids.get(rest) {
-                                *value = serde_json::Value::String(format!("{}/{}", rest, id));
-                            }
+                        if let Some(replacement) =
+                            resolve_reference_value(s, resource_type, created_ids)
+                        {
+                            *value = serde_json::Value::String(replacement);
                         }
                     }
                 } else {
-                    resolve_references(value, created_ids);
+                    resolve_references(value, resource_type, created_ids);
                 }
             }
         }
         serde_json::Value::Array(arr) => {
             for item in arr.iter_mut() {
-                resolve_references(item, created_ids);
+                resolve_references(item, resource_type, created_ids);
             }
         }
         _ => {}
     }
+}
+
+/// Try to resolve a single reference string to an actual `ResourceType/id` value.
+fn resolve_reference_value(
+    s: &str,
+    resource_type: &str,
+    created_ids: &HashMap<String, String>,
+) -> Option<String> {
+    // Pattern 1: placeholder:ResourceType — existing behavior
+    if let Some(rest) = s.strip_prefix("placeholder:") {
+        if let Some(id) = created_ids.get(rest) {
+            return Some(format!("{}/{}", rest, id));
+        }
+        tracing::warn!("Could not resolve placeholder reference: {}", s);
+        return None;
+    }
+
+    // Pattern 2: ResourceType/some-id (has a slash)
+    if let Some((slash_type, _id)) = s.split_once('/') {
+        // If the part before the slash is a known created resource type, resolve it
+        if let Some(id) = created_ids.get(slash_type) {
+            return Some(format!("{}/{}", slash_type, id));
+        }
+        // urn:uuid:... or http://... absolute references — use context resource_type
+        if s.starts_with("urn:") || s.starts_with("http") {
+            if let Some(id) = created_ids.get(resource_type) {
+                return Some(format!("{}/{}", resource_type, id));
+            }
+        }
+        tracing::warn!("Could not resolve reference: {} (unknown resource type)", s);
+        return None;
+    }
+
+    // Pattern 3: Bare resource type name (no slash)
+    if let Some(id) = created_ids.get(s) {
+        return Some(format!("{}/{}", s, id));
+    }
+
+    tracing::warn!("Could not resolve reference: {}", s);
+    None
 }
 
 /// Resolve sentinel search values in URLs with actual values from created resources.
