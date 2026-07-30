@@ -71,13 +71,57 @@ fn extract_paths(
     }
 }
 
+/// Parse a FHIRPath expression into field paths for the given resource type.
+/// Handles simple paths like `Patient.name` → `["Patient.name"]`,
+/// `Patient.name.family` → `["Patient.name.family"]`, and union expressions
+/// like `Patient.name | Practitioner.name` by extracting only the paths
+/// matching the requested resource type.
+fn expression_to_field_paths(resource_type: &str, expression: &str) -> Option<Vec<String>> {
+    let parts: Vec<&str> = expression.split('|').collect();
+    let mut paths = Vec::new();
+
+    for part in &parts {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        // Check if the path starts with the requested resource type
+        // e.g. "Patient.name" matches resource_type="Patient"
+        if let Some(dot_pos) = part.find('.') {
+            let rt = &part[..dot_pos];
+            if rt == resource_type {
+                paths.push(part.to_string());
+            }
+        } else if part == resource_type {
+            // Bare resource type reference — not a field path, skip
+            continue;
+        }
+    }
+
+    if paths.is_empty() { None } else { Some(paths) }
+}
+
 /// Map a FHIR search parameter name + type to the likely field path in a resource.
 /// Returns a list of possible paths to check.
+///
+/// First tries dynamic resolution from the SearchParameter's `expression` field
+/// (if `search_params` is provided). Falls back to a hardcoded table of common
+/// FHIR R4 search parameters, then to type-based heuristics.
 pub fn search_param_to_field_paths(
     resource_type: &str,
     param_name: &str,
     param_type: &str,
+    search_params: Option<&[SearchParameter]>,
 ) -> Vec<String> {
+    // Try dynamic resolution from SearchParameter expression first
+    if let Some(params) = search_params
+        && let Some(sp) = params.iter().find(|sp| sp.code == param_name)
+        && let Some(expr) = &sp.expression
+        && let Some(paths) = expression_to_field_paths(resource_type, expr)
+    {
+        return paths;
+    }
+
     match (resource_type, param_name) {
         // Common FHIR R4 search param → field mappings
         (_, "name") => vec![
@@ -141,6 +185,7 @@ pub fn resolve_search_value(
     param_type: &str,
     field_values: &HashMap<String, String>,
     created_ids: &HashMap<String, String>,
+    search_params: Option<&[SearchParameter]>,
 ) -> Option<String> {
     // Special case: _id always uses the created resource ID
     if param_name == "_id" {
@@ -166,7 +211,8 @@ pub fn resolve_search_value(
     }
 
     // For other param types, look up from field values
-    let possible_paths = search_param_to_field_paths(resource_type, param_name, param_type);
+    let possible_paths =
+        search_param_to_field_paths(resource_type, param_name, param_type, search_params);
     for path in &possible_paths {
         if let Some(val) = field_values.get(path) {
             return Some(val.clone());
@@ -283,7 +329,14 @@ mod tests {
         let mut created_ids = HashMap::new();
         created_ids.insert("Patient".to_string(), "patient-123".to_string());
 
-        let result = resolve_search_value("Patient", "_id", "token", &HashMap::new(), &created_ids);
+        let result = resolve_search_value(
+            "Patient",
+            "_id",
+            "token",
+            &HashMap::new(),
+            &created_ids,
+            None,
+        );
         assert_eq!(result, Some("patient-123".to_string()));
     }
 
@@ -299,13 +352,14 @@ mod tests {
             "reference",
             &HashMap::new(),
             &created_ids,
+            None,
         );
         assert_eq!(result, Some("Patient/patient-456".to_string()));
     }
 
     #[test]
     fn test_search_param_to_field_paths() {
-        let paths = search_param_to_field_paths("Patient", "name", "string");
+        let paths = search_param_to_field_paths("Patient", "name", "string", None);
         assert!(paths.contains(&"Patient.name".to_string()));
         assert!(paths.contains(&"Patient.name[0].family".to_string()));
     }

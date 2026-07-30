@@ -189,6 +189,7 @@ pub fn generate_test_plan(
                 &None,
                 field_values,
                 created_ids,
+                Some(search_params),
             );
             test.validation.response_assertion =
                 assertion_for_kind(&test.kind, &test.resource_type);
@@ -275,6 +276,7 @@ fn build_test_group(
                 profile_url,
                 field_values,
                 created_ids,
+                Some(search_params),
             ));
 
             // Modifier tests
@@ -288,6 +290,7 @@ fn build_test_group(
                     profile_url,
                     field_values,
                     created_ids,
+                    Some(search_params),
                 ));
             }
 
@@ -302,6 +305,7 @@ fn build_test_group(
                     profile_url,
                     field_values,
                     created_ids,
+                    Some(search_params),
                 ));
             }
 
@@ -327,6 +331,7 @@ fn build_test_group(
                 profile_url,
                 field_values,
                 created_ids,
+                Some(search_params),
             ));
 
             // Modifier + prefix tests for standalone params too
@@ -340,6 +345,7 @@ fn build_test_group(
                     profile_url,
                     field_values,
                     created_ids,
+                    Some(search_params),
                 ));
             }
 
@@ -353,6 +359,7 @@ fn build_test_group(
                     profile_url,
                     field_values,
                     created_ids,
+                    Some(search_params),
                 ));
             }
 
@@ -379,6 +386,7 @@ fn build_test_group(
                         profile_url,
                         field_values,
                         created_ids,
+                        Some(search_params),
                     ));
                 }
             }
@@ -406,6 +414,7 @@ fn build_test_group(
                             profile_url,
                             field_values,
                             created_ids,
+                            Some(search_params),
                         ));
                     }
                 }
@@ -500,6 +509,7 @@ fn build_test_group(
                         "string",
                         field_values,
                         created_ids,
+                        Some(search_params),
                     );
                     let url = format!(
                         "/{}?_has:{}:{}:{}={}",
@@ -606,6 +616,7 @@ fn build_test_group(
             profile_url,
             field_values,
             created_ids,
+            Some(search_params),
         ));
     }
 
@@ -799,6 +810,7 @@ fn resolve_param_value(
     param_type: &str,
     field_values: &HashMap<String, HashMap<String, String>>,
     created_ids: &HashMap<String, String>,
+    search_params: Option<&[SearchParameter]>,
 ) -> String {
     let rt_values = field_values.get(resource_type);
     let empty = HashMap::new();
@@ -809,6 +821,7 @@ fn resolve_param_value(
         param_type,
         rt_values,
         created_ids,
+        search_params,
     );
     value.unwrap_or_else(|| sample_value(param_type).to_string())
 }
@@ -839,6 +852,7 @@ fn build_search_single_test(
     profile_url: &Option<String>,
     field_values: &HashMap<String, HashMap<String, String>>,
     created_ids: &HashMap<String, String>,
+    search_params: Option<&[SearchParameter]>,
 ) -> TestCase {
     let value = resolve_param_value(
         resource_type,
@@ -846,6 +860,7 @@ fn build_search_single_test(
         param_type,
         field_values,
         created_ids,
+        search_params,
     );
     let url = format!("/{resource_type}?{param_name}={value}&_id={{id}}");
 
@@ -888,6 +903,7 @@ fn build_search_single_from_sp(
     profile_url: &Option<String>,
     field_values: &HashMap<String, HashMap<String, String>>,
     created_ids: &HashMap<String, String>,
+    search_params: Option<&[SearchParameter]>,
 ) -> TestCase {
     build_search_single_test(
         resource_type,
@@ -896,9 +912,11 @@ fn build_search_single_from_sp(
         profile_url,
         field_values,
         created_ids,
+        search_params,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_search_modifier_test(
     resource_type: &str,
     param_name: &str,
@@ -907,6 +925,7 @@ fn build_search_modifier_test(
     profile_url: &Option<String>,
     field_values: &HashMap<String, HashMap<String, String>>,
     created_ids: &HashMap<String, String>,
+    search_params: Option<&[SearchParameter]>,
 ) -> TestCase {
     let value = resolve_param_value(
         resource_type,
@@ -914,6 +933,7 @@ fn build_search_modifier_test(
         param_type,
         field_values,
         created_ids,
+        search_params,
     );
     let url = if matches!(modifier, SearchModifier::Missing) {
         // :missing takes true/false
@@ -952,6 +972,7 @@ fn build_search_modifier_test(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_search_prefix_test(
     resource_type: &str,
     param_name: &str,
@@ -960,6 +981,7 @@ fn build_search_prefix_test(
     profile_url: &Option<String>,
     field_values: &HashMap<String, HashMap<String, String>>,
     created_ids: &HashMap<String, String>,
+    search_params: Option<&[SearchParameter]>,
 ) -> TestCase {
     let value = resolve_param_value(
         resource_type,
@@ -967,6 +989,7 @@ fn build_search_prefix_test(
         param_type,
         field_values,
         created_ids,
+        search_params,
     );
     let url = format!(
         "/{resource_type}?{param_name}={prefix}{value}",
@@ -1050,11 +1073,19 @@ fn build_search_combo_test(
     profile_url: &Option<String>,
     field_values: &HashMap<String, HashMap<String, String>>,
     created_ids: &HashMap<String, String>,
+    search_params: Option<&[SearchParameter]>,
 ) -> TestCase {
     let query: Vec<String> = params
         .iter()
         .map(|(name, ptype)| {
-            let value = resolve_param_value(resource_type, name, ptype, field_values, created_ids);
+            let value = resolve_param_value(
+                resource_type,
+                name,
+                ptype,
+                field_values,
+                created_ids,
+                search_params,
+            );
             format!("{}={}", name, value)
         })
         .collect();
@@ -1097,6 +1128,7 @@ fn build_chained_search_test(
     profile_url: &Option<String>,
     field_values: &HashMap<String, HashMap<String, String>>,
     created_ids: &HashMap<String, String>,
+    search_params: Option<&[SearchParameter]>,
 ) -> TestCase {
     // For chained searches, resolve the target param value from the target resource type.
     // We don't know the target resource type at this point, so use the chain param's
@@ -1107,6 +1139,7 @@ fn build_chained_search_test(
         "string",
         field_values,
         created_ids,
+        search_params,
     );
     let url = format!("/{resource_type}?{chain_param}.{target_param}={value}");
 
@@ -1378,6 +1411,7 @@ fn build_operation_test(
     profile_url: &Option<String>,
     field_values: &HashMap<String, HashMap<String, String>>,
     created_ids: &HashMap<String, String>,
+    search_params: Option<&[SearchParameter]>,
 ) -> TestCase {
     // Build request body from operation parameters
     let has_required_input_params = op_def
@@ -1410,6 +1444,7 @@ fn build_operation_test(
                             ptype,
                             field_values,
                             created_ids,
+                            search_params,
                         );
                         param_obj.insert("value".to_string(), serde_json::Value::String(value));
                     }
@@ -2042,6 +2077,7 @@ mod tests {
             &None,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         );
         assert_eq!(test.request.method, "GET");
         assert!(
@@ -2080,6 +2116,7 @@ mod tests {
             &profile,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         );
         assert_eq!(test.profile_url, profile);
         assert!(test.request.url.contains("?birthdate="));
@@ -2100,6 +2137,7 @@ mod tests {
             &None,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         );
         assert_eq!(test.request.method, "GET");
         assert!(
@@ -2125,6 +2163,7 @@ mod tests {
             &None,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         );
         assert_eq!(test.request.method, "GET");
         assert_eq!(test.request.url, "/Patient?birthdate:missing=true");
@@ -2146,6 +2185,7 @@ mod tests {
             &None,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         );
         assert_eq!(test.request.method, "GET");
         assert!(
@@ -2171,6 +2211,7 @@ mod tests {
             &None,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         );
         assert!(
             test.request.url.contains("value=gt"),
@@ -2204,8 +2245,14 @@ mod tests {
     #[test]
     fn build_search_combo_test_combines_params() {
         let params: [(&str, &str); 2] = [("name", "string"), ("birthdate", "date")];
-        let test =
-            build_search_combo_test("Patient", &params, &None, &HashMap::new(), &HashMap::new());
+        let test = build_search_combo_test(
+            "Patient",
+            &params,
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+        );
         assert_eq!(test.request.method, "GET");
         assert!(
             test.request.url.contains("?name="),
@@ -2233,6 +2280,7 @@ mod tests {
             &None,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         );
         assert_eq!(test.request.method, "GET");
         assert!(
@@ -2423,6 +2471,7 @@ mod tests {
             &None,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         );
         assert_eq!(test.request.method, "GET");
         assert_eq!(test.request.url, "/Patient/{id}/$everything");
@@ -2457,6 +2506,7 @@ mod tests {
             &None,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         );
         assert_eq!(test.request.url, "/$export");
         assert_eq!(test.request.method, "GET"); // No required params → GET
@@ -2488,6 +2538,7 @@ mod tests {
             &None,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         );
         assert!(
             test.request.body.is_some(),
@@ -2581,7 +2632,7 @@ mod tests {
     fn resolve_param_value_falls_back_to_sample_value() {
         let empty_fv = HashMap::new();
         let empty_ids = HashMap::new();
-        let value = resolve_param_value("Patient", "name", "string", &empty_fv, &empty_ids);
+        let value = resolve_param_value("Patient", "name", "string", &empty_fv, &empty_ids, None);
         assert_eq!(value, "test-value");
     }
 
@@ -2592,7 +2643,8 @@ mod tests {
         patient_values.insert("Patient.name".to_string(), "John".to_string());
         field_values.insert("Patient".to_string(), patient_values);
         let empty_ids = HashMap::new();
-        let value = resolve_param_value("Patient", "name", "string", &field_values, &empty_ids);
+        let value =
+            resolve_param_value("Patient", "name", "string", &field_values, &empty_ids, None);
         assert_eq!(value, "John");
     }
 }
