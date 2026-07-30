@@ -239,6 +239,22 @@ fn build_test_group(
         tests.push(test_case);
     }
 
+    // --- Conditional operation tests ---
+    // If the server declares conditionalCreate, generate a test with If-None-Exist header.
+    if resource.conditional_create == Some(true) {
+        tests.push(build_conditional_create_test(
+            &resource.resource_type,
+            profile_url,
+        ));
+    }
+    // If the server declares conditionalUpdate, generate a test with If-Match header.
+    if resource.conditional_update == Some(true) {
+        tests.push(build_conditional_update_test(
+            &resource.resource_type,
+            profile_url,
+        ));
+    }
+
     if has_search_type {
         // --- Search param tests ---
         // Find all SearchParameters applicable to this resource type
@@ -552,6 +568,29 @@ fn build_interaction_test(
         Interaction::Read | Interaction::Create | Interaction::Update
     );
 
+    // For PATCH, add a JSON Patch body
+    let body = if matches!(interaction, Interaction::Patch) {
+        Some(serde_json::json!([
+            {"op": "replace", "path": "/status", "value": "inactive"}
+        ]))
+    } else {
+        None
+    };
+
+    // For history interactions, assert the response is a Bundle of type "history"
+    let response_assertion = if matches!(
+        interaction,
+        Interaction::HistoryInstance | Interaction::HistoryType
+    ) {
+        Some(ResponseAssertion {
+            bundle_type: Some("history".to_string()),
+            min_entries: Some(1),
+            ..ResponseAssertion::none()
+        })
+    } else {
+        None
+    };
+
     TestCase {
         name: format!("{}_{}", resource_type.to_lowercase(), interaction.label()),
         kind: TestCaseKind::Interaction,
@@ -562,7 +601,7 @@ fn build_interaction_test(
             method: method.to_string(),
             url,
             headers: HashMap::new(),
-            body: None,
+            body,
         },
         validation: ValidationSpec {
             expected_status,
@@ -572,6 +611,65 @@ fn build_interaction_test(
                 None
             },
             required_elements,
+            forbidden_elements: Vec::new(),
+            response_assertion,
+        },
+    }
+}
+
+/// Build a conditional create test that sends an `If-None-Exist` header.
+/// This tests the server's ability to handle conditional create (upsert) semantics.
+fn build_conditional_create_test(resource_type: &str, profile_url: &Option<String>) -> TestCase {
+    let mut headers = HashMap::new();
+    headers.insert(
+        "If-None-Exist".to_string(),
+        format!("{resource_type}?identifier=test-id"),
+    );
+
+    TestCase {
+        name: format!("{}_conditional_create", resource_type.to_lowercase()),
+        kind: TestCaseKind::Interaction,
+        interaction: Interaction::Create,
+        resource_type: resource_type.to_string(),
+        profile_url: profile_url.clone(),
+        request: HttpRequest {
+            method: "POST".to_string(),
+            url: format!("/{resource_type}"),
+            headers,
+            body: None,
+        },
+        validation: ValidationSpec {
+            expected_status: 201,
+            profile_url: profile_url.clone(),
+            required_elements: vec![format!("{resource_type}.id")],
+            forbidden_elements: Vec::new(),
+            response_assertion: None,
+        },
+    }
+}
+
+/// Build a conditional update test that sends an `If-Match` header.
+/// This tests the server's ability to handle conditional update (version-aware) semantics.
+fn build_conditional_update_test(resource_type: &str, profile_url: &Option<String>) -> TestCase {
+    let mut headers = HashMap::new();
+    headers.insert("If-Match".to_string(), "W/\"1\"".to_string());
+
+    TestCase {
+        name: format!("{}_conditional_update", resource_type.to_lowercase()),
+        kind: TestCaseKind::Interaction,
+        interaction: Interaction::Update,
+        resource_type: resource_type.to_string(),
+        profile_url: profile_url.clone(),
+        request: HttpRequest {
+            method: "PUT".to_string(),
+            url: format!("/{resource_type}/{{id}}"),
+            headers,
+            body: None,
+        },
+        validation: ValidationSpec {
+            expected_status: 200,
+            profile_url: profile_url.clone(),
+            required_elements: Vec::new(),
             forbidden_elements: Vec::new(),
             response_assertion: None,
         },
