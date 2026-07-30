@@ -504,8 +504,11 @@ mod tests {
     /// Helper to set up a temporary cache directory for testing.
     /// Returns the temp dir (kept alive for the duration of the test) and the
     /// path to the cache directory.
-    fn setup_test_cache() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir, std::path::PathBuf)
-    {
+    fn setup_test_cache() -> (
+        std::sync::MutexGuard<'static, ()>,
+        tempfile::TempDir,
+        std::path::PathBuf,
+    ) {
         // Serialize all tests that mutate the global `HOME` env var. Cargo runs
         // tests in parallel, so without this guard one test's `set_var("HOME")`
         // clobbers another's cache path mid-run, causing spurious failures.

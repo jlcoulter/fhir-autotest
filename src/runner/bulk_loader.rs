@@ -389,9 +389,11 @@ fn collect_same_type_refs(value: &serde_json::Value, prefix: &str, out: &mut Vec
                 if key == "reference" {
                     if let Some(s) = val.as_str()
                         && let Some(id) = s.strip_prefix(prefix)
-                            && !id.is_empty() && !id.contains('/') {
-                                out.push(id.to_string());
-                            }
+                        && !id.is_empty()
+                        && !id.contains('/')
+                    {
+                        out.push(id.to_string());
+                    }
                 } else {
                     collect_same_type_refs(val, prefix, out);
                 }
