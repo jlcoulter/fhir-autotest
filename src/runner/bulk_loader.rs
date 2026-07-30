@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::Path;
+use std::sync::Arc;
 
 /// HL7 R5 extension StructureDefinitions that the HCPD profile references for slicing.
 /// These must be available in the HAPI validator's registry or validation of Practitioner
@@ -270,6 +271,143 @@ pub async fn upload_supplement_resources(
     Ok(supplement_ids)
 }
 
+/// Order resources of a single type into dependency "waves" for upload.
+///
+/// Some resource types reference *other resources of the same type* — most
+/// notably `Organization.partOf → Organization/{id}`. Because bulk generation
+/// links resources into an arbitrary web, a resource may reference a sibling
+/// that appears later in the file. Uploading concurrently in file order would
+/// then produce forward references the server rejects (HAPI-1094).
+///
+/// This function parses each line, extracts its id and the ids of same-type
+/// resources it references, then partitions the resources into waves such that
+/// every wave depends only on resources in earlier waves. Callers upload each
+/// wave to completion before starting the next, guaranteeing referenced
+/// siblings already exist.
+///
+/// Resources whose dependencies cannot be satisfied (e.g. a reference cycle, or
+/// a reference to an id not present in the file) are placed in a final
+/// best-effort wave so they are still attempted. Ordering within a wave is
+/// stable (original file order).
+fn order_upload_waves<'a>(resource_type: &str, lines: &'a [String]) -> Vec<Vec<&'a String>> {
+    // Parse id + same-type dependencies for each line. Lines that fail to parse
+    // are kept (with no dependencies) so they are still uploaded.
+    let prefix = format!("{}/", resource_type);
+    let mut id_of: Vec<Option<String>> = Vec::with_capacity(lines.len());
+    let mut deps_of: Vec<Vec<String>> = Vec::with_capacity(lines.len());
+
+    for line in lines {
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => {
+                let id = value
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let mut deps = Vec::new();
+                collect_same_type_refs(&value, &prefix, &mut deps);
+                id_of.push(id);
+                deps_of.push(deps);
+            }
+            Err(_) => {
+                id_of.push(None);
+                deps_of.push(Vec::new());
+            }
+        }
+    }
+
+    // Set of ids actually present in this file — references to anything outside
+    // it cannot be ordered here and are ignored for wave assignment.
+    let present: std::collections::HashSet<&str> =
+        id_of.iter().filter_map(|o| o.as_deref()).collect();
+
+    let mut committed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut placed = vec![false; lines.len()];
+    let mut waves: Vec<Vec<&String>> = Vec::new();
+
+    // Greedily build waves: each pass takes every not-yet-placed resource whose
+    // in-file dependencies are all committed.
+    loop {
+        let mut wave_indices: Vec<usize> = Vec::new();
+        for (idx, line) in lines.iter().enumerate() {
+            let _ = line;
+            if placed[idx] {
+                continue;
+            }
+            let ready = deps_of[idx].iter().all(|dep| {
+                // Ignore self-references and references to ids not in this file.
+                if !present.contains(dep.as_str()) {
+                    return true;
+                }
+                if Some(dep.as_str()) == id_of[idx].as_deref() {
+                    return true;
+                }
+                committed.contains(dep)
+            });
+            if ready {
+                wave_indices.push(idx);
+            }
+        }
+
+        if wave_indices.is_empty() {
+            break;
+        }
+
+        let mut wave: Vec<&String> = Vec::with_capacity(wave_indices.len());
+        for idx in wave_indices {
+            placed[idx] = true;
+            if let Some(id) = &id_of[idx] {
+                committed.insert(id.clone());
+            }
+            wave.push(&lines[idx]);
+        }
+        waves.push(wave);
+    }
+
+    // Any remaining resources are caught in a cycle — emit them in one final
+    // best-effort wave so they are still attempted.
+    let leftover: Vec<&String> = lines
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| !placed[*idx])
+        .map(|(_, line)| line)
+        .collect();
+    if !leftover.is_empty() {
+        waves.push(leftover);
+    }
+
+    waves
+}
+
+/// Recursively collect the ids of same-type references within a resource.
+///
+/// Scans every `"reference": "{prefix}{id}"` string in the JSON (where `prefix`
+/// is e.g. `"Organization/"`) and records the referenced `id`.
+fn collect_same_type_refs(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, val) in map {
+                if key == "reference" {
+                    if let Some(s) = val.as_str() {
+                        if let Some(id) = s.strip_prefix(prefix) {
+                            if !id.is_empty() && !id.contains('/') {
+                                out.push(id.to_string());
+                            }
+                        }
+                    }
+                } else {
+                    collect_same_type_refs(val, prefix, out);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_same_type_refs(item, prefix, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Upload NDJSON files to the FHIR repository and return IDs per resource type.
 ///
 /// For each resource type in `creation_order`, reads the NDJSON file from
@@ -334,12 +472,26 @@ pub async fn upload_ndjson_files(
         let mut uploaded = 0usize;
         let mut errors = 0usize;
 
-        // Process in batches for concurrency control
-        let batch_size = concurrency.max(1);
-        for chunk in lines.chunks(batch_size) {
-            let mut handles = Vec::new();
+        // Order resources into dependency "waves" so that any resource which
+        // references another resource of the *same* type (e.g.
+        // Organization.partOf → another Organization) is uploaded only after
+        // the resource it depends on has been committed. Because generation
+        // only ever points partOf at an earlier-indexed Organization and does
+        // so for a small fraction of resources, wave 0 contains the vast
+        // majority (all independent resources) and later waves are tiny.
+        //
+        // Within a wave there are no interdependencies, so we upload it through
+        // a continuous, semaphore-bounded pool: `concurrency` requests stay in
+        // flight at all times instead of stalling on the slowest request of a
+        // fixed batch. We only wait between waves, which is cheap since later
+        // waves are small. Any resources caught in a reference cycle are
+        // emitted by order_upload_waves in a final best-effort wave.
+        let permits = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
+        let waves = order_upload_waves(resource_type, &lines);
+        for wave in &waves {
+            let mut join_set = tokio::task::JoinSet::new();
 
-            for line in chunk {
+            for line in wave {
                 let resource: serde_json::Value = serde_json::from_str(line)
                     .with_context(|| format!("Invalid JSON in {}.ndjson", resource_type))?;
                 let mut resource = resource;
@@ -365,8 +517,13 @@ pub async fn upload_ndjson_files(
                 let client = client.clone();
                 let write_endpoint = write_endpoint.clone();
                 let upload_method = upload_method.clone();
+                // Acquire a permit before spawning so at most `concurrency`
+                // requests are ever in flight; the permit is released when the
+                // task finishes, immediately admitting the next one.
+                let permit = permits.clone().acquire_owned().await?;
 
-                handles.push(tokio::spawn(async move {
+                join_set.spawn(async move {
+                    let _permit = permit;
                     let req = if upload_method == "PUT" {
                         client
                             .put(&url)
@@ -385,11 +542,11 @@ pub async fn upload_ndjson_files(
                     let status = resp.status();
                     let body: serde_json::Value = resp.json().await.unwrap_or_default();
                     anyhow::Ok((client_id, status.as_u16(), body))
-                }));
+                });
             }
 
-            for handle in handles {
-                match handle.await {
+            while let Some(joined) = join_set.join_next().await {
+                match joined {
                     Ok(Ok((client_id, status, body))) => {
                         if status == 201 || status == 200 {
                             let server_id = body
@@ -540,6 +697,89 @@ mod tests {
     use axum::{Router, body::Body, extract::Request, http::StatusCode, routing::any};
     use std::io::Write;
     use std::sync::{Arc, Mutex};
+
+    // ── order_upload_waves tests ──
+
+    fn org_line(id: &str, part_of: Option<&str>) -> String {
+        let mut obj = serde_json::json!({ "resourceType": "Organization", "id": id });
+        if let Some(parent) = part_of {
+            obj["partOf"] = serde_json::json!({ "reference": format!("Organization/{parent}") });
+        }
+        obj.to_string()
+    }
+
+    fn wave_ids(waves: &[Vec<&String>]) -> Vec<Vec<String>> {
+        waves
+            .iter()
+            .map(|wave| {
+                wave.iter()
+                    .map(|line| {
+                        serde_json::from_str::<serde_json::Value>(line).unwrap()["id"]
+                            .as_str()
+                            .unwrap()
+                            .to_string()
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn waves_place_parents_before_children() {
+        // c → b → a, listed in reverse (child-first) order.
+        let lines = vec![
+            org_line("c", Some("b")),
+            org_line("b", Some("a")),
+            org_line("a", None),
+        ];
+        let waves = order_upload_waves("Organization", &lines);
+        let ids = wave_ids(&waves);
+        assert_eq!(ids, vec![vec!["a"], vec!["b"], vec!["c"]]);
+    }
+
+    #[test]
+    fn waves_group_independent_resources_together() {
+        // a and b are roots; c and d each point at a root.
+        let lines = vec![
+            org_line("a", None),
+            org_line("b", None),
+            org_line("c", Some("a")),
+            org_line("d", Some("b")),
+        ];
+        let waves = order_upload_waves("Organization", &lines);
+        let ids = wave_ids(&waves);
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], vec!["a", "b"]);
+        assert_eq!(ids[1], vec!["c", "d"]);
+    }
+
+    #[test]
+    fn waves_ignore_self_reference() {
+        let lines = vec![org_line("a", Some("a"))];
+        let waves = order_upload_waves("Organization", &lines);
+        assert_eq!(wave_ids(&waves), vec![vec!["a"]]);
+    }
+
+    #[test]
+    fn waves_ignore_reference_outside_file() {
+        // Parent "missing" is not in this file — treat as already present.
+        let lines = vec![org_line("a", Some("missing"))];
+        let waves = order_upload_waves("Organization", &lines);
+        assert_eq!(wave_ids(&waves), vec![vec!["a"]]);
+    }
+
+    #[test]
+    fn waves_emit_cycles_in_final_best_effort_wave() {
+        // a ↔ b form a cycle; neither can be ordered, so both land in the
+        // final best-effort wave. All resources must still be present.
+        let lines = vec![org_line("a", Some("b")), org_line("b", Some("a"))];
+        let waves = order_upload_waves("Organization", &lines);
+        let ids = wave_ids(&waves);
+        let flat: Vec<&String> = ids.iter().flatten().collect();
+        assert_eq!(flat.len(), 2);
+        assert!(flat.iter().any(|id| *id == "a"));
+        assert!(flat.iter().any(|id| *id == "b"));
+    }
 
     #[derive(Default, Debug)]
     struct RequestLog {

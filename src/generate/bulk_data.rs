@@ -853,18 +853,26 @@ fn overlay_cross_references(
             );
         }
         "Organization" if !org_ids.is_empty() => {
-            // Replace partOf with a valid reference to another Organization.
-            // If there's only one Organization, remove partOf entirely since
-            // there's no parent to reference — HAPI will reject a UUID that
-            // doesn't exist on the server.
-            if org_ids.len() > 1 {
-                let ref_str = random_ref("Organization", org_ids, rng);
-                obj.insert(
-                    "partOf".to_string(),
-                    serde_json::json!({ "reference": ref_str }),
-                );
-            } else {
-                obj.remove("partOf");
+            // Give only a small fraction of Organizations a partOf, and always
+            // point at an *earlier*-indexed Organization. This keeps the
+            // hierarchy sparse and, crucially, acyclic: references only ever go
+            // backward, so there is a valid upload order (guaranteed by the
+            // wave ordering in upload_ndjson_files) and no reference cycles can
+            // form. Most Organizations are therefore roots with no parent.
+            const PART_OF_PROBABILITY: f64 = 0.01; // ~1 in 100
+            let self_index = org_ids.iter().position(|id| id.as_str() == _id);
+            match self_index {
+                Some(idx) if idx > 0 && rng.random_bool(PART_OF_PROBABILITY) => {
+                    // Pick a random Organization that appears before this one.
+                    let parent = &org_ids[rng.random_range(0..idx)];
+                    obj.insert(
+                        "partOf".to_string(),
+                        serde_json::json!({ "reference": format!("Organization/{parent}") }),
+                    );
+                }
+                _ => {
+                    obj.remove("partOf");
+                }
             }
         }
         "Provenance" => {
