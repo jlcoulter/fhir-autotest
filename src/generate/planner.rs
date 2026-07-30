@@ -1,4 +1,5 @@
 use crate::generate::model::*;
+use crate::generate::value_resolver::resolve_reference_target;
 use crate::generate::value_resolver::resolve_search_value;
 use crate::model::*;
 use std::collections::HashMap;
@@ -359,7 +360,9 @@ fn build_test_group(
         for sp in &inline_params {
             if sp.param_type == "reference" {
                 // Try to find target resource search params to chain into
-                if let Some(target_type) = infer_reference_target(&sp.name, search_params) {
+                if let Some(target_type) =
+                    resolve_reference_target(&resource.resource_type, &sp.name, Some(search_params))
+                {
                     // Find search params for the target resource
                     let target_params: Vec<&SearchParameter> = search_params
                         .iter()
@@ -387,8 +390,11 @@ fn build_test_group(
             // FHIR search parameter codes are lowercase, so normalise the
             // param portion (e.g. "partOf" → "partof") to match the server.
             if let Some((_res, param)) = include_spec.split_once(':') {
-                let expected_include_type =
-                    infer_reference_target(&param.to_lowercase(), search_params);
+                let expected_include_type = resolve_reference_target(
+                    &resource.resource_type,
+                    &param.to_lowercase(),
+                    Some(search_params),
+                );
                 tests.push(build_include_test(
                     &resource.resource_type,
                     &param.to_lowercase(),
@@ -1309,51 +1315,6 @@ fn build_negative_test(
             forbidden_elements: Vec::new(),
             response_assertion: None,
         },
-    }
-}
-
-/// Infer a reference target resource type from a SearchParameter's expression field.
-///
-/// Extracts the first resource type from the FHIRPath expression (e.g.,
-/// `"Patient.name | Practitioner.name"` → `"Patient"`). Falls back to a
-/// hardcoded mapping of common search parameter names when no SearchParameter
-/// definition is found.
-fn infer_reference_target(param_name: &str, search_params: &[SearchParameter]) -> Option<String> {
-    // Try to find the SearchParameter by code and extract from its expression
-    if let Some(sp) = search_params.iter().find(|sp| sp.code == param_name)
-        && let Some(expression) = sp.expression.as_deref()
-    {
-        let types: Vec<&str> = expression
-            .split('|')
-            .filter_map(|part| {
-                let part = part.trim();
-                let rtype = part.split('.').next()?;
-                if rtype.chars().next()?.is_uppercase() && !rtype.contains('-') {
-                    Some(rtype)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !types.is_empty() {
-            return Some(types.first()?.to_string());
-        }
-    }
-
-    // Fallback: hardcoded mapping for common FHIR search parameter names
-    match param_name {
-        "subject" | "patient" => Some("Patient".to_string()),
-        "encounter" => Some("Encounter".to_string()),
-        "organization" => Some("Organization".to_string()),
-        "partof" => Some("Organization".to_string()),
-        "practitioner" => Some("Practitioner".to_string()),
-        "device" => Some("Device".to_string()),
-        "location" => Some("Location".to_string()),
-        "service" => Some("HealthcareService".to_string()),
-        "endpoint" => Some("Endpoint".to_string()),
-        "group" => Some("Group".to_string()),
-        "specimen" => Some("Specimen".to_string()),
-        _ => None,
     }
 }
 
