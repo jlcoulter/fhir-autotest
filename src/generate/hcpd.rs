@@ -130,7 +130,10 @@ pub fn apply_hcpd_bulk_fixes(
                             },
                             "value": registration_number
                         }
-                    ]
+                    ],
+                    "issuer": {
+                        "reference": "Organization/organization-1"
+                    }
                 }
             ]);
 

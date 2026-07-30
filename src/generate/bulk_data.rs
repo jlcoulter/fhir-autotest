@@ -877,7 +877,12 @@ fn overlay_cross_references(
             if let Some(ref_str) = target_ref.as_deref() {
                 obj.insert(
                     "target".to_string(),
-                    serde_json::json!([{ "reference": ref_str }]),
+                    serde_json::json!([{
+                        "reference": ref_str,
+                        "extension": [{
+                            "url": "http://example.org/fhir/StructureDefinition/generated-extension"
+                        }]
+                    }]),
                 );
             }
 
@@ -921,22 +926,42 @@ fn overlay_cross_references(
 fn provenance_target_for_id(
     _provenance_id: &str,
     org_ids: &[String],
-    _prac_ids: &[String],
-    _loc_ids: &[String],
-    _hs_ids: &[String],
-    _practitioner_role_ids: &[String],
-    _endpoint_ids: &[String],
+    prac_ids: &[String],
+    loc_ids: &[String],
+    hs_ids: &[String],
+    practitioner_role_ids: &[String],
+    endpoint_ids: &[String],
     rng: &mut impl Rng,
 ) -> Option<String> {
-    // Only reference Organization — root-level resources are never deleted
-    // during the test run. Referencing PractitionerRole, HealthcareService,
-    // Location, or Endpoint risks HAPI-1096 ("Resource is deleted") when a
-    // DELETE test removes that resource before Provenance is created.
-    if org_ids.is_empty() {
-        None
-    } else {
-        Some(random_ref("Organization", org_ids, rng))
+    // Distribute Provenance targets across all resource types so that
+    // _revinclude=Provenance:target queries on Location, HealthcareService,
+    // PractitionerRole, etc. return matching Provenance resources.
+    // Use a round-robin approach based on the provenance id to get
+    // deterministic coverage for the first few resources.
+    let pools: Vec<(&[String], &str)> = vec![
+        (org_ids, "Organization"),
+        (prac_ids, "Practitioner"),
+        (loc_ids, "Location"),
+        (hs_ids, "HealthcareService"),
+        (practitioner_role_ids, "PractitionerRole"),
+        (endpoint_ids, "Endpoint"),
+    ];
+    let non_empty: Vec<(&[String], &str)> = pools
+        .into_iter()
+        .filter(|(ids, _)| !ids.is_empty())
+        .collect();
+    if non_empty.is_empty() {
+        return None;
     }
+    // Use the provenance id suffix to pick a pool deterministically
+    let idx = _provenance_id
+        .rsplit('-')
+        .next()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0)
+        % non_empty.len();
+    let (pool, rtype) = non_empty[idx];
+    Some(random_ref(rtype, pool, rng))
 }
 
 fn random_ref(resource_type: &str, ids: &[String], rng: &mut impl Rng) -> String {
@@ -1958,12 +1983,12 @@ mod tests {
             .as_str()
             .unwrap();
 
-        // target and entity now always reference Organization to avoid
-        // HAPI-1096 ("Resource is deleted") when a DELETE test removes
-        // the referenced resource before Provenance is created.
-        assert!(
-            ["Organization/organization-1", "Organization/organization-2",].contains(&target_ref),
-            "target should reference an Organization ID"
+        // target now distributes across all available resource types
+        // for _revinclude coverage. With org_ids=[org-1,org-2] and
+        // prac_ids=[prac-1], provenance-1 picks Practitioner (idx=1%2=1).
+        assert_eq!(
+            target_ref, "Practitioner/practitioner-1",
+            "target should reference a non-Organization type for _revinclude coverage"
         );
         assert!(
             agent_ref == "Organization/organization-1"
@@ -2101,16 +2126,16 @@ mod tests {
             );
         }
 
-        // All Provenance targets now reference Organization to avoid
-        // HAPI-1096 ("Resource is deleted") when a DELETE test removes
-        // the referenced resource before Provenance is created.
+        // Provenance targets now distribute across all resource types
+        // for _revinclude coverage. With 5 non-empty pools and
+        // provenance-1 (idx=1%5=1) → Practitioner, provenance-2 (idx=2%5=2) → Location.
         assert_eq!(
             p1["target"][0]["reference"].as_str().unwrap(),
-            "Organization/organization-1"
+            "Practitioner/practitioner-1"
         );
         assert_eq!(
             p2["target"][0]["reference"].as_str().unwrap(),
-            "Organization/organization-1"
+            "Location/location-1"
         );
     }
 
