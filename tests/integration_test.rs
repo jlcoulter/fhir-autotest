@@ -866,7 +866,10 @@ fn extended_package_generates_sliced_identifier() {
     assert_eq!(patient["resourceType"], "Patient");
 
     let identifiers = patient["identifier"].as_array().unwrap();
-    assert!(!identifiers.is_empty(), "Should have at least one identifier");
+    assert!(
+        !identifiers.is_empty(),
+        "Should have at least one identifier"
+    );
 
     // At least one identifier should have the IHPII system from the slice
     let has_ihpii = identifiers.iter().any(|id| {
@@ -918,8 +921,7 @@ fn extended_package_generates_extension() {
         });
         if let Some(ext) = birth_sex_ext {
             assert!(
-                ext.get("valueCodeableConcept").is_some()
-                    || ext.get("valueCoding").is_some(),
+                ext.get("valueCodeableConcept").is_some() || ext.get("valueCoding").is_some(),
                 "BirthSex extension should have a valueCodeableConcept or valueCoding"
             );
         }
