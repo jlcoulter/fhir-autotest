@@ -454,9 +454,6 @@ pub async fn start_mock_server(port: u16) -> anyhow::Result<SocketAddr> {
         axum::serve(listener, app).await.unwrap();
     });
 
-    // Give the server a moment to start accepting connections
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
     Ok(bound_addr)
 }
 
