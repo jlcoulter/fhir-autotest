@@ -20,7 +20,14 @@ pub fn generate_typed_value(
         "canonical" => {
             serde_json::json!("https://example.org/fhir/StructureDefinition/example")
         }
-        "code" => serde_json::json!("active"),
+        "code" => {
+            // daysOfWeek only accepts mon/tue/wed/thu/fri/sat/sun, not generic "active"
+            if element.path.ends_with("daysOfWeek") {
+                serde_json::json!("mon")
+            } else {
+                serde_json::json!("active")
+            }
+        }
         "id" => serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
         "boolean" => serde_json::json!(true),
         "integer" => serde_json::json!(1),
