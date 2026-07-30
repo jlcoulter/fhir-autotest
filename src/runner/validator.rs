@@ -1,4 +1,5 @@
 use crate::model::*;
+use crate::runner::response_assertions::resolve_json_path;
 
 /// Validate a FHIR resource against a StructureDefinition profile.
 ///
@@ -33,18 +34,21 @@ pub fn validate_against_profile(
     };
 
     for element in elements {
-        let field_name = match get_field_name(&element.path, &profile.base_type) {
+        let field_path = match get_field_path(&element.path, &profile.base_type) {
             Some(name) => name,
             None => continue,
         };
 
         // Skip the root element
-        if field_name == profile.base_type {
+        if field_path == profile.base_type {
             continue;
         }
 
+        // Resolve the value at this path once (handles nested paths via resolve_json_path)
+        let resolved_value = resolve_json_path(resource, &field_path);
+
         // Check required elements
-        if element.min.unwrap_or(0) > 0 && resource.get(&field_name).is_none() {
+        if element.min.unwrap_or(0) > 0 && resolved_value.is_none() {
             errors.push(format!(
                 "Missing required element: {} (min={})",
                 element.path,
@@ -54,7 +58,7 @@ pub fn validate_against_profile(
 
         // Check fixed values
         if let Some(fixed) = &element.fixed_string
-            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_str())
+            && let Some(val) = resolved_value.as_ref().and_then(|v| v.as_str())
             && val != fixed
         {
             errors.push(format!(
@@ -63,7 +67,7 @@ pub fn validate_against_profile(
             ));
         }
         if let Some(fixed) = &element.fixed_code
-            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_str())
+            && let Some(val) = resolved_value.as_ref().and_then(|v| v.as_str())
             && val != fixed
         {
             errors.push(format!(
@@ -72,7 +76,7 @@ pub fn validate_against_profile(
             ));
         }
         if let Some(fixed) = &element.fixed_uri
-            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_str())
+            && let Some(val) = resolved_value.as_ref().and_then(|v| v.as_str())
             && val != fixed
         {
             errors.push(format!(
@@ -81,13 +85,13 @@ pub fn validate_against_profile(
             ));
         }
         if let Some(fixed) = &element.fixed_boolean
-            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_bool())
+            && let Some(val) = resolved_value.as_ref().and_then(|v| v.as_bool())
             && val != *fixed
         {
             errors.push(format!("{}: expected {}, got {}", element.path, fixed, val));
         }
         if let Some(fixed) = &element.fixed_integer
-            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_i64())
+            && let Some(val) = resolved_value.as_ref().and_then(|v| v.as_i64())
             && val != *fixed as i64
         {
             errors.push(format!("{}: expected {}, got {}", element.path, fixed, val));
@@ -95,7 +99,7 @@ pub fn validate_against_profile(
 
         // Check pattern values
         if let Some(pattern) = &element.pattern_string
-            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_str())
+            && let Some(val) = resolved_value.as_ref().and_then(|v| v.as_str())
             && val != pattern
         {
             errors.push(format!(
@@ -104,7 +108,7 @@ pub fn validate_against_profile(
             ));
         }
         if let Some(pattern) = &element.pattern_code
-            && let Some(val) = resource.get(&field_name).and_then(|v| v.as_str())
+            && let Some(val) = resolved_value.as_ref().and_then(|v| v.as_str())
             && val != pattern
         {
             errors.push(format!(
@@ -117,8 +121,9 @@ pub fn validate_against_profile(
     errors
 }
 
-/// Extract the field name from a FHIR path like "Patient.name" → "name".
-fn get_field_name(path: &str, resource_type: &str) -> Option<String> {
+/// Extract the field path from a FHIR path like "Patient.name.family" → "name.family".
+/// Handles nested paths recursively.
+fn get_field_path(path: &str, resource_type: &str) -> Option<String> {
     if !path.starts_with(resource_type) {
         return None;
     }
@@ -134,15 +139,20 @@ fn get_field_name(path: &str, resource_type: &str) -> Option<String> {
 
     let field_part = remainder.strip_prefix('.')?;
 
-    // Only handle direct children (no nested paths like Patient.name.family)
-    if field_part.contains('.') {
-        return None;
-    }
-
     // Strip slice notation (e.g., "identifier:type" → "identifier")
-    let field_name = field_part.split(':').next().unwrap_or(field_part);
+    // For nested paths, only strip the first segment's slice notation
+    let field_name = if let Some((first, rest)) = field_part.split_once('.') {
+        let first_clean = first.split(':').next().unwrap_or(first);
+        format!("{}.{}", first_clean, rest)
+    } else {
+        field_part
+            .split(':')
+            .next()
+            .unwrap_or(field_part)
+            .to_string()
+    };
 
-    Some(field_name.to_string())
+    Some(field_name)
 }
 
 #[cfg(test)]
@@ -327,6 +337,234 @@ mod tests {
             errors
                 .iter()
                 .any(|e| e.contains("gender") && e.contains("expected code 'male'"))
+        );
+    }
+
+    #[test]
+    fn validate_nested_required_field_present() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.name.family".to_string(),
+                path: "Patient.name.family".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "string".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Smith", "given": ["John"]}]
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn validate_nested_required_field_missing() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.name.family".to_string(),
+                path: "Patient.name.family".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "string".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        // name exists but family is missing
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"given": ["John"]}]
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("name.family") && e.contains("Missing required")),
+            "Expected error about missing name.family, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_nested_required_field_empty_name() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.name.family".to_string(),
+                path: "Patient.name.family".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "string".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        // name exists but is an empty object — family is missing
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{}]
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("name.family") && e.contains("Missing required")),
+            "Expected error about missing name.family, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_nested_fixed_value() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.name.family".to_string(),
+                path: "Patient.name.family".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "string".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_string: Some("Smith".to_string()),
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Jones"}]
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("name.family") && e.contains("expected 'Smith'")),
+            "Expected error about name.family fixed value mismatch, got: {:?}",
+            errors
         );
     }
 }

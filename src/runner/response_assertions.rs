@@ -376,7 +376,7 @@ pub fn assert_response(
 
 /// Resolve a dotted JSON path like "name.family" or "birthDate" to a value.
 /// Handles arrays by returning the first matching value.
-fn resolve_json_path(value: &Value, path: &str) -> Option<Value> {
+pub(crate) fn resolve_json_path(value: &Value, path: &str) -> Option<Value> {
     if path.is_empty() {
         return Some(value.clone());
     }
