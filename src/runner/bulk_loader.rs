@@ -629,8 +629,7 @@ pub async fn upload_ndjson_files(
 
 /// Delete all resources in `ids` from the repository, in reverse creation order.
 ///
-/// Uses concurrency for throughput. Errors are logged but not fatal —
-/// best-effort cleanup.
+/// Uses concurrency for throughput. Returns an error if any deletes failed.
 pub async fn delete_all_resources(
     ids: &HashMap<String, Vec<String>>,
     creation_order: &[String],
@@ -645,6 +644,8 @@ pub async fn delete_all_resources(
         WriteEndpoint::Repository { base_url, .. } => base_url,
         WriteEndpoint::Server { base_url, .. } => base_url,
     };
+
+    let mut total_errors = 0usize;
 
     // Delete in reverse creation order
     for resource_type in creation_order.iter().rev() {
@@ -679,7 +680,7 @@ pub async fn delete_all_resources(
 
                 for handle in handles {
                     match handle.await {
-                        Ok(Ok(200 | 204 | 410)) => {
+                        Ok(Ok(200 | 204 | 404 | 410)) => {
                             deleted += 1;
                         }
                         _ => {
@@ -697,7 +698,15 @@ pub async fn delete_all_resources(
                 "  → {}/{} {} deleted ({} errors)",
                 deleted, total, resource_type, errors
             );
+            total_errors += errors;
         }
+    }
+
+    if total_errors > 0 {
+        anyhow::bail!(
+            "{} resource(s) failed to delete during cleanup",
+            total_errors
+        );
     }
 
     Ok(())
