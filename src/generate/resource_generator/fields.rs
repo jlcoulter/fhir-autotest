@@ -587,17 +587,22 @@ pub fn populate_nested_required_fields(
         let type_code = &type_def.code;
 
         // For Extension type, generate a minimal valid extension with a URL.
-        // The conformance checker verifies the field exists in responses, so
-        // we need at least a stub extension even without knowing the exact URL.
-        // Must include a value[x] to satisfy ext-1 ("Must have either extensions
-        // or value[x], not both"). Always wrap in array since extension is 0..*
-        // in the base spec.
+        // Use the element's fixedUri or patternUri if available (the profile
+        // constrains which extension URLs are allowed). If neither is set,
+        // skip the extension — a fake URL will be rejected by the server
+        // with Extension_EXT_Unknown.
         if type_code == "Extension" {
-            let child_value = serde_json::json!({
-                "url": "http://example.org/fhir/StructureDefinition/generated-extension",
-                "valueString": "generated"
-            });
-            obj.insert(field_name.to_string(), serde_json::json!([child_value]));
+            let ext_url = element
+                .fixed_uri
+                .as_deref()
+                .or(element.pattern_uri.as_deref());
+            if let Some(url) = ext_url {
+                let child_value = serde_json::json!({
+                    "url": url,
+                    "valueString": "generated"
+                });
+                obj.insert(field_name.to_string(), serde_json::json!([child_value]));
+            }
             continue;
         }
 

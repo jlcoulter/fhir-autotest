@@ -2229,6 +2229,10 @@ mod tests {
                             versioning: None,
                         }],
                         must_support: true,
+                        fixed_uri: Some(
+                            "http://example.org/fhir/StructureDefinition/test-extension"
+                                .to_string(),
+                        ),
                         ..Default::default()
                     },
                     ElementDefinition {
@@ -2266,6 +2270,16 @@ mod tests {
             first_target.get("extension").is_some(),
             "target.extension should be populated for mustSupport Extension inside Reference, got: {:?}",
             first_target
+        );
+
+        // Verify the extension URL comes from the profile's fixedUri
+        let ext = &first_target["extension"];
+        let ext_array = ext.as_array().expect("extension should be an array");
+        let first_ext = &ext_array[0];
+        assert_eq!(
+            first_ext["url"].as_str(),
+            Some("http://example.org/fhir/StructureDefinition/test-extension"),
+            "extension URL should match the profile's fixedUri"
         );
     }
 }
