@@ -208,7 +208,6 @@ pub fn generate_test_plan(
         ig_url: ig_url.map(|s| s.to_string()),
         test_groups,
         creation_order: Vec::new(),
-        setup_resources: HashMap::new(),
     }
 }
 

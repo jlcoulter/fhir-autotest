@@ -364,8 +364,6 @@ pub struct TestPlan {
     pub test_groups: Vec<TestGroup>,
     #[serde(default)]
     pub creation_order: Vec<String>,
-    #[serde(default)]
-    pub setup_resources: HashMap<String, Vec<serde_json::Value>>,
 }
 
 impl TestPlan {
