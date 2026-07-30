@@ -167,7 +167,7 @@ docker run --rm -v $(pwd)/config.toml:/config.toml -v $(pwd)/package.tgz:/packag
 
 ### Requirements
 
-- Rust 1.88+ (uses edition 2021)
+- Rust 1.88+ (uses edition 2024)
 - No system OpenSSL required — uses `rustls` for TLS
 
 ---
