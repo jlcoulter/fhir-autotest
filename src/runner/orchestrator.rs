@@ -1,11 +1,11 @@
 use crate::config::models::*;
+use crate::generate::value_resolver::extract_field_values;
 use crate::generate::*;
 use crate::parse::*;
 use crate::runner::bulk_loader::*;
 use crate::runner::executor::*;
 use crate::runner::response_assertions::assert_response;
 use crate::runner::validator::*;
-use crate::runner::value_resolver::extract_field_values;
 use anyhow::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
