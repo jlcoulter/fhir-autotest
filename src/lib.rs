@@ -154,7 +154,6 @@ pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()>
     // Generate test plan (with field values from generated resources)
     let mut plan = generate_test_plan(
         &cs,
-        &profiles,
         &pkg.search_parameters,
         Some(&pkg.operation_definitions),
         None,
@@ -263,7 +262,6 @@ pub async fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> 
 
     let mut plan = generate_test_plan(
         &cs,
-        &profiles,
         &pkg.search_parameters,
         Some(&pkg.operation_definitions),
         None,

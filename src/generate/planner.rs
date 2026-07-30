@@ -127,7 +127,6 @@ pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<Re
 /// These are used to embed real values in test URLs instead of sentinel placeholders.
 pub fn generate_test_plan(
     cs: &CapabilityStatement,
-    _profiles: &[StructureDefinition],
     search_params: &[SearchParameter],
     operations: Option<&[OperationDefinition]>,
     ig_url: Option<&str>,
@@ -1432,7 +1431,6 @@ mod tests {
         let empty_ids = HashMap::new();
         let plan = generate_test_plan(
             &cs,
-            &[],
             &sample_search_params(),
             Some(&ops),
             None,
@@ -1523,7 +1521,6 @@ mod tests {
         let empty_ids = HashMap::new();
         let plan = generate_test_plan(
             &cs,
-            &[],
             &sample_search_params(),
             Some(&ops),
             None,
@@ -1614,7 +1611,7 @@ mod tests {
         let cs = sample_capability_statement();
         let empty_fv = HashMap::new();
         let empty_ids = HashMap::new();
-        let plan = generate_test_plan(&cs, &[], &[], None, None, &empty_fv, &empty_ids);
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
         let group = &plan.test_groups[0];
 
         // Find the :exact modifier test for "name"
@@ -1655,7 +1652,7 @@ mod tests {
         let cs = sample_capability_statement();
         let empty_fv = HashMap::new();
         let empty_ids = HashMap::new();
-        let plan = generate_test_plan(&cs, &[], &[], None, None, &empty_fv, &empty_ids);
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
         let group = &plan.test_groups[0];
 
         // Find the gt prefix test for birthdate
@@ -1723,7 +1720,7 @@ mod tests {
 
         let empty_fv = HashMap::new();
         let empty_ids = HashMap::new();
-        let plan = generate_test_plan(&cs, &[], &[], None, None, &empty_fv, &empty_ids);
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
         let group = &plan.test_groups[0];
 
         let near_test = group
