@@ -149,6 +149,12 @@ pub fn generate_test_plan(
         }
 
         for resource in &rest.resource {
+            // Skip non-resource types (e.g. Parameters) that are declared
+            // in the CapabilityStatement but are not persistable resources.
+            if super::NON_RESOURCE_TYPES.contains(&resource.resource_type.as_str()) {
+                continue;
+            }
+
             let profile_url = resource
                 .supported_profile
                 .first()
@@ -404,6 +410,11 @@ fn build_test_group(
         for revinclude_spec in &resource.search_revinclude {
             // Format: "ResourceName:paramName" e.g. "Location:organization"
             if let Some((res, param)) = revinclude_spec.split_once(':') {
+                // For _revinclude, we can't guarantee that test data has
+                // resources referencing the queried primary resource, so
+                // we don't set expected_include_type or
+                // include_requires_distinct_from — we only verify the
+                // server returns a valid search Bundle.
                 tests.push(build_include_test(
                     &resource.resource_type,
                     &param.to_lowercase(),
@@ -928,7 +939,14 @@ fn build_include_test(
     if let Some(include_type) = expected_include_type {
         include_types.insert(include_type, param_name.to_string());
     }
-    let include_requires_distinct_from = if include_types.is_empty() {
+    // For _include: when we don't know the target type, require at least
+    // one distinct resource type in the bundle.
+    // For _revinclude: we can't guarantee test data has resources
+    // referencing the queried primary resource, so don't assert
+    // distinct types — just verify the server returns a valid Bundle.
+    let include_requires_distinct_from = if revinclude {
+        None
+    } else if include_types.is_empty() {
         Some(resource_type.to_string())
     } else {
         None
@@ -1134,39 +1152,61 @@ fn build_operation_test(
     created_ids: &HashMap<String, String>,
 ) -> TestCase {
     // Build request body from operation parameters
-    let body = op_def.map(|def| {
-        let mut params = serde_json::Map::new();
-        params.insert(
-            "resourceType".to_string(),
-            serde_json::Value::String("Parameters".to_string()),
-        );
-        let mut param_array = Vec::new();
-        for p in &def.parameter {
-            if p.use_.as_deref() == Some("in") && p.min.unwrap_or(0) > 0 {
-                let mut param_obj = serde_json::Map::new();
-                param_obj.insert(
-                    "name".to_string(),
-                    serde_json::Value::String(p.name.clone()),
-                );
-                if let Some(ptype) = &p.param_type {
-                    let value = resolve_param_value(
-                        resource_type,
-                        &p.name,
-                        ptype,
-                        field_values,
-                        created_ids,
+    let has_required_input_params = op_def
+        .map(|def| {
+            def.parameter
+                .iter()
+                .any(|p| p.use_.as_deref() == Some("in") && p.min.unwrap_or(0) > 0)
+        })
+        .unwrap_or(false);
+
+    let body = if has_required_input_params {
+        op_def.map(|def| {
+            let mut params = serde_json::Map::new();
+            params.insert(
+                "resourceType".to_string(),
+                serde_json::Value::String("Parameters".to_string()),
+            );
+            let mut param_array = Vec::new();
+            for p in &def.parameter {
+                if p.use_.as_deref() == Some("in") && p.min.unwrap_or(0) > 0 {
+                    let mut param_obj = serde_json::Map::new();
+                    param_obj.insert(
+                        "name".to_string(),
+                        serde_json::Value::String(p.name.clone()),
                     );
-                    param_obj.insert("value".to_string(), serde_json::Value::String(value));
+                    if let Some(ptype) = &p.param_type {
+                        let value = resolve_param_value(
+                            resource_type,
+                            &p.name,
+                            ptype,
+                            field_values,
+                            created_ids,
+                        );
+                        param_obj.insert("value".to_string(), serde_json::Value::String(value));
+                    }
+                    param_array.push(serde_json::Value::Object(param_obj));
                 }
-                param_array.push(serde_json::Value::Object(param_obj));
             }
-        }
-        params.insert(
-            "parameter".to_string(),
-            serde_json::Value::Array(param_array),
-        );
-        serde_json::Value::Object(params)
-    });
+            params.insert(
+                "parameter".to_string(),
+                serde_json::Value::Array(param_array),
+            );
+            serde_json::Value::Object(params)
+        })
+    } else {
+        // No required input params — use GET with optional params as
+        // query-string parameters instead of a POST body.  Many FHIR
+        // operations (e.g. $export) only support GET and return 404/405
+        // for POST.
+        None
+    };
+
+    let method = if has_required_input_params {
+        "POST"
+    } else {
+        "GET"
+    };
 
     // Determine URL based on operation scope
     let url = match op_def {
@@ -1227,7 +1267,7 @@ fn build_operation_test(
         resource_type: resource_type.to_string(),
         profile_url: profile_url.clone(),
         request: HttpRequest {
-            method: "POST".to_string(),
+            method: method.to_string(),
             url,
             headers: HashMap::new(),
             body,
@@ -2184,7 +2224,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(test.request.method, "POST");
+        assert_eq!(test.request.method, "GET");
         assert_eq!(test.request.url, "/Patient/{id}/$everything");
         assert_eq!(test.name, "patient_operation_everything");
         assert!(matches!(test.kind, TestCaseKind::Operation { ref code } if code == "everything"));
@@ -2194,6 +2234,8 @@ mod tests {
             assertion.response_contains_key,
             Some("resourceType".to_string())
         );
+        // No required input params → GET with no body
+        assert!(test.request.body.is_none());
     }
 
     #[test]
@@ -2217,6 +2259,7 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(test.request.url, "/$export");
+        assert_eq!(test.request.method, "GET"); // No required params → GET
         assert_eq!(test.name, "system_operation_export");
     }
 
@@ -2250,6 +2293,7 @@ mod tests {
             test.request.body.is_some(),
             "Should have a request body for operations with required params"
         );
+        assert_eq!(test.request.method, "POST"); // Has required params → POST
         let body = test.request.body.unwrap();
         assert_eq!(body["resourceType"], "Parameters");
         assert!(body["parameter"].is_array());
