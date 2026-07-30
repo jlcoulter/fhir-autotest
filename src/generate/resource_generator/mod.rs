@@ -2180,4 +2180,92 @@ mod tests {
             "slice value should use the slice's fixedUri for system"
         );
     }
+
+    #[test]
+    fn required_reference_field_gets_must_support_extension() {
+        // Provenance.target is required (min=1, max=*) with a mustSupport
+        // Extension child (target.extension). The generated resource must
+        // populate extension inside each target Reference object.
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/TestProvenance".to_string(),
+            name: "TestProvenance".to_string(),
+            base_type: "Provenance".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            snapshot: Some(Snapshot {
+                element: vec![
+                    ElementDefinition {
+                        path: "Provenance".to_string(),
+                        min: Some(0),
+                        max: Some("*".to_string()),
+                        type_: vec![],
+                        must_support: false,
+                        ..Default::default()
+                    },
+                    ElementDefinition {
+                        path: "Provenance.target".to_string(),
+                        min: Some(1),
+                        max: Some("*".to_string()),
+                        type_: vec![crate::model::profile::ElementDefinitionType {
+                            code: "Reference".to_string(),
+                            target_profile: vec![
+                                "http://hl7.org/fhir/StructureDefinition/Patient".to_string(),
+                            ],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        must_support: true,
+                        ..Default::default()
+                    },
+                    ElementDefinition {
+                        path: "Provenance.target.extension".to_string(),
+                        min: Some(0),
+                        max: Some("*".to_string()),
+                        type_: vec![crate::model::profile::ElementDefinitionType {
+                            code: "Extension".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        must_support: true,
+                        ..Default::default()
+                    },
+                    ElementDefinition {
+                        path: "Provenance.recorded".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![crate::model::profile::ElementDefinitionType {
+                            code: "instant".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        must_support: false,
+                        ..Default::default()
+                    },
+                ],
+            }),
+            differential: None,
+            base_definition: None,
+        };
+
+        let resource = generate_resource(&profile, &[]).unwrap();
+
+        // target should be an array (max=*)
+        let target = resource.get("target").expect("target should be populated");
+        assert!(target.is_array(), "target should be an array");
+
+        // Each target reference should have an extension field
+        let first_target = target
+            .as_array()
+            .unwrap()
+            .first()
+            .expect("target array should have at least one element");
+        assert!(
+            first_target.get("extension").is_some(),
+            "target.extension should be populated for mustSupport Extension inside Reference, got: {:?}",
+            first_target
+        );
+    }
 }
