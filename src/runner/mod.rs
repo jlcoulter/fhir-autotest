@@ -3,7 +3,6 @@ pub mod executor;
 pub mod orchestrator;
 pub mod response_assertions;
 pub mod validator;
-pub mod value_resolver;
 
 pub use bulk_loader::*;
 pub use executor::*;
