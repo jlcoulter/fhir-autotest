@@ -5,8 +5,12 @@
 //!
 //! 1. **CapabilityStatement well-formedness** — the CS itself must have
 //!    required fields (status, rest with server mode, etc.)
-//! 2. **MustSupport field presence** — fields marked mustSupport=true in
-//!    profiles declared by the CS should be present in responses
+//! 2. **MustSupport field presence (best-effort)** — fields marked mustSupport=true
+//!    in profiles declared by the CS are checked for presence in responses.
+//!    Per FHIR R4 §2.1.2.1.12, mustSupport means "the server SHALL populate the
+//!    element if the data exists for the use case." A field may be legitimately
+//!    absent if the server has no data for it. This check is a best-effort
+//!    heuristic — absence does not necessarily indicate non-conformance.
 //! 3. **Cardinality enforcement** — min/max constraints from profile
 //!    ElementDefinitions should be respected in responses
 //! 4. **Undeclared interaction rejection** — interactions NOT declared in
@@ -99,6 +103,11 @@ pub struct ConformanceTest {
 #[derive(Debug, Clone, serde::Serialize)]
 pub enum ConformanceTestKind {
     /// Verify that a mustSupport field is present in responses.
+    ///
+    /// **Best-effort check**: Per FHIR R4 §2.1.2.1.12, mustSupport means
+    /// "the server SHALL populate the element if the data exists for the
+    /// use case." A field may be legitimately absent if the server has no
+    /// data for it. Absence does not necessarily indicate non-conformance.
     MustSupportPresence { field_path: String },
     /// Verify that cardinality constraints (min/max) are respected.
     Cardinality {
@@ -194,7 +203,7 @@ pub fn generate_conformance_tests(
                             field_path.replace('.', "_")
                         ),
                         description: format!(
-                            "Verify that mustSupport field '{}' is present in {} responses",
+                            "Best-effort: verify mustSupport field '{}' is present in {} responses (may be absent if server has no data)",
                             field_path, resource.resource_type
                         ),
                         resource_type: resource.resource_type.clone(),
@@ -501,7 +510,7 @@ pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::m
 
     let kind = match &ct.kind {
         ConformanceTestKind::MustSupportPresence { field_path } => TestCaseKind::Conformance {
-            description: format!("mustSupport field '{}' present", field_path),
+            description: format!("best-effort: mustSupport field '{}' present", field_path),
         },
         ConformanceTestKind::Cardinality {
             field_path,

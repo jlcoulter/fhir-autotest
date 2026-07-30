@@ -314,8 +314,12 @@ pub fn assert_response(
         }
     }
 
-    // --- MustSupport required field presence ---
+    // --- MustSupport required field presence (best-effort) ---
     // Checks that specified fields exist in Bundle entries, regardless of their value.
+    // Per FHIR R4 §2.1.2.1.12, mustSupport means "the server SHALL populate the
+    // element if the data exists for the use case." A field may be legitimately
+    // absent if the server has no data for it. This is a best-effort heuristic —
+    // absence does not necessarily indicate non-conformance.
     for (resource_type, fields) in &assertion.required_fields {
         if let Some(body) = body {
             if let Some(entries) = body.get("entry").and_then(|v| v.as_array()) {
@@ -350,7 +354,7 @@ pub fn assert_response(
                         let actual = resolve_json_path(resource, field_path);
                         if actual.is_none() {
                             errors.push(format!(
-                                "{}: mustSupport field '{}' not found in response",
+                                "{}: mustSupport field '{}' not found in response (best-effort check — may be absent if server has no data)",
                                 resource_type, field_path
                             ));
                         }

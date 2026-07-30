@@ -280,9 +280,7 @@ pub async fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> 
     match &config.repository {
         Some(repo) => println!(
             "Write endpoint ({}): {} (user: {})",
-            repo.upload_method.to_uppercase(),
-            repo.base_url,
-            repo.username
+            repo.upload_method, repo.base_url, repo.username
         ),
         None => println!(
             "Write endpoint (PUT): {} (same as read)",
@@ -298,8 +296,8 @@ pub async fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> 
     let upload_method = config
         .repository
         .as_ref()
-        .map(|r| r.upload_method.to_uppercase())
-        .unwrap_or_else(|| "PUT".to_string());
+        .map(|r| r.upload_method)
+        .unwrap_or(UploadMethod::Put);
 
     println!("Setup resources (creation order):");
     for rt in &creation_order {

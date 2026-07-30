@@ -1,6 +1,27 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// HTTP method for uploading resources to the repository.
+///
+/// `Put` uses "update as create" (PUT /{rtype}/{id} with client-assigned IDs).
+/// `Post` uses "create" (POST /{rtype} with server-assigned IDs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum UploadMethod {
+    #[default]
+    Put,
+    Post,
+}
+
+impl std::fmt::Display for UploadMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UploadMethod::Put => write!(f, "PUT"),
+            UploadMethod::Post => write!(f, "POST"),
+        }
+    }
+}
 
 /// Configuration for running tests against a FHIR server.
 ///
@@ -107,8 +128,8 @@ pub struct RepositoryConfig {
     ///
     /// PUT uses "update as create" (PUT /{rtype}/{id} with client-assigned IDs).
     /// POST uses "create" (POST /{rtype} with server-assigned IDs).
-    #[serde(default = "default_upload_method")]
-    pub upload_method: String,
+    #[serde(default)]
+    pub upload_method: UploadMethod,
 
     /// Number of parallel requests for upload and delete operations.
     ///
@@ -116,10 +137,6 @@ pub struct RepositoryConfig {
     /// repositories that can handle higher concurrency.
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
-}
-
-pub fn default_upload_method() -> String {
-    "PUT".to_string()
 }
 
 pub fn default_concurrency() -> usize {
@@ -223,13 +240,13 @@ impl TestConfig {
                 base_url: repo.base_url.clone(),
                 username: repo.username.clone(),
                 password: repo.password.clone(),
-                upload_method: repo.upload_method.clone(),
+                upload_method: repo.upload_method,
                 concurrency: repo.concurrency,
             },
             None => WriteEndpoint::Server {
                 base_url: self.server.base_url.clone(),
                 headers: self.server.headers.clone(),
-                upload_method: default_upload_method(),
+                upload_method: UploadMethod::default(),
                 concurrency: default_concurrency(),
             },
         }
@@ -247,7 +264,7 @@ pub enum WriteEndpoint {
         username: String,
         password: String,
         /// "PUT" (default) or "POST" — the HTTP method for resource upload.
-        upload_method: String,
+        upload_method: UploadMethod,
         /// Number of parallel requests for upload and delete.
         concurrency: usize,
     },
@@ -255,7 +272,7 @@ pub enum WriteEndpoint {
         base_url: String,
         headers: HashMap<String, String>,
         /// "PUT" (default) or "POST" — the HTTP method for resource upload.
-        upload_method: String,
+        upload_method: UploadMethod,
         /// Number of parallel requests for upload and delete.
         concurrency: usize,
     },
@@ -420,7 +437,7 @@ password = "s3cret"
                 assert_eq!(base_url, "http://repo.internal:8080/fhir");
                 assert_eq!(username, "admin");
                 assert_eq!(password, "s3cret");
-                assert_eq!(upload_method, "PUT");
+                assert_eq!(upload_method, UploadMethod::Put);
             }
             WriteEndpoint::Server { .. } => panic!("Expected Repository"),
         }
@@ -438,7 +455,7 @@ username = "admin"
 password = "s3cret"
 "#;
         let config: TestConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.repository.unwrap().upload_method, "PUT");
+        assert_eq!(config.repository.unwrap().upload_method, UploadMethod::Put);
     }
 
     #[test]
@@ -454,7 +471,7 @@ password = "s3cret"
 upload_method = "POST"
 "#;
         let config: TestConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.repository.unwrap().upload_method, "POST");
+        assert_eq!(config.repository.unwrap().upload_method, UploadMethod::Post);
     }
 
     #[test]

@@ -5,15 +5,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Default cache directory for downloaded FHIR packages.
-fn cache_dir() -> PathBuf {
+fn cache_dir() -> Result<PathBuf> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
+        .context("HOME/USERPROFILE not set — cannot determine cache directory")?;
     let mut dir = PathBuf::from(home);
     dir.push(".cache");
     dir.push("fhir-autotest");
     dir.push("packages");
-    dir
+    Ok(dir)
 }
 
 /// Cache of downloaded FHIR packages, keyed by package ID.
@@ -23,13 +23,13 @@ struct PackageCache {
 }
 
 impl PackageCache {
-    fn new() -> Self {
-        let cache_dir = cache_dir();
-        std::fs::create_dir_all(&cache_dir).ok();
-        Self {
+    fn new() -> Result<Self> {
+        let cache_dir = cache_dir()?;
+        std::fs::create_dir_all(&cache_dir)?;
+        Ok(Self {
             packages: HashMap::new(),
             cache_dir,
-        }
+        })
     }
 
     /// Get a profile by URL from the cache, downloading the package if needed.
@@ -55,7 +55,11 @@ impl PackageCache {
         // Check local cache first
         if tgz_path.exists() {
             tracing::info!("Using cached FHIR package: {}@{}", package_id, version);
-            let pkg = parse_package(tgz_path.to_str().unwrap())?;
+            let pkg = parse_package(
+                tgz_path
+                    .to_str()
+                    .context("Non-UTF8 path for cached FHIR package")?,
+            )?;
             tracing::info!(
                 "Loaded package {}: {} StructureDefinitions",
                 package_id,
@@ -89,7 +93,11 @@ impl PackageCache {
         let bytes = response.bytes().await?;
         std::fs::write(&tgz_path, &bytes)?;
 
-        let pkg = parse_package(tgz_path.to_str().unwrap())?;
+        let pkg = parse_package(
+            tgz_path
+                .to_str()
+                .context("Non-UTF8 path for downloaded FHIR package")?,
+        )?;
         tracing::info!(
             "Loaded package {}: {} StructureDefinitions",
             package_id,
@@ -114,7 +122,7 @@ pub async fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Re
         url_map.insert(p.url.clone(), i);
     }
 
-    let mut package_cache = PackageCache::new();
+    let mut package_cache = PackageCache::new()?;
 
     // Resolve each profile's parent chain
     let mut i = 0;
@@ -357,7 +365,7 @@ async fn download_profile(url: &str) -> Result<StructureDefinition> {
         .context("Cannot extract profile name from URL")?;
 
     // Check disk cache first
-    let cache_path = cache_dir().join(format!("{}.json", name));
+    let cache_path = cache_dir()?.join(format!("{}.json", name));
     if cache_path.exists() {
         let content = std::fs::read_to_string(&cache_path)?;
         if let Ok(sd) = serde_json::from_str::<StructureDefinition>(&content) {

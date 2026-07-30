@@ -1,4 +1,4 @@
-use crate::config::models::WriteEndpoint;
+use crate::config::models::{UploadMethod, WriteEndpoint};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -464,7 +464,7 @@ pub async fn upload_ndjson_files(
 
     let upload_method = match write_endpoint {
         WriteEndpoint::Repository { upload_method, .. }
-        | WriteEndpoint::Server { upload_method, .. } => upload_method.to_uppercase(),
+        | WriteEndpoint::Server { upload_method, .. } => *upload_method,
     };
 
     let mut all_ids: HashMap<String, Vec<String>> = HashMap::new();
@@ -533,11 +533,11 @@ pub async fn upload_ndjson_files(
                     .to_string();
 
                 // POST: remove client id — let the server assign one
-                if upload_method != "PUT" {
+                if upload_method != UploadMethod::Put {
                     resource.as_object_mut().map(|o| o.remove("id"));
                 }
 
-                let url = if upload_method == "PUT" {
+                let url = if upload_method == UploadMethod::Put {
                     // PUT /{rtype}/{id} — update-as-create with client-assigned ID
                     format!("{}/{}/{}", base_url, resource_type, client_id)
                 } else {
@@ -547,7 +547,6 @@ pub async fn upload_ndjson_files(
 
                 let client = client.clone();
                 let write_endpoint = write_endpoint.clone();
-                let upload_method = upload_method.clone();
                 // Acquire a permit before spawning so at most `concurrency`
                 // requests are ever in flight; the permit is released when the
                 // task finishes, immediately admitting the next one.
@@ -555,7 +554,7 @@ pub async fn upload_ndjson_files(
 
                 join_set.spawn(async move {
                     let _permit = permit;
-                    let req = if upload_method == "PUT" {
+                    let req = if upload_method == UploadMethod::Put {
                         client
                             .put(&url)
                             .header("Content-Type", "application/fhir+json")
@@ -629,8 +628,7 @@ pub async fn upload_ndjson_files(
 
 /// Delete all resources in `ids` from the repository, in reverse creation order.
 ///
-/// Uses concurrency for throughput. Errors are logged but not fatal —
-/// best-effort cleanup.
+/// Uses concurrency for throughput. Returns an error if any deletes failed.
 pub async fn delete_all_resources(
     ids: &HashMap<String, Vec<String>>,
     creation_order: &[String],
@@ -645,6 +643,8 @@ pub async fn delete_all_resources(
         WriteEndpoint::Repository { base_url, .. } => base_url,
         WriteEndpoint::Server { base_url, .. } => base_url,
     };
+
+    let mut total_errors = 0usize;
 
     // Delete in reverse creation order
     for resource_type in creation_order.iter().rev() {
@@ -679,7 +679,7 @@ pub async fn delete_all_resources(
 
                 for handle in handles {
                     match handle.await {
-                        Ok(Ok(200 | 204 | 410)) => {
+                        Ok(Ok(200 | 204 | 404 | 410)) => {
                             deleted += 1;
                         }
                         _ => {
@@ -697,7 +697,15 @@ pub async fn delete_all_resources(
                 "  → {}/{} {} deleted ({} errors)",
                 deleted, total, resource_type, errors
             );
+            total_errors += errors;
         }
+    }
+
+    if total_errors > 0 {
+        anyhow::bail!(
+            "{} resource(s) failed to delete during cleanup",
+            total_errors
+        );
     }
 
     Ok(())
@@ -960,7 +968,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1013,7 +1021,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1060,7 +1068,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "POST".to_string(),
+            upload_method: UploadMethod::Post,
             concurrency: 1,
         };
 
@@ -1094,7 +1102,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1134,7 +1142,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1186,7 +1194,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1231,7 +1239,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1276,7 +1284,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1317,7 +1325,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1351,7 +1359,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1373,7 +1381,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1401,7 +1409,7 @@ mod tests {
             base_url: "http://repo.test/fhir".to_string(),
             username: "admin".to_string(),
             password: "s3cret".to_string(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1425,7 +1433,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: "http://server.test/fhir".to_string(),
             headers,
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1475,7 +1483,7 @@ mod tests {
             base_url: base_url.clone(),
             username: "admin".to_string(),
             password: "s3cret".to_string(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1536,7 +1544,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers,
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1600,7 +1608,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1694,7 +1702,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 4,
         };
 
@@ -1740,7 +1748,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 
@@ -1771,7 +1779,7 @@ mod tests {
         let endpoint = WriteEndpoint::Server {
             base_url: base_url.clone(),
             headers: HashMap::new(),
-            upload_method: "PUT".to_string(),
+            upload_method: UploadMethod::Put,
             concurrency: 1,
         };
 

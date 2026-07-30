@@ -190,7 +190,7 @@ impl Orchestrator {
         let write_endpoint = self.config.write_endpoint();
         let upload_method = match &write_endpoint {
             WriteEndpoint::Repository { upload_method, .. }
-            | WriteEndpoint::Server { upload_method, .. } => upload_method.to_uppercase(),
+            | WriteEndpoint::Server { upload_method, .. } => *upload_method,
         };
         let concurrency = match &write_endpoint {
             WriteEndpoint::Repository { concurrency, .. }
