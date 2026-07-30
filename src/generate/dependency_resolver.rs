@@ -198,11 +198,20 @@ mod tests {
             ("Encounter".to_string(), vec!["Patient".to_string()]),
             ("Patient".to_string(), vec![]),
         ];
-        let order = resolve_creation_order(&deps).unwrap();
+        let order = resolve_creation_order(&deps).expect("should resolve simple dependency order");
 
-        let patient_idx = order.iter().position(|r| r == "Patient").unwrap();
-        let encounter_idx = order.iter().position(|r| r == "Encounter").unwrap();
-        let observation_idx = order.iter().position(|r| r == "Observation").unwrap();
+        let patient_idx = order
+            .iter()
+            .position(|r| r == "Patient")
+            .expect("Patient should be in creation order");
+        let encounter_idx = order
+            .iter()
+            .position(|r| r == "Encounter")
+            .expect("Encounter should be in creation order");
+        let observation_idx = order
+            .iter()
+            .position(|r| r == "Observation")
+            .expect("Observation should be in creation order");
 
         assert!(
             patient_idx < encounter_idx,
@@ -226,7 +235,8 @@ mod tests {
             ("Organization".to_string(), vec!["Endpoint".to_string()]),
             ("Endpoint".to_string(), vec!["Organization".to_string()]),
         ];
-        let order = resolve_creation_order(&deps).unwrap();
+        let order =
+            resolve_creation_order(&deps).expect("should resolve circular dependency order");
         // Both should appear in the output (order within cycle doesn't matter much)
         assert_eq!(order.len(), 2);
         assert!(order.contains(&"Organization".to_string()));
@@ -239,8 +249,8 @@ mod tests {
             ("Patient".to_string(), vec![]),
             ("Observation".to_string(), vec![]),
         ];
-        let order = resolve_creation_order(&deps).unwrap();
-        assert_eq!(order.len(), 2);
+        let order =
+            resolve_creation_order(&deps).expect("should resolve order with no dependencies");
         assert!(order.contains(&"Patient".to_string()));
         assert!(order.contains(&"Observation".to_string()));
     }
