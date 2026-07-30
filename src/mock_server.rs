@@ -430,10 +430,14 @@ pub fn create_mock_app() -> Router {
         .route("/fhir/{rtype}/{id}", get(read_resource))
         .route("/fhir/{rtype}/{id}", put(update_resource))
         .route("/fhir/{rtype}/{id}", delete(delete_resource))
-        .route("/fhir/${*op}", get(operation_handler))
-        .route("/fhir/{rtype}/${*op}", get(operation_handler))
-        .route("/fhir/${*op}", post(operation_handler))
-        .route("/fhir/{rtype}/${*op}", post(operation_handler))
+        .route(
+            "/fhir/${*op}",
+            get(operation_handler).post(operation_handler),
+        )
+        .route(
+            "/fhir/{rtype}/${*op}",
+            get(operation_handler).post(operation_handler),
+        )
         .with_state(store)
 }
 
