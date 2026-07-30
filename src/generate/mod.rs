@@ -6,6 +6,7 @@ pub mod locality;
 pub mod model;
 pub mod planner;
 pub mod resource_generator;
+pub mod test_builders;
 pub mod value_resolver;
 
 pub use bulk_data::*;
