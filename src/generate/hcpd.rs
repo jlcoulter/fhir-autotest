@@ -341,7 +341,8 @@ fn fix_service_provision_code(
             continue;
         };
         for coding in codings.iter_mut() {
-            if coding.get("code").and_then(|c| c.as_str()) == Some("unknown") {
+            let current_code = coding.get("code").and_then(|c| c.as_str());
+            if current_code == Some("unknown") || current_code == Some("UNK") {
                 coding["code"] = serde_json::Value::String(code.clone());
                 coding["display"] = serde_json::Value::String(display_str.clone());
             }
