@@ -26,6 +26,10 @@ pub fn generate_typed_value(
             // of the generic "active" default which HAPI rejects.
             if let Some(system) = bound_system {
                 code_value_for_system(&system)
+            } else if element.path.ends_with("daysOfWeek") {
+                // Fallback: even if the DaysOfWeek ValueSet isn't in the IG
+                // package, daysOfWeek only accepts mon/tue/wed/thu/fri/sat/sun.
+                serde_json::json!("mon")
             } else {
                 serde_json::json!("active")
             }
