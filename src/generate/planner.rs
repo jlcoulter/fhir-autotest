@@ -569,11 +569,13 @@ fn resolve_param_value(
     created_ids: &HashMap<String, String>,
 ) -> String {
     let rt_values = field_values.get(resource_type);
+    let empty = HashMap::new();
+    let rt_values = rt_values.unwrap_or(&empty);
     let value = resolve_search_value(
         resource_type,
         param_name,
         param_type,
-        rt_values.unwrap_or(&HashMap::new()),
+        rt_values,
         created_ids,
     );
     value.unwrap_or_else(|| sample_value(param_type).to_string())
