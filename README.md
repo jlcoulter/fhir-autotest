@@ -260,10 +260,16 @@ When configured, resource upload/delete goes here instead of the public server. 
 | Setting | Description | Default |
 |---------|-------------|---------|
 | `base_url` | Internal repository URL | None |
-| `username` | Basic auth username | None |
-| `password` | Basic auth password | None |
+| `username` | Basic auth username (supports `${ENV_VAR}` syntax) | None |
+| `password` | Basic auth password (supports `${ENV_VAR}` syntax) | None |
+| `credential_file` | Path to a separate credentials file (TOML with `username`/`password`) | None |
 | `upload_method` | `"PUT"` (update-as-create) or `"POST"` (server-assigned ID) | `"PUT"` |
 | `concurrency` | Parallel requests for upload/delete | `1` |
+
+> **⚠ Security**: Username and password are stored in plaintext in the config file. To avoid committing credentials to version control:
+> - Use `${ENV_VAR}` syntax: `username = "${FHIR_REPO_USER}"` — the tool resolves these from the environment at load time.
+> - Use `credential_file` to point to a separate file with restricted permissions (e.g. `chmod 600`). The file is a simple TOML file with optional `username` and `password` fields, and also supports `${ENV_VAR}` syntax.
+> - Never commit `config.toml` with real credentials to version control.
 
 ### `[overrides]` — Manual Control
 
