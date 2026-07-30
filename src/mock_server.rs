@@ -1,3 +1,25 @@
+//! Mock FHIR server for CI and development testing.
+//!
+//! This module provides a lightweight in-memory FHIR server backed by axum.
+//! It supports basic CRUD operations, search with parameter filtering, sorting,
+//! `_summary`, `_elements`, `_count`, `_include`, and `_revinclude`.
+//!
+//! # Limitations
+//!
+//! - **Chained search** (e.g., `GET /Patient?organization.name=Smith`) is not
+//!   implemented — dotted parameters are treated as field paths on the resource
+//!   itself, not resolved through related resources.
+//! - **`_has` / `_list` / `_query`** result parameters are not supported.
+//! - **Conditional operations** (`If-None-Exist`, `If-Match`) are not handled.
+//! - **`_elements`** filtering does not handle nested paths like `name.family`.
+//! - **Modifier support** is limited to `:exact`, `:contains`, `:missing`, and
+//!   `:not` on string fields. Other FHIR modifiers (`:text`, `:of-type`, etc.)
+//!   are not implemented.
+//! - **Prefix support** is limited to `eq`, `ne`, `gt`, `lt`, `ge`, `le` on
+//!   numeric/date fields. Comparison is string-based, not semantic.
+//! - **Operation handler** returns canned responses for `$export` and
+//!   `$validate`; all other operations return a generic success.
+
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -78,6 +100,36 @@ struct SearchParams {
     _rest: HashMap<String, String>,
 }
 
+/// Parsed search parameter with optional modifier and prefix.
+struct ParsedParam<'a> {
+    field: &'a str,
+    modifier: Option<&'a str>,
+    prefix: Option<&'a str>,
+    value: &'a str,
+}
+
+/// Parse a search parameter key like `family:exact` or `name:contains`
+/// into (field, modifier). Returns (field, None) if no modifier.
+fn parse_param_key(key: &str) -> (&str, Option<&str>) {
+    if let Some(pos) = key.find(':') {
+        (&key[..pos], Some(&key[pos + 1..]))
+    } else {
+        (key, None)
+    }
+}
+
+/// Parse a search parameter value like `gt2020-01-01` or `eq123`
+/// into (prefix, value). Returns (None, value) if no prefix.
+fn parse_param_value(value: &str) -> (Option<&str>, &str) {
+    let prefixes = ["eq", "ne", "gt", "lt", "ge", "le", "sa", "eb", "ap"];
+    for p in &prefixes {
+        if let Some(rest) = value.strip_prefix(p) {
+            return (Some(p), rest);
+        }
+    }
+    (None, value)
+}
+
 async fn search_resources(
     State(store): State<MockStore>,
     Path(rtype): Path<String>,
@@ -89,6 +141,8 @@ async fn search_resources(
     // Basic parameter filtering: if query params are present, try to match
     // string/token fields on the stored resources. Params starting with _ are
     // FHIR special params and are skipped for filtering.
+    // Supports modifiers (:exact, :contains, :missing, :not) and
+    // prefixes (eq, ne, gt, lt, ge, le).
     let filter_keys: Vec<String> = params
         ._rest
         .keys()
@@ -100,8 +154,16 @@ async fn search_resources(
         resources.retain(|r| {
             filter_keys.iter().all(|key| {
                 let desired = &params._rest[key];
+                let (field, modifier) = parse_param_key(key);
+                let (prefix, value) = parse_param_value(desired);
+                let parsed = ParsedParam {
+                    field,
+                    modifier,
+                    prefix,
+                    value,
+                };
                 // Check top-level field and nested fields (name.family, etc.)
-                match_field(r, key, desired)
+                match_field_with_modifiers(r, &parsed)
             })
         });
     }
@@ -255,47 +317,92 @@ async fn search_resources(
     )
 }
 
-/// Try to match a search parameter against a resource field.
-/// Handles top-level fields (e.g. "active" → r.active) and
-/// nested fields with dotted notation (e.g. "name" checks r.name[].family).
-fn match_field(resource: &serde_json::Value, param: &str, value: &str) -> bool {
-    let value_lower = value.to_lowercase();
+/// Try to match a search parameter against a resource field, supporting
+/// FHIR modifiers (`:exact`, `:contains`, `:missing`, `:not`) and
+/// prefixes (`eq`, `ne`, `gt`, `lt`, `ge`, `le`).
+///
+/// Handles top-level fields (e.g. `active` → r.active) and
+/// nested fields with dotted notation (e.g. `name` checks r.name[].family).
+fn match_field_with_modifiers(resource: &serde_json::Value, param: &ParsedParam) -> bool {
+    let value_lower = param.value.to_lowercase();
 
+    // Handle :missing modifier
+    if param.modifier == Some("missing") {
+        let present = resource.get(param.field).is_some()
+            && resource.get(param.field).and_then(|v| v.as_str()) != Some("");
+        return match param.value {
+            "true" => !present,
+            "false" => present,
+            _ => false,
+        };
+    }
+
+    // Handle :not modifier — invert the match
+    if param.modifier == Some("not") {
+        return !match_field_inner(
+            resource,
+            param.field,
+            param.value,
+            &value_lower,
+            param.prefix,
+            param.modifier,
+        );
+    }
+
+    // Default matching with optional modifier
+    match_field_inner(
+        resource,
+        param.field,
+        param.value,
+        &value_lower,
+        param.prefix,
+        param.modifier,
+    )
+}
+
+/// Core field matching logic, without :not/:missing modifiers.
+fn match_field_inner(
+    resource: &serde_json::Value,
+    field: &str,
+    _value: &str,
+    value_lower: &str,
+    prefix: Option<&str>,
+    modifier: Option<&str>,
+) -> bool {
     // Direct top-level match
-    if let Some(v) = resource.get(param)
-        && json_contains(v, &value_lower)
+    if let Some(v) = resource.get(field)
+        && json_contains_with_modifier(v, value_lower, prefix, modifier)
     {
         return true;
     }
 
     // Token-style: check coding.code and coding.display
-    if (param == "code" || param.ends_with("-code"))
+    if (field == "code" || field.ends_with("-code"))
         && let Some(codings) = find_all_codings(resource)
     {
         return codings.iter().any(|c| {
             c.get("code")
                 .or_else(|| c.get("display"))
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_lowercase() == value_lower || s.to_lowercase().contains(&value_lower))
+                .map(|s| s.to_lowercase() == value_lower || s.to_lowercase().contains(value_lower))
                 .unwrap_or(false)
         });
     }
 
     // Name search: check HumanName arrays
-    if (param == "name" || param == "family" || param == "given")
+    if (field == "name" || field == "family" || field == "given")
         && let Some(names) = resource.get("name").and_then(|n| n.as_array())
     {
         for name in names {
             if let Some(family) = name.get("family").and_then(|f| f.as_str())
-                && family.to_lowercase().contains(&value_lower)
+                && name_value_matches(family, value_lower, modifier)
             {
                 return true;
             }
             if let Some(given) = name.get("given").and_then(|g| g.as_array()) {
                 for g in given {
-                    if g.as_str()
-                        .map(|s| s.to_lowercase().contains(&value_lower))
-                        .unwrap_or(false)
+                    if let Some(g_str) = g.as_str()
+                        && name_value_matches(g_str, value_lower, modifier)
                     {
                         return true;
                     }
@@ -305,13 +412,13 @@ fn match_field(resource: &serde_json::Value, param: &str, value: &str) -> bool {
     }
 
     // Identifier search
-    if param == "identifier"
+    if field == "identifier"
         && let Some(ids) = resource.get("identifier").and_then(|i| i.as_array())
     {
         return ids.iter().any(|id| {
             id.get("value")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_lowercase().contains(&value_lower))
+                .map(|s| name_value_matches(s, value_lower, modifier))
                 .unwrap_or(false)
         });
     }
@@ -319,14 +426,72 @@ fn match_field(resource: &serde_json::Value, param: &str, value: &str) -> bool {
     false
 }
 
-/// Check if a JSON value contains a string (case-insensitive).
-fn json_contains(value: &serde_json::Value, search: &str) -> bool {
+/// Check if a string value matches a search term, respecting the modifier.
+fn name_value_matches(value: &str, search_lower: &str, modifier: Option<&str>) -> bool {
+    let v_lower = value.to_lowercase();
+    match modifier {
+        Some("exact") => v_lower == search_lower,
+        _ => v_lower.contains(search_lower),
+    }
+}
+
+/// Check if a JSON value matches a search string, with optional prefix comparison
+/// and modifier support (`:exact`, `:contains`).
+///
+/// Without a modifier, uses case-insensitive substring matching (default FHIR
+/// string search behavior). With `:exact`, requires exact case-insensitive match.
+/// With `:contains`, uses substring matching (same as default).
+/// Prefixes (`ne`, `gt`, `lt`, `ge`, `le`) invert or compare the string value.
+fn json_contains_with_modifier(
+    value: &serde_json::Value,
+    search: &str,
+    prefix: Option<&str>,
+    modifier: Option<&str>,
+) -> bool {
     match value {
-        serde_json::Value::String(s) => s.to_lowercase().contains(search),
-        serde_json::Value::Bool(b) => search == b.to_string(),
-        serde_json::Value::Number(n) => search == n.to_string(),
-        serde_json::Value::Array(arr) => arr.iter().any(|v| json_contains(v, search)),
-        serde_json::Value::Object(map) => map.values().any(|v| json_contains(v, search)),
+        serde_json::Value::String(s) => {
+            let s_lower = s.to_lowercase();
+            // :exact modifier takes precedence over prefix
+            if modifier == Some("exact") {
+                return s_lower == search;
+            }
+            match prefix {
+                Some("ne") => !s_lower.contains(search),
+                Some("gt") => s_lower.as_str() > search,
+                Some("lt") => s_lower.as_str() < search,
+                Some("ge") => s_lower.as_str() >= search,
+                Some("le") => s_lower.as_str() <= search,
+                _ => s_lower.contains(search),
+            }
+        }
+        serde_json::Value::Bool(b) => {
+            let b_str = b.to_string();
+            match prefix {
+                Some("ne") => search != b_str,
+                Some("gt") => b_str.as_str() > search,
+                Some("lt") => b_str.as_str() < search,
+                Some("ge") => b_str.as_str() >= search,
+                Some("le") => b_str.as_str() <= search,
+                _ => search == b_str,
+            }
+        }
+        serde_json::Value::Number(n) => {
+            let n_str = n.to_string();
+            match prefix {
+                Some("ne") => search != n_str,
+                Some("gt") => n_str.as_str() > search,
+                Some("lt") => n_str.as_str() < search,
+                Some("ge") => n_str.as_str() >= search,
+                Some("le") => n_str.as_str() <= search,
+                _ => search == n_str,
+            }
+        }
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .any(|v| json_contains_with_modifier(v, search, prefix, modifier)),
+        serde_json::Value::Object(map) => map
+            .values()
+            .any(|v| json_contains_with_modifier(v, search, prefix, modifier)),
         _ => false,
     }
 }
@@ -411,33 +576,65 @@ async fn delete_resource(
 
 async fn operation_handler(
     State(_store): State<MockStore>,
+    Path(op): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "resourceType": "Parameters",
-            "parameter": [{"name": "result", "valueBoolean": true}]
-        })),
-    )
+    operation_response(&op)
+}
+
+async fn operation_handler_with_type(
+    State(_store): State<MockStore>,
+    Path((_rtype, op)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    operation_response(&op)
+}
+
+fn operation_response(op: &str) -> (StatusCode, Json<serde_json::Value>) {
+    // The wildcard route captures the operation name without the $ prefix
+    match op {
+        "export" | "$export" => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "resourceType": "Bundle",
+                "type": "collection",
+                "entry": []
+            })),
+        ),
+        "validate" | "$validate" => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "resourceType": "OperationOutcome",
+                "issue": [{"severity": "information", "code": "informational", "diagnostics": "Validation successful (mock)"}]
+            })),
+        ),
+        _ => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "resourceType": "Parameters",
+                "parameter": [{"name": "result", "valueBoolean": true}]
+            })),
+        ),
+    }
 }
 
 /// Build the mock FHIR server axum Router.
 pub fn create_mock_app() -> Router {
     let store: MockStore = Arc::new(Mutex::new(HashMap::new()));
     Router::new()
-        .route("/fhir/{rtype}", post(create_resource))
-        .route("/fhir/{rtype}", get(search_resources))
-        .route("/fhir/{rtype}/{id}", get(read_resource))
-        .route("/fhir/{rtype}/{id}", put(update_resource))
-        .route("/fhir/{rtype}/{id}", delete(delete_resource))
+        // Operation routes must come before resource routes so $export etc.
+        // don't match as a resource type.
         .route(
             "/fhir/${*op}",
             get(operation_handler).post(operation_handler),
         )
         .route(
             "/fhir/{rtype}/${*op}",
-            get(operation_handler).post(operation_handler),
+            get(operation_handler_with_type).post(operation_handler_with_type),
         )
+        .route("/fhir/{rtype}", post(create_resource))
+        .route("/fhir/{rtype}", get(search_resources))
+        .route("/fhir/{rtype}/{id}", get(read_resource))
+        .route("/fhir/{rtype}/{id}", put(update_resource))
+        .route("/fhir/{rtype}/{id}", delete(delete_resource))
         .with_state(store)
 }
 
@@ -802,5 +999,212 @@ mod tests {
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["resourceType"], "Bundle");
         assert_eq!(body["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_search_with_exact_modifier() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Create resources
+        for (i, family) in ["Smith", "Smithson", "Smith"].iter().enumerate() {
+            client
+                .post(format!("{}/Patient", base_url))
+                .header("Content-Type", "application/fhir+json")
+                .json(&serde_json::json!({
+                    "resourceType": "Patient",
+                    "id": format!("pat-{}", i),
+                    "name": [{"family": family}]
+                }))
+                .send()
+                .await
+                .unwrap();
+        }
+
+        // Search with :exact modifier — should only match exact "Smith"
+        let resp = client
+            .get(format!("{}/Patient?family:exact=Smith", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["total"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_search_with_missing_modifier() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Create a Patient with active=true and one without active field
+        client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!({
+                "resourceType": "Patient",
+                "id": "pat-active",
+                "active": true,
+                "name": [{"family": "Active"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!({
+                "resourceType": "Patient",
+                "id": "pat-inactive",
+                "name": [{"family": "Inactive"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        // Search with :missing=true — should find the one without active field
+        let resp = client
+            .get(format!("{}/Patient?active:missing=true", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["total"], 1);
+        assert_eq!(
+            body["entry"][0]["resource"]["name"][0]["family"],
+            "Inactive"
+        );
+
+        // Search with :missing=false — should find the one with active field
+        let resp = client
+            .get(format!("{}/Patient?active:missing=false", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["entry"][0]["resource"]["name"][0]["family"], "Active");
+    }
+
+    #[tokio::test]
+    async fn test_search_with_not_modifier() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Create resources
+        for (i, family) in ["Smith", "Jones", "Brown"].iter().enumerate() {
+            client
+                .post(format!("{}/Patient", base_url))
+                .header("Content-Type", "application/fhir+json")
+                .json(&serde_json::json!({
+                    "resourceType": "Patient",
+                    "id": format!("pat-{}", i),
+                    "name": [{"family": family}]
+                }))
+                .send()
+                .await
+                .unwrap();
+        }
+
+        // Search with :not modifier — should exclude Smith
+        let resp = client
+            .get(format!("{}/Patient?family:not=Smith", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["total"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_search_with_prefix() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Create resources with different ages
+        for (i, age) in [20, 30, 40].iter().enumerate() {
+            client
+                .post(format!("{}/Patient", base_url))
+                .header("Content-Type", "application/fhir+json")
+                .json(&serde_json::json!({
+                    "resourceType": "Patient",
+                    "id": format!("pat-{}", i),
+                    "name": [{"family": format!("Test{}", i)}],
+                    "age": age
+                }))
+                .send()
+                .await
+                .unwrap();
+        }
+
+        // Search with gt prefix — should find age > 25 (30 and 40)
+        let resp = client
+            .get(format!("{}/Patient?age=gt25", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["total"], 2);
+
+        // Search with lt prefix — should find age < 35 (20 and 30)
+        let resp = client
+            .get(format!("{}/Patient?age=lt35", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["total"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_operation_handler_export() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .get(format!("{}/$export", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["resourceType"], "Bundle");
+        assert_eq!(body["type"], "collection");
+    }
+
+    #[tokio::test]
+    async fn test_operation_handler_validate() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .get(format!("{}/Patient/$validate", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["resourceType"], "OperationOutcome");
+    }
+
+    #[tokio::test]
+    async fn test_operation_handler_unknown() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .get(format!("{}/$unknown-op", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["resourceType"], "Parameters");
     }
 }
