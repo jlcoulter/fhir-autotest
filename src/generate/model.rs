@@ -127,7 +127,13 @@ impl Interaction {
             "search-type" => Some(Interaction::SearchType),
             "history-instance" => Some(Interaction::HistoryInstance),
             "history-type" => Some(Interaction::HistoryType),
-            other => Some(Interaction::Operation(other.to_string())),
+            other => {
+                tracing::warn!(
+                    "Unknown interaction code '{}', treating as operation",
+                    other
+                );
+                Some(Interaction::Operation(other.to_string()))
+            }
         }
     }
 
