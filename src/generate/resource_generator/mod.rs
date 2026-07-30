@@ -1874,6 +1874,258 @@ mod tests {
     }
 
     #[test]
+    fn populate_extension_slices_with_complex_extension() {
+        // Profile with an extension slice referencing a complex extension
+        // where value[x] has max=0 and data lives in nested Extension.extension
+        // slices (e.g. the "suppressed" extension pattern).
+        let ext_def = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/StructureDefinition/complex-extension".to_string(),
+            base_type: "Extension".to_string(),
+            name: "ComplexExtension".to_string(),
+            kind: "complex-type".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: Some("http://hl7.org/fhir/StructureDefinition/Extension".to_string()),
+            snapshot: Some(Snapshot {
+                element: vec![
+                    ElementDefinition {
+                        id: "Extension".to_string(),
+                        path: "Extension".to_string(),
+                        min: Some(0),
+                        max: Some("*".to_string()),
+                        type_: vec![],
+                        ..Default::default()
+                    },
+                    ElementDefinition {
+                        id: "Extension.url".to_string(),
+                        path: "Extension.url".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "uri".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_uri: Some(
+                            "http://example.org/StructureDefinition/complex-extension".to_string(),
+                        ),
+                        ..Default::default()
+                    },
+                    // value[x] is prohibited (max=0) — this is a complex extension
+                    ElementDefinition {
+                        id: "Extension.value[x]".to_string(),
+                        path: "Extension.value[x]".to_string(),
+                        min: Some(0),
+                        max: Some("0".to_string()),
+                        type_: vec![],
+                        ..Default::default()
+                    },
+                    // Sub-extension slice: suppressedBy (required, CodeableConcept)
+                    ElementDefinition {
+                        id: "Extension.extension:suppressedBy".to_string(),
+                        path: "Extension.extension".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "Extension".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        slice_name: Some("suppressedBy".to_string()),
+                        ..Default::default()
+                    },
+                    ElementDefinition {
+                        id: "Extension.extension:suppressedBy.url".to_string(),
+                        path: "Extension.extension.url".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "uri".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_uri: Some("suppressedBy".to_string()),
+                        ..Default::default()
+                    },
+                    ElementDefinition {
+                        id: "Extension.extension:suppressedBy.value[x]".to_string(),
+                        path: "Extension.extension.value[x]".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "CodeableConcept".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        ..Default::default()
+                    },
+                    // Sub-extension slice: includeSelf (optional, boolean)
+                    ElementDefinition {
+                        id: "Extension.extension:includeSelf".to_string(),
+                        path: "Extension.extension".to_string(),
+                        min: Some(0),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "Extension".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        slice_name: Some("includeSelf".to_string()),
+                        ..Default::default()
+                    },
+                    ElementDefinition {
+                        id: "Extension.extension:includeSelf.url".to_string(),
+                        path: "Extension.extension.url".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "uri".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_uri: Some("includeSelf".to_string()),
+                        ..Default::default()
+                    },
+                    ElementDefinition {
+                        id: "Extension.extension:includeSelf.value[x]".to_string(),
+                        path: "Extension.extension.value[x]".to_string(),
+                        min: Some(0),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "boolean".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        ..Default::default()
+                    },
+                ],
+            }),
+            differential: None,
+        };
+
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/ProfileWithComplexExt".to_string(),
+            base_type: "Patient".to_string(),
+            name: "ProfileWithComplexExt".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: None,
+            snapshot: Some(Snapshot {
+                element: vec![
+                    ElementDefinition {
+                        id: "Patient".to_string(),
+                        path: "Patient".to_string(),
+                        min: Some(0),
+                        max: Some("*".to_string()),
+                        type_: vec![],
+                        ..Default::default()
+                    },
+                    // Extension slice referencing the complex extension definition
+                    ElementDefinition {
+                        id: "Patient.extension:complex-ext".to_string(),
+                        path: "Patient.extension".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "Extension".to_string(),
+                            target_profile: vec![],
+                            profile: vec![
+                                "http://example.org/StructureDefinition/complex-extension"
+                                    .to_string(),
+                            ],
+                            versioning: None,
+                        }],
+                        slice_name: Some("complex-ext".to_string()),
+                        ..Default::default()
+                    },
+                    // Required identifier so the resource has at least one required field
+                    ElementDefinition {
+                        id: "Patient.identifier".to_string(),
+                        path: "Patient.identifier".to_string(),
+                        min: Some(1),
+                        max: Some("*".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "Identifier".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        ..Default::default()
+                    },
+                ],
+            }),
+            differential: None,
+        };
+
+        let all_profiles = vec![ext_def];
+        let resource = generate_resource(&profile, &all_profiles).unwrap();
+
+        assert_eq!(resource["resourceType"], "Patient");
+
+        // Extension should be populated
+        let extension = resource
+            .get("extension")
+            .expect("extension slice should be populated");
+        let ext_array = extension.as_array().expect("extension should be an array");
+        assert!(!ext_array.is_empty(), "extension array should not be empty");
+
+        let ext = &ext_array[0];
+        assert_eq!(
+            ext["url"].as_str().unwrap(),
+            "http://example.org/StructureDefinition/complex-extension",
+            "extension should have the correct URL from the extension definition"
+        );
+
+        // Complex extension should NOT have a value[x] field
+        assert!(
+            ext.get("valueString").is_none() && ext.get("valueCodeableConcept").is_none(),
+            "complex extension should not have a value[x] field"
+        );
+
+        // Complex extension SHOULD have nested extension array
+        let nested_ext = ext
+            .get("extension")
+            .expect("complex extension should have nested extension array");
+        let nested_array = nested_ext
+            .as_array()
+            .expect("nested extension should be an array");
+
+        // Should have at least the required sub-extension (suppressedBy)
+        assert!(
+            !nested_array.is_empty(),
+            "nested extension array should not be empty"
+        );
+
+        // Find the suppressedBy sub-extension
+        let suppressed_by = nested_array
+            .iter()
+            .find(|e| e["url"].as_str() == Some("suppressedBy"))
+            .expect("should have suppressedBy sub-extension");
+
+        assert!(
+            suppressed_by.get("valueCodeableConcept").is_some(),
+            "suppressedBy should have a valueCodeableConcept"
+        );
+
+        // The optional includeSelf should NOT be present (min=0, skipped)
+        let include_self = nested_array
+            .iter()
+            .find(|e| e["url"].as_str() == Some("includeSelf"));
+        assert!(
+            include_self.is_none(),
+            "optional includeSelf sub-extension should not be generated"
+        );
+    }
+
+    #[test]
     fn populate_must_support_backbones_with_required_children() {
         // Profile with a mustSupport BackboneElement (min=0) that has
         // a required child (min=1) — should still be generated
