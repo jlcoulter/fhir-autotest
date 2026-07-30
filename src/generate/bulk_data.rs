@@ -762,7 +762,12 @@ fn overlay_cross_references(
                 );
             }
             if !hs_ids.is_empty() {
-                let ref_str = random_ref("HealthcareService", hs_ids, rng);
+                // Always reference the first HealthcareService ID to avoid
+                // HAPI-1096 ("Resource is deleted") — random HealthcareService
+                // references may point to resources deleted by a previous test
+                // run's cleanup, which HAPI permanently marks as deleted and
+                // refuses new references to.
+                let ref_str = format!("HealthcareService/{}", hs_ids[0]);
                 obj.insert(
                     "healthcareService".to_string(),
                     serde_json::json!([{ "reference": ref_str }]),
