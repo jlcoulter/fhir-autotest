@@ -116,6 +116,99 @@ pub fn validate_against_profile(
                 element.path, pattern, val
             ));
         }
+
+        // fixed_decimal
+        if let Some(fixed) = &element.fixed_decimal
+            && let Some(val) = resolved_value.as_ref().and_then(|v| v.as_f64())
+            && (val - fixed).abs() > f64::EPSILON
+        {
+            errors.push(format!(
+                "{}: expected decimal {}, got {}",
+                element.path, fixed, val
+            ));
+        }
+
+        // fixed_quantity, pattern_quantity
+        if let Some(fixed) = &element.fixed_quantity
+            && let Some(val) = resolved_value.as_ref()
+            && val != fixed
+        {
+            errors.push(format!(
+                "{}: expected quantity {:?}, got {:?}",
+                element.path, fixed, val
+            ));
+        }
+        if let Some(pattern) = &element.pattern_quantity
+            && let Some(val) = resolved_value.as_ref()
+            && val != pattern
+        {
+            errors.push(format!(
+                "{}: pattern quantity expected {:?}, got {:?}",
+                element.path, pattern, val
+            ));
+        }
+
+        // fixed_coding, pattern_coding
+        if let Some(fixed) = &element.fixed_coding
+            && let Some(val) = resolved_value.as_ref()
+            && val != fixed
+        {
+            errors.push(format!(
+                "{}: expected coding {:?}, got {:?}",
+                element.path, fixed, val
+            ));
+        }
+        if let Some(pattern) = &element.pattern_coding
+            && let Some(val) = resolved_value.as_ref()
+            && val != pattern
+        {
+            errors.push(format!(
+                "{}: pattern coding expected {:?}, got {:?}",
+                element.path, pattern, val
+            ));
+        }
+
+        // fixed_codeable_concept, pattern_codeable_concept
+        if let Some(fixed) = &element.fixed_codeable_concept
+            && let Some(val) = resolved_value.as_ref()
+            && val != fixed
+        {
+            errors.push(format!(
+                "{}: expected codeable concept {:?}, got {:?}",
+                element.path, fixed, val
+            ));
+        }
+        if let Some(pattern) = &element.pattern_codeable_concept
+            && let Some(val) = resolved_value.as_ref()
+            && val != pattern
+        {
+            errors.push(format!(
+                "{}: pattern codeable concept expected {:?}, got {:?}",
+                element.path, pattern, val
+            ));
+        }
+
+        // pattern_boolean
+        if let Some(pattern) = &element.pattern_boolean
+            && let Some(val) = resolved_value.as_ref().and_then(|v| v.as_bool())
+            && val != *pattern
+        {
+            errors.push(format!(
+                "{}: pattern expected {}, got {}",
+                element.path, pattern, val
+            ));
+        }
+
+        // pattern_uri
+        if let Some(pattern) = &element.pattern_uri
+            && let Some(val) = resolved_value.as_ref().and_then(|v| v.as_str())
+            && val != pattern
+        {
+            errors.push(format!(
+                "{}: pattern uri expected '{}', got '{}'",
+                element.path, pattern, val
+            ));
+        }
     }
 
     errors
@@ -564,6 +657,479 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("name.family") && e.contains("expected 'Smith'")),
             "Expected error about name.family fixed value mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_fixed_coding_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.gender".to_string(),
+                path: "Patient.gender".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "Coding".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_coding: Some(serde_json::json!({
+                    "system": "http://example.org",
+                    "code": "male"
+                })),
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "gender": {"system": "http://example.org", "code": "female"}
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("gender") && e.contains("expected coding")),
+            "Expected error about gender coding mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_fixed_coding_match() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.gender".to_string(),
+                path: "Patient.gender".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "Coding".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_coding: Some(serde_json::json!({
+                    "system": "http://example.org",
+                    "code": "male"
+                })),
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "gender": {"system": "http://example.org", "code": "male"}
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn validate_pattern_codeable_concept_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.gender".to_string(),
+                path: "Patient.gender".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "CodeableConcept".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                pattern_codeable_concept: Some(serde_json::json!({
+                    "coding": [{"system": "http://example.org", "code": "male"}]
+                })),
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "gender": {"coding": [{"system": "http://other.org", "code": "female"}]}
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("gender") && e.contains("pattern codeable concept")),
+            "Expected error about gender codeable concept mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_pattern_codeable_concept_match() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.gender".to_string(),
+                path: "Patient.gender".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "CodeableConcept".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                pattern_codeable_concept: Some(serde_json::json!({
+                    "coding": [{"system": "http://example.org", "code": "male"}]
+                })),
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "gender": {"coding": [{"system": "http://example.org", "code": "male"}]}
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn validate_fixed_decimal_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.height".to_string(),
+                path: "Patient.height".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "decimal".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_decimal: Some(1.75),
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "height": 1.80
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("height") && e.contains("expected decimal")),
+            "Expected error about height decimal mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_fixed_quantity_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.weight".to_string(),
+                path: "Patient.weight".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "Quantity".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_quantity: Some(serde_json::json!({
+                    "value": 70.0,
+                    "unit": "kg"
+                })),
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "weight": {"value": 80.0, "unit": "kg"}
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("weight") && e.contains("expected quantity")),
+            "Expected error about weight quantity mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_pattern_boolean_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.active".to_string(),
+                path: "Patient.active".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "boolean".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                pattern_boolean: Some(true),
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "active": false
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("active") && e.contains("pattern expected")),
+            "Expected error about active boolean mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_pattern_uri_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.photo.url".to_string(),
+                path: "Patient.photo.url".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "uri".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                pattern_uri: Some("http://example.org/photo".to_string()),
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "photo": [{"url": "http://other.org/photo"}]
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("photo.url") && e.contains("pattern uri")),
+            "Expected error about photo.url uri mismatch, got: {:?}",
             errors
         );
     }
