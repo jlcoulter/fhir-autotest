@@ -175,20 +175,20 @@ pub enum SearchModifier {
 impl SearchModifier {
     /// Which modifiers apply to a given search param type.
     pub fn applicable_to(param_type: &str) -> Vec<SearchModifier> {
+        let mut modifiers = vec![SearchModifier::Missing]; // valid for all types
         match param_type {
-            "string" => vec![SearchModifier::Exact, SearchModifier::Contains],
-            "token" => vec![
+            "string" => modifiers.extend([SearchModifier::Exact, SearchModifier::Contains]),
+            "token" => modifiers.extend([
                 SearchModifier::Not,
                 SearchModifier::Text,
-                SearchModifier::Missing,
-            ],
-            "reference" => vec![SearchModifier::Missing],
-            "quantity" | "number" => vec![SearchModifier::Missing],
-            "date" | "dateTime" => vec![SearchModifier::Missing],
-            "uri" => vec![SearchModifier::Above, SearchModifier::Below],
-            "special" => vec![],
-            _ => vec![SearchModifier::Missing],
+                SearchModifier::Above,
+                SearchModifier::Below,
+            ]),
+            "reference" => modifiers.extend([SearchModifier::Above, SearchModifier::Below]),
+            "uri" => modifiers.extend([SearchModifier::Above, SearchModifier::Below]),
+            _ => {}
         }
+        modifiers
     }
 
     pub fn suffix(&self) -> &str {
