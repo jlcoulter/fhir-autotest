@@ -1767,7 +1767,7 @@ mod tests {
 
     #[test]
     fn generate_creates_ndjson_files() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
         let mut counts = HashMap::new();
         counts.insert("Organization".to_string(), 10);
         counts.insert("Practitioner".to_string(), 50);
@@ -1784,14 +1784,22 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         // Each type should have the right number of IDs
-        assert_eq!(ids.get("Organization").unwrap().len(), 10);
-        assert_eq!(ids.get("Practitioner").unwrap().len(), 50);
-        assert_eq!(ids.get("PractitionerRole").unwrap().len(), 100);
-        assert_eq!(ids.get("Location").unwrap().len(), 20);
-        assert_eq!(ids.get("HealthcareService").unwrap().len(), 50);
+        assert_eq!(ids.get("Organization").expect("key should exist").len(), 10);
+        assert_eq!(ids.get("Practitioner").expect("key should exist").len(), 50);
+        assert_eq!(
+            ids.get("PractitionerRole").expect("key should exist").len(),
+            100
+        );
+        assert_eq!(ids.get("Location").expect("key should exist").len(), 20);
+        assert_eq!(
+            ids.get("HealthcareService")
+                .expect("key should exist")
+                .len(),
+            50
+        );
 
         // NDJSON files should exist and have the right line counts
         for (resource_type, count) in &counts {
@@ -1800,7 +1808,7 @@ mod tests {
                 .join("data")
                 .join(format!("{}.ndjson", resource_type));
             assert!(path.exists(), "{}.ndjson should exist", resource_type);
-            let contents = std::fs::read_to_string(&path).unwrap();
+            let contents = std::fs::read_to_string(&path).expect("should read file");
             let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
             assert_eq!(
                 lines.len(),
@@ -1812,16 +1820,22 @@ mod tests {
 
             // Each line should be valid JSON
             for line in &lines {
-                let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+                let parsed: serde_json::Value =
+                    serde_json::from_str(line).expect("should parse valid JSON");
                 assert_eq!(parsed["resourceType"], *resource_type);
-                assert!(!parsed["id"].as_str().unwrap().is_empty());
+                assert!(
+                    !parsed["id"]
+                        .as_str()
+                        .expect("should have a string value")
+                        .is_empty()
+                );
             }
         }
     }
 
     #[test]
     fn cross_references_are_valid() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
         let mut counts = HashMap::new();
         counts.insert("Organization".to_string(), 5);
         counts.insert("Practitioner".to_string(), 10);
@@ -1838,28 +1852,37 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         // Check PractitionerRole references
         let pr_path = dir.path().join("data/PractitionerRole.ndjson");
-        let pr_contents = std::fs::read_to_string(&pr_path).unwrap();
-        let org_ids = ids.get("Organization").unwrap();
-        let prac_ids = ids.get("Practitioner").unwrap();
+        let pr_contents = std::fs::read_to_string(&pr_path).expect("should read file");
+        let org_ids = ids.get("Organization").expect("key should exist");
+        let prac_ids = ids.get("Practitioner").expect("key should exist");
 
         for line in pr_contents.lines().filter(|l| !l.is_empty()) {
-            let pr: serde_json::Value = serde_json::from_str(line).unwrap();
-            let prac_ref = pr["practitioner"]["reference"].as_str().unwrap();
+            let pr: serde_json::Value =
+                serde_json::from_str(line).expect("should parse valid JSON");
+            let prac_ref = pr["practitioner"]["reference"]
+                .as_str()
+                .expect("should have a string value");
             assert!(prac_ref.starts_with("Practitioner/"));
-            let prac_id = prac_ref.strip_prefix("Practitioner/").unwrap();
+            let prac_id = prac_ref
+                .strip_prefix("Practitioner/")
+                .expect("should have expected prefix");
             assert!(
                 prac_ids.contains(&prac_id.to_string()),
                 "Practitioner reference {} should exist",
                 prac_id
             );
 
-            let org_ref = pr["organization"]["reference"].as_str().unwrap();
+            let org_ref = pr["organization"]["reference"]
+                .as_str()
+                .expect("should have a string value");
             assert!(org_ref.starts_with("Organization/"));
-            let org_id = org_ref.strip_prefix("Organization/").unwrap();
+            let org_id = org_ref
+                .strip_prefix("Organization/")
+                .expect("should have expected prefix");
             assert!(
                 org_ids.contains(&org_id.to_string()),
                 "Organization reference {} should exist",
@@ -1869,17 +1892,20 @@ mod tests {
 
         // Check HealthcareService references
         let hs_path = dir.path().join("data/HealthcareService.ndjson");
-        let hs_contents = std::fs::read_to_string(&hs_path).unwrap();
+        let hs_contents = std::fs::read_to_string(&hs_path).expect("should read file");
         for line in hs_contents.lines().filter(|l| !l.is_empty()) {
-            let hs: serde_json::Value = serde_json::from_str(line).unwrap();
-            let org_ref = hs["providedBy"]["reference"].as_str().unwrap();
+            let hs: serde_json::Value =
+                serde_json::from_str(line).expect("should parse valid JSON");
+            let org_ref = hs["providedBy"]["reference"]
+                .as_str()
+                .expect("should have a string value");
             assert!(org_ref.starts_with("Organization/"));
         }
     }
 
     #[test]
     fn location_has_coordinates() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
         let mut counts = HashMap::new();
         counts.insert("Location".to_string(), 100);
 
@@ -1891,14 +1917,19 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         let loc_path = dir.path().join("data/Location.ndjson");
-        let contents = std::fs::read_to_string(&loc_path).unwrap();
+        let contents = std::fs::read_to_string(&loc_path).expect("should read file");
         for line in contents.lines().filter(|l| !l.is_empty()) {
-            let loc: serde_json::Value = serde_json::from_str(line).unwrap();
-            let lat = loc["position"]["latitude"].as_f64().unwrap();
-            let lon = loc["position"]["longitude"].as_f64().unwrap();
+            let loc: serde_json::Value =
+                serde_json::from_str(line).expect("should parse valid JSON");
+            let lat = loc["position"]["latitude"]
+                .as_f64()
+                .expect("should have a float value");
+            let lon = loc["position"]["longitude"]
+                .as_f64()
+                .expect("should have a float value");
             // Generated localities are AU-based.
             assert!(
                 (-45.0..=-9.0).contains(&lat),
@@ -1924,10 +1955,22 @@ mod tests {
         let order = bulk_data_creation_order(&counts);
 
         // Organization, Endpoint, and Location should come before PractitionerRole.
-        let org_idx = order.iter().position(|t| t == "Organization").unwrap();
-        let endpoint_idx = order.iter().position(|t| t == "Endpoint").unwrap();
-        let loc_idx = order.iter().position(|t| t == "Location").unwrap();
-        let pr_idx = order.iter().position(|t| t == "PractitionerRole").unwrap();
+        let org_idx = order
+            .iter()
+            .position(|t| t == "Organization")
+            .expect("type should be in creation order");
+        let endpoint_idx = order
+            .iter()
+            .position(|t| t == "Endpoint")
+            .expect("type should be in creation order");
+        let loc_idx = order
+            .iter()
+            .position(|t| t == "Location")
+            .expect("type should be in creation order");
+        let pr_idx = order
+            .iter()
+            .position(|t| t == "PractitionerRole")
+            .expect("type should be in creation order");
         assert!(
             org_idx < pr_idx,
             "Organization should come before PractitionerRole"
@@ -1944,7 +1987,7 @@ mod tests {
 
     #[test]
     fn generic_fallback_works() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
         let mut counts = HashMap::new();
         counts.insert("Patient".to_string(), 5);
 
@@ -1956,20 +1999,24 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
-        assert_eq!(ids.get("Patient").unwrap().len(), 5);
+        .expect("should succeed");
+        assert_eq!(ids.get("Patient").expect("key should exist").len(), 5);
 
         let path = dir.path().join("data/Patient.ndjson");
-        let contents = std::fs::read_to_string(&path).unwrap();
-        let first_line = contents.lines().next().unwrap();
-        let patient: serde_json::Value = serde_json::from_str(first_line).unwrap();
+        let contents = std::fs::read_to_string(&path).expect("should read file");
+        let first_line = contents
+            .lines()
+            .next()
+            .expect("should have at least one line");
+        let patient: serde_json::Value =
+            serde_json::from_str(first_line).expect("should parse valid JSON");
         assert_eq!(patient["resourceType"], "Patient");
         assert_eq!(patient["status"], "active");
     }
 
     #[test]
     fn profile_urls_override_meta_profile() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
         let mut counts = HashMap::new();
         counts.insert("Organization".to_string(), 3);
 
@@ -1987,16 +2034,19 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
-        assert_eq!(ids.get("Organization").unwrap().len(), 3);
+        .expect("should succeed");
+        assert_eq!(ids.get("Organization").expect("key should exist").len(), 3);
 
         let path = dir.path().join("data/Organization.ndjson");
-        let contents = std::fs::read_to_string(&path).unwrap();
+        let contents = std::fs::read_to_string(&path).expect("should read file");
         for line in contents.lines().filter(|l| !l.is_empty()) {
-            let org: serde_json::Value = serde_json::from_str(line).unwrap();
-            let profiles = org["meta"]["profile"].as_array().unwrap();
+            let org: serde_json::Value =
+                serde_json::from_str(line).expect("should parse valid JSON");
+            let profiles = org["meta"]["profile"]
+                .as_array()
+                .expect("should be an array");
             assert_eq!(
-                profiles[0].as_str().unwrap(),
+                profiles[0].as_str().expect("should have a string value"),
                 "http://example.org/fhir/StructureDefinition/MyOrg",
                 "meta.profile should use the IG profile URL, not the hardcoded Plan-Net URL"
             );
@@ -2005,7 +2055,7 @@ mod tests {
 
     #[test]
     fn profile_urls_fallback_to_base_fhir() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
         let mut counts = HashMap::new();
         counts.insert("Organization".to_string(), 2);
 
@@ -2019,16 +2069,19 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
-        assert_eq!(ids.get("Organization").unwrap().len(), 2);
+        .expect("should succeed");
+        assert_eq!(ids.get("Organization").expect("key should exist").len(), 2);
 
         let path = dir.path().join("data/Organization.ndjson");
-        let contents = std::fs::read_to_string(&path).unwrap();
+        let contents = std::fs::read_to_string(&path).expect("should read file");
         for line in contents.lines().filter(|l| !l.is_empty()) {
-            let org: serde_json::Value = serde_json::from_str(line).unwrap();
-            let profiles = org["meta"]["profile"].as_array().unwrap();
+            let org: serde_json::Value =
+                serde_json::from_str(line).expect("should parse valid JSON");
+            let profiles = org["meta"]["profile"]
+                .as_array()
+                .expect("should be an array");
             assert_eq!(
-                profiles[0].as_str().unwrap(),
+                profiles[0].as_str().expect("should have a string value"),
                 "http://hl7.org/fhir/StructureDefinition/Organization",
                 "meta.profile should fall back to base FHIR profile when no IG profile is provided"
             );
@@ -2037,7 +2090,7 @@ mod tests {
 
     #[test]
     fn profile_aware_generation_uses_structure_definition() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
         let mut counts = HashMap::new();
         counts.insert("Patient".to_string(), 2);
 
@@ -2062,20 +2115,23 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
-        assert_eq!(ids.get("Patient").unwrap().len(), 2);
+        .expect("should succeed");
+        assert_eq!(ids.get("Patient").expect("key should exist").len(), 2);
 
         // When a StructureDefinition is provided, resources should be generated
         // via generate_resource (profile-aware) rather than gen_generic.
         // The profile URL in meta.profile should match the StructureDefinition.
         let path = dir.path().join("data/Patient.ndjson");
-        let contents = std::fs::read_to_string(&path).unwrap();
+        let contents = std::fs::read_to_string(&path).expect("should read file");
         for line in contents.lines().filter(|l| !l.is_empty()) {
-            let patient: serde_json::Value = serde_json::from_str(line).unwrap();
+            let patient: serde_json::Value =
+                serde_json::from_str(line).expect("should parse valid JSON");
             assert_eq!(patient["resourceType"], "Patient");
-            let profiles = patient["meta"]["profile"].as_array().unwrap();
+            let profiles = patient["meta"]["profile"]
+                .as_array()
+                .expect("should be an array");
             assert_eq!(
-                profiles[0].as_str().unwrap(),
+                profiles[0].as_str().expect("should have a string value"),
                 "http://example.org/fhir/StructureDefinition/MyPatient",
                 "Profile-aware generation should use the StructureDefinition URL"
             );
@@ -2109,11 +2165,15 @@ mod tests {
             &mut rng,
         );
 
-        let target_ref = provenance["target"][0]["reference"].as_str().unwrap();
-        let agent_ref = provenance["agent"][0]["who"]["reference"].as_str().unwrap();
+        let target_ref = provenance["target"][0]["reference"]
+            .as_str()
+            .expect("should have a string value");
+        let agent_ref = provenance["agent"][0]["who"]["reference"]
+            .as_str()
+            .expect("should have a string value");
         let entity_ref = provenance["entity"][0]["what"]["reference"]
             .as_str()
-            .unwrap();
+            .expect("should succeed");
 
         // target now distributes across all available resource types
         // for _revinclude coverage. With org_ids=[org-1,org-2] and
@@ -2318,19 +2378,21 @@ mod tests {
         );
 
         assert_eq!(
-            location["endpoint"][0]["reference"].as_str().unwrap(),
+            location["endpoint"][0]["reference"]
+                .as_str()
+                .expect("should have a string value"),
             "Endpoint/endpoint-1"
         );
         assert_eq!(
             healthcare_service["endpoint"][0]["reference"]
                 .as_str()
-                .unwrap(),
+                .expect("should succeed"),
             "Endpoint/endpoint-1"
         );
         assert_eq!(
             practitioner_role["endpoint"][0]["reference"]
                 .as_str()
-                .unwrap(),
+                .expect("should succeed"),
             "Endpoint/endpoint-1"
         );
     }
@@ -2357,7 +2419,7 @@ mod tests {
         assert_eq!(
             location["managingOrganization"]["reference"]
                 .as_str()
-                .unwrap(),
+                .expect("should succeed"),
             "Organization/organization-1"
         );
     }
@@ -2375,7 +2437,10 @@ mod tests {
         let mut p2 = serde_json::json!({ "resourceType": "Provenance", "id": "provenance-2" });
 
         for p in [&mut p1, &mut p2] {
-            let id = p["id"].as_str().unwrap().to_string();
+            let id = p["id"]
+                .as_str()
+                .expect("should have a string value")
+                .to_string();
             overlay_cross_references(
                 p,
                 "Provenance",
@@ -2394,11 +2459,15 @@ mod tests {
         // for _revinclude coverage. With 5 non-empty pools and
         // provenance-1 (idx=1%5=1) → Practitioner, provenance-2 (idx=2%5=2) → Location.
         assert_eq!(
-            p1["target"][0]["reference"].as_str().unwrap(),
+            p1["target"][0]["reference"]
+                .as_str()
+                .expect("should have a string value"),
             "Practitioner/practitioner-1"
         );
         assert_eq!(
-            p2["target"][0]["reference"].as_str().unwrap(),
+            p2["target"][0]["reference"]
+                .as_str()
+                .expect("should have a string value"),
             "Location/location-1"
         );
     }
@@ -2414,7 +2483,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         assert_eq!(resource["resourceType"], "Organization");
         assert_eq!(resource["id"], "organization-1");
@@ -2437,11 +2506,13 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         )
-        .unwrap();
+        .expect("should succeed");
 
-        let profiles = resource["meta"]["profile"].as_array().unwrap();
+        let profiles = resource["meta"]["profile"]
+            .as_array()
+            .expect("should be an array");
         assert_eq!(
-            profiles[0].as_str().unwrap(),
+            profiles[0].as_str().expect("should have a string value"),
             "http://example.org/fhir/StructureDefinition/MyOrg"
         );
     }
@@ -2455,13 +2526,17 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         // All references should use the {type}-1 pattern
-        let practitioner_ref = resource["practitioner"]["reference"].as_str().unwrap();
+        let practitioner_ref = resource["practitioner"]["reference"]
+            .as_str()
+            .expect("should have a string value");
         assert_eq!(practitioner_ref, "Practitioner/practitioner-1");
 
-        let organization_ref = resource["organization"]["reference"].as_str().unwrap();
+        let organization_ref = resource["organization"]["reference"]
+            .as_str()
+            .expect("should have a string value");
         assert_eq!(organization_ref, "Organization/organization-1");
     }
 
@@ -2474,7 +2549,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         assert_eq!(resource["resourceType"], "UnknownType");
         assert_eq!(resource["id"], "unknowntype-1");
@@ -2485,7 +2560,7 @@ mod tests {
 
     #[test]
     fn write_supplement_creates_files_for_uncovered_types() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
 
         // Create bulk data for Organization only
         let mut bulk_counts = HashMap::new();
@@ -2503,7 +2578,7 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         // Supplement IDs should only include types not in bulk_counts
         // (and not in NON_RESOURCE_TYPES)
@@ -2519,12 +2594,13 @@ mod tests {
                 .join("data")
                 .join(format!("{}.ndjson", resource_type));
             assert!(path.exists(), "{}.ndjson should exist", resource_type);
-            let contents = std::fs::read_to_string(&path).unwrap();
+            let contents = std::fs::read_to_string(&path).expect("should read file");
             let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
             assert_eq!(lines.len(), 1, "{} should have 1 line", resource_type);
             assert_eq!(ids.len(), 1, "{} should have 1 ID", resource_type);
 
-            let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+            let parsed: serde_json::Value =
+                serde_json::from_str(lines[0]).expect("should parse valid JSON");
             assert_eq!(parsed["resourceType"], *resource_type);
             assert_eq!(parsed["id"], format!("{}-1", resource_type.to_lowercase()));
         }
@@ -2532,7 +2608,7 @@ mod tests {
 
     #[test]
     fn write_supplement_skips_non_resource_types() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
 
         let mut bulk_counts = HashMap::new();
         bulk_counts.insert("Organization".to_string(), 5);
@@ -2550,7 +2626,7 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         // Extension should be skipped
         assert!(
@@ -2561,7 +2637,7 @@ mod tests {
 
     #[test]
     fn write_supplement_appends_to_combined_ndjson() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
 
         // First write bulk data for Organization only
         let mut bulk_counts = HashMap::new();
@@ -2579,7 +2655,7 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         // Then write supplements for uncovered types
         write_supplement_ndjson(
@@ -2591,11 +2667,11 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         // combined.ndjson should have bulk + supplement resources
         let combined_path = dir.path().join("data/combined.ndjson");
-        let contents = std::fs::read_to_string(&combined_path).unwrap();
+        let contents = std::fs::read_to_string(&combined_path).expect("should read file");
         let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
 
         // At least 2 bulk lines + supplement lines
@@ -2609,7 +2685,7 @@ mod tests {
 
     #[test]
     fn update_ndjson_creates_file_with_same_count() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
 
         let mut counts = HashMap::new();
         counts.insert("Organization".to_string(), 5);
@@ -2623,14 +2699,14 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
-        generate_update_ndjson(&ids, dir.path()).unwrap();
+        generate_update_ndjson(&ids, dir.path()).expect("should generate bulk data");
 
         let update_path = dir.path().join("data/update.ndjson");
         assert!(update_path.exists(), "update.ndjson should exist");
 
-        let contents = std::fs::read_to_string(&update_path).unwrap();
+        let contents = std::fs::read_to_string(&update_path).expect("should read file");
         let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
 
         // Should have same number of resources as bulk data
@@ -2645,7 +2721,7 @@ mod tests {
 
     #[test]
     fn update_ndjson_resources_differ_from_originals() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
 
         let mut counts = HashMap::new();
         counts.insert("Organization".to_string(), 3);
@@ -2658,26 +2734,28 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         // Read original resources
         let orig_path = dir.path().join("data/Organization.ndjson");
-        let orig_contents = std::fs::read_to_string(&orig_path).unwrap();
+        let orig_contents = std::fs::read_to_string(&orig_path).expect("should read file");
         let orig_lines: Vec<&str> = orig_contents.lines().filter(|l| !l.is_empty()).collect();
 
-        generate_update_ndjson(&ids, dir.path()).unwrap();
+        generate_update_ndjson(&ids, dir.path()).expect("should generate bulk data");
 
         // Read updated resources
         let update_path = dir.path().join("data/update.ndjson");
-        let update_contents = std::fs::read_to_string(&update_path).unwrap();
+        let update_contents = std::fs::read_to_string(&update_path).expect("should read file");
         let update_lines: Vec<&str> = update_contents.lines().filter(|l| !l.is_empty()).collect();
 
         assert_eq!(orig_lines.len(), update_lines.len());
 
         // Each updated resource should have the same id but different content
         for (orig_line, update_line) in orig_lines.iter().zip(update_lines.iter()) {
-            let orig: serde_json::Value = serde_json::from_str(orig_line).unwrap();
-            let updated: serde_json::Value = serde_json::from_str(update_line).unwrap();
+            let orig: serde_json::Value =
+                serde_json::from_str(orig_line).expect("should parse valid JSON");
+            let updated: serde_json::Value =
+                serde_json::from_str(update_line).expect("should parse valid JSON");
 
             // Same id
             assert_eq!(orig["id"], updated["id"]);
@@ -2692,7 +2770,7 @@ mod tests {
 
     #[test]
     fn update_ndjson_preserves_resource_type_and_id() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
 
         let mut counts = HashMap::new();
         counts.insert("Organization".to_string(), 2);
@@ -2706,17 +2784,20 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
-        generate_update_ndjson(&ids, dir.path()).unwrap();
+        generate_update_ndjson(&ids, dir.path()).expect("should generate bulk data");
 
         let update_path = dir.path().join("data/update.ndjson");
-        let contents = std::fs::read_to_string(&update_path).unwrap();
+        let contents = std::fs::read_to_string(&update_path).expect("should read file");
 
         for line in contents.lines().filter(|l| !l.is_empty()) {
-            let resource: serde_json::Value = serde_json::from_str(line).unwrap();
-            let rtype = resource["resourceType"].as_str().unwrap();
-            let id = resource["id"].as_str().unwrap();
+            let resource: serde_json::Value =
+                serde_json::from_str(line).expect("should parse valid JSON");
+            let rtype = resource["resourceType"]
+                .as_str()
+                .expect("should have a string value");
+            let id = resource["id"].as_str().expect("should have a string value");
 
             // resourceType and id should be preserved
             assert!(!rtype.is_empty());
@@ -2729,18 +2810,18 @@ mod tests {
 
     #[test]
     fn update_ndjson_handles_empty_ids() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
         let ids = IdStore::new();
 
         // Create the data directory so the function can write to it
-        std::fs::create_dir_all(dir.path().join("data")).unwrap();
+        std::fs::create_dir_all(dir.path().join("data")).expect("should create directory");
 
         // Should not error when there are no IDs
-        generate_update_ndjson(&ids, dir.path()).unwrap();
+        generate_update_ndjson(&ids, dir.path()).expect("should generate bulk data");
 
         let update_path = dir.path().join("data/update.ndjson");
         assert!(update_path.exists(), "update.ndjson should exist");
-        let contents = std::fs::read_to_string(&update_path).unwrap();
+        let contents = std::fs::read_to_string(&update_path).expect("should read file");
         assert!(contents.trim().is_empty(), "update.ndjson should be empty");
     }
 
@@ -2748,7 +2829,7 @@ mod tests {
 
     #[test]
     fn bulk_data_handles_empty_counts() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
         let counts = HashMap::new();
 
         let ids = generate_bulk_data(
@@ -2759,7 +2840,7 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         assert!(
             ids.is_empty(),
@@ -2769,7 +2850,7 @@ mod tests {
 
     #[test]
     fn bulk_data_creates_combined_ndjson() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
         let mut counts = HashMap::new();
         counts.insert("Organization".to_string(), 3);
         counts.insert("Practitioner".to_string(), 2);
@@ -2782,12 +2863,12 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         let combined_path = dir.path().join("data/combined.ndjson");
         assert!(combined_path.exists(), "combined.ndjson should exist");
 
-        let contents = std::fs::read_to_string(&combined_path).unwrap();
+        let contents = std::fs::read_to_string(&combined_path).expect("should read file");
         let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
         let total: usize = counts.values().sum::<u64>() as usize;
         assert_eq!(
@@ -2799,7 +2880,7 @@ mod tests {
 
     #[test]
     fn bulk_data_stamps_created_date() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should create temp dir");
         let mut counts = HashMap::new();
         counts.insert("Organization".to_string(), 5);
 
@@ -2811,14 +2892,17 @@ mod tests {
             &HashMap::new(),
             dir.path(),
         )
-        .unwrap();
+        .expect("should succeed");
 
         let path = dir.path().join("data/Organization.ndjson");
-        let contents = std::fs::read_to_string(&path).unwrap();
+        let contents = std::fs::read_to_string(&path).expect("should read file");
 
         for line in contents.lines().filter(|l| !l.is_empty()) {
-            let org: serde_json::Value = serde_json::from_str(line).unwrap();
-            let last_updated = org["meta"]["lastUpdated"].as_str().unwrap();
+            let org: serde_json::Value =
+                serde_json::from_str(line).expect("should parse valid JSON");
+            let last_updated = org["meta"]["lastUpdated"]
+                .as_str()
+                .expect("should have a string value");
             assert!(!last_updated.is_empty(), "meta.lastUpdated should be set");
             // Should be an ISO timestamp
             assert!(
@@ -2849,13 +2933,34 @@ mod tests {
         }
 
         // Order should respect dependencies
-        let org_idx = order.iter().position(|t| t == "Organization").unwrap();
-        let prac_idx = order.iter().position(|t| t == "Practitioner").unwrap();
-        let endpoint_idx = order.iter().position(|t| t == "Endpoint").unwrap();
-        let loc_idx = order.iter().position(|t| t == "Location").unwrap();
-        let hs_idx = order.iter().position(|t| t == "HealthcareService").unwrap();
-        let pr_idx = order.iter().position(|t| t == "PractitionerRole").unwrap();
-        let prov_idx = order.iter().position(|t| t == "Provenance").unwrap();
+        let org_idx = order
+            .iter()
+            .position(|t| t == "Organization")
+            .expect("type should be in creation order");
+        let prac_idx = order
+            .iter()
+            .position(|t| t == "Practitioner")
+            .expect("type should be in creation order");
+        let endpoint_idx = order
+            .iter()
+            .position(|t| t == "Endpoint")
+            .expect("type should be in creation order");
+        let loc_idx = order
+            .iter()
+            .position(|t| t == "Location")
+            .expect("type should be in creation order");
+        let hs_idx = order
+            .iter()
+            .position(|t| t == "HealthcareService")
+            .expect("type should be in creation order");
+        let pr_idx = order
+            .iter()
+            .position(|t| t == "PractitionerRole")
+            .expect("type should be in creation order");
+        let prov_idx = order
+            .iter()
+            .position(|t| t == "Provenance")
+            .expect("type should be in creation order");
 
         assert!(org_idx < endpoint_idx, "Organization before Endpoint");
         assert!(endpoint_idx < loc_idx, "Endpoint before Location");

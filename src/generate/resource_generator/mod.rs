@@ -272,7 +272,8 @@ mod tests {
     #[test]
     fn generate_patient_from_profile() {
         let profile = minimal_patient_profile();
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource =
+            generate_resource(&profile, &[]).expect("should generate patient from profile");
 
         assert_eq!(resource["resourceType"], "Patient");
         assert!(resource.get("name").is_some(), "name is required (min=1)");
@@ -332,7 +333,8 @@ mod tests {
             });
         }
 
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource =
+            generate_resource(&profile, &[]).expect("should generate resource with fixed values");
         assert_eq!(resource["gender"], "male");
     }
 
@@ -426,7 +428,8 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource = generate_resource(&profile, &[])
+            .expect("should generate reference with target profile");
         let subject = &resource["subject"];
         let reference = subject["reference"].as_str().unwrap_or("");
         assert!(
@@ -601,7 +604,8 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource = generate_resource(&profile, &[])
+            .expect("should generate backbone with required subfields");
 
         // qualification should be an array (max="*") with required sub-fields
         let qualification = resource
@@ -754,9 +758,7 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile, &[]).unwrap();
-
-        // Extension should NOT be present (empty extensions are invalid)
+        let resource = generate_resource(&profile, &[]).expect("should skip extension type fields");
         assert!(
             resource.get("extension").is_none(),
             "Extension fields should be skipped since empty extensions are invalid"
@@ -933,24 +935,24 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource = generate_resource(&profile, &[]).expect("should generate resource");
 
         // identifier (max="*") should be an array
-        let identifier = resource.get("identifier").unwrap();
+        let identifier = resource.get("identifier").expect("field should be present");
         assert!(
             identifier.is_array(),
             "identifier should be an array (max=*)"
         );
 
         // name (max="1", Organization.name is a string 0..1) should be a string
-        let name = resource.get("name").unwrap();
+        let name = resource.get("name").expect("field should be present");
         assert!(
             name.is_string(),
             "name should be a string (Organization.name is 0..1 in base spec)"
         );
 
         // address (max="1" but Organization.address is 0..* in base spec) should be an array
-        let address = resource.get("address").unwrap();
+        let address = resource.get("address").expect("field should be present");
         assert!(
             address.is_array(),
             "address should be an array (Organization.address is 0..* in base spec)"
@@ -1122,22 +1124,24 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource = generate_resource(&profile, &[]).expect("should generate resource");
 
-        let qualification = resource.get("qualification").unwrap();
-        let qual_array = qualification.as_array().unwrap();
+        let qualification = resource
+            .get("qualification")
+            .expect("field should be present");
+        let qual_array = qualification.as_array().expect("should be an array");
         assert!(
             !qual_array.is_empty(),
             "qualification array should not be empty"
         );
 
         let qual = &qual_array[0];
-        let code = qual.get("code").unwrap();
+        let code = qual.get("code").expect("field should be present");
         assert!(
             code.is_object(),
             "code should be an object (CodeableConcept)"
         );
-        let text = code.get("text").unwrap();
+        let text = code.get("text").expect("field should be present");
         assert!(
             text.as_str().is_some(),
             "code.text should be a non-null string (required at depth 2)"
@@ -1170,7 +1174,8 @@ mod tests {
                 ]
             }
         });
-        let profile: StructureDefinition = serde_json::from_value(profile_json).unwrap();
+        let profile: StructureDefinition =
+            serde_json::from_value(profile_json).expect("should deserialize profile JSON");
 
         let mut value_set_systems = std::collections::HashMap::new();
         value_set_systems.insert(
@@ -1178,12 +1183,14 @@ mod tests {
             "http://example.org/fhir/CodeSystem/service-type".to_string(),
         );
 
-        let resource =
-            generate_resource_with_value_sets(&profile, &[], &value_set_systems).unwrap();
+        let resource = generate_resource_with_value_sets(&profile, &[], &value_set_systems)
+            .expect("should generate resource");
 
         let coding = resource["type"][0]["coding"][0].clone();
         assert_eq!(
-            coding["system"].as_str().unwrap(),
+            coding["system"]
+                .as_str()
+                .expect("should have a string value"),
             "http://example.org/fhir/CodeSystem/service-type"
         );
     }
@@ -1216,16 +1223,22 @@ mod tests {
                 ]
             }
         });
-        let profile: StructureDefinition = serde_json::from_value(profile_json).unwrap();
+        let profile: StructureDefinition =
+            serde_json::from_value(profile_json).expect("should deserialize profile JSON");
 
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource = generate_resource(&profile, &[]).expect("should generate resource");
         let coding = resource["code"][0]["coding"][0].clone();
 
         assert_eq!(
-            coding["system"].as_str().unwrap(),
+            coding["system"]
+                .as_str()
+                .expect("should have a string value"),
             "http://example.org/fhir/CodeSystem/practitioner-role"
         );
-        assert_eq!(coding["code"].as_str().unwrap(), "a-specialty");
+        assert_eq!(
+            coding["code"].as_str().expect("should have a string value"),
+            "a-specialty"
+        );
     }
 
     #[test]
@@ -1256,7 +1269,8 @@ mod tests {
                 ]
             }
         });
-        let profile: StructureDefinition = serde_json::from_value(profile_json).unwrap();
+        let profile: StructureDefinition =
+            serde_json::from_value(profile_json).expect("should deserialize profile JSON");
 
         let mut value_set_systems = std::collections::HashMap::new();
         value_set_systems.insert(
@@ -1264,14 +1278,16 @@ mod tests {
             "http://example.org/fhir/CodeSystem/observation-type".to_string(),
         );
 
-        let resource =
-            generate_resource_with_value_sets(&profile, &[], &value_set_systems).unwrap();
+        let resource = generate_resource_with_value_sets(&profile, &[], &value_set_systems)
+            .expect("should generate resource");
 
         assert_eq!(resource["resourceType"], "Observation");
         assert!(resource.get("code").is_some(), "code is required (min=1)");
         let coding = resource["code"]["coding"][0].clone();
         assert_eq!(
-            coding["system"].as_str().unwrap(),
+            coding["system"]
+                .as_str()
+                .expect("should have a string value"),
             "http://example.org/fhir/CodeSystem/observation-type"
         );
     }
@@ -1325,7 +1341,7 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource = generate_resource(&profile, &[]).expect("should generate resource");
         assert_eq!(resource["resourceType"], "Patient");
         assert!(
             resource.get("meta").is_some(),
@@ -1336,7 +1352,7 @@ mod tests {
             "http://example.org/EmptyProfile"
         );
         // No required fields, so only resourceType and meta should be present
-        assert_eq!(resource.as_object().unwrap().len(), 2);
+        assert_eq!(resource.as_object().expect("should be an object").len(), 2);
     }
 
     #[test]
@@ -1428,7 +1444,7 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource = generate_resource(&profile, &[]).expect("should generate resource");
         assert_eq!(resource["resourceType"], "Patient");
         // gender is optional (min=0), should not be present
         assert!(
@@ -1575,7 +1591,7 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource = generate_resource(&profile, &[]).expect("should generate resource");
         assert_eq!(resource["resourceType"], "Patient");
 
         let identifier = resource.get("identifier").expect("identifier is required");
@@ -1587,7 +1603,9 @@ mod tests {
         // The first identifier should have the slice's system
         let first_id = &id_array[0];
         assert_eq!(
-            first_id["system"].as_str().unwrap(),
+            first_id["system"]
+                .as_str()
+                .expect("should have a string value"),
             "http://example.org/system/medicare",
             "slice discriminator should set system on the first identifier"
         );
@@ -1850,7 +1868,8 @@ mod tests {
         };
 
         let all_profiles = vec![ext_def];
-        let resource = generate_resource(&profile, &all_profiles).unwrap();
+        let resource =
+            generate_resource(&profile, &all_profiles).expect("should generate resource");
 
         assert_eq!(resource["resourceType"], "Patient");
 
@@ -1863,7 +1882,7 @@ mod tests {
 
         let ext = &ext_array[0];
         assert_eq!(
-            ext["url"].as_str().unwrap(),
+            ext["url"].as_str().expect("should have a string value"),
             "http://example.org/test-extension",
             "extension should have the correct URL from the extension definition"
         );
@@ -2004,7 +2023,7 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource = generate_resource(&profile, &[]).expect("should generate resource");
         assert_eq!(resource["resourceType"], "Practitioner");
 
         // qualification should be populated even though min=0, because
@@ -2015,7 +2034,10 @@ mod tests {
             "mustSupport backbone with required children should be populated"
         );
 
-        let qual_array = qualification.unwrap().as_array().unwrap();
+        let qual_array = qualification
+            .unwrap()
+            .as_array()
+            .expect("should be an array");
         assert!(
             !qual_array.is_empty(),
             "qualification array should not be empty"
@@ -2166,7 +2188,7 @@ mod tests {
             differential: None,
         };
 
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource = generate_resource(&profile, &[]).expect("should generate resource");
         let identifier = resource.get("identifier").expect("identifier is required");
         let id_array = identifier
             .as_array()
@@ -2175,7 +2197,9 @@ mod tests {
         // The first identifier should have the ABN system from the slice
         let first_id = &id_array[0];
         assert_eq!(
-            first_id["system"].as_str().unwrap(),
+            first_id["system"]
+                .as_str()
+                .expect("should have a string value"),
             "http://example.org/system/abn",
             "slice value should use the slice's fixedUri for system"
         );
@@ -2254,7 +2278,7 @@ mod tests {
             base_definition: None,
         };
 
-        let resource = generate_resource(&profile, &[]).unwrap();
+        let resource = generate_resource(&profile, &[]).expect("should generate resource");
 
         // target should be an array (max=*)
         let target = resource.get("target").expect("target should be populated");
@@ -2263,7 +2287,7 @@ mod tests {
         // Each target reference should have an extension field
         let first_target = target
             .as_array()
-            .unwrap()
+            .expect("should succeed")
             .first()
             .expect("target array should have at least one element");
         assert!(
