@@ -145,39 +145,118 @@ const R5_EXTENSION_PROFILES: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// A shared HTTP client for interacting with a FHIR repository.
+///
+/// Encapsulates the `reqwest::Client`, base URL, upload method, and auth logic
+/// so that callers don't need to duplicate client creation, URL building, or
+/// auth header injection.
+pub struct FhirRepositoryClient {
+    client: reqwest::Client,
+    base_url: String,
+    upload_method: UploadMethod,
+    write_endpoint: WriteEndpoint,
+}
+
+impl FhirRepositoryClient {
+    /// Create a new client from a `WriteEndpoint`.
+    pub fn new(write_endpoint: &WriteEndpoint) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+        let base_url = match write_endpoint {
+            WriteEndpoint::Repository { base_url, .. } => base_url.clone(),
+            WriteEndpoint::Server { base_url, .. } => base_url.clone(),
+        };
+        let upload_method = match write_endpoint {
+            WriteEndpoint::Repository { upload_method, .. }
+            | WriteEndpoint::Server { upload_method, .. } => *upload_method,
+        };
+        Ok(Self {
+            client,
+            base_url,
+            upload_method,
+            write_endpoint: write_endpoint.clone(),
+        })
+    }
+
+    /// The base URL of the FHIR repository.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// The upload method (PUT or POST).
+    pub fn upload_method(&self) -> UploadMethod {
+        self.upload_method
+    }
+
+    /// PUT a resource to `/{resource_type}/{id}`.
+    pub async fn put_resource(
+        &self,
+        resource_type: &str,
+        id: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let url = format!("{}/{}/{}", self.base_url, resource_type, id);
+        let req = self
+            .client
+            .put(&url)
+            .header("Content-Type", "application/fhir+json")
+            .header("Accept", "application/fhir+json")
+            .json(body);
+        let req = add_write_auth(req, &self.write_endpoint);
+        Ok(req.send().await?)
+    }
+
+    /// POST a resource to `/{resource_type}`.
+    pub async fn post_resource(
+        &self,
+        resource_type: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let url = format!("{}/{}", self.base_url, resource_type);
+        let req = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/fhir+json")
+            .header("Accept", "application/fhir+json")
+            .json(body);
+        let req = add_write_auth(req, &self.write_endpoint);
+        Ok(req.send().await?)
+    }
+
+    /// DELETE a resource at `/{resource_type}/{id}`.
+    pub async fn delete_resource(
+        &self,
+        resource_type: &str,
+        id: &str,
+    ) -> Result<reqwest::Response> {
+        let url = format!("{}/{}/{}", self.base_url, resource_type, id);
+        let req = self
+            .client
+            .delete(&url)
+            .header("Accept", "application/fhir+json");
+        let req = add_write_auth(req, &self.write_endpoint);
+        Ok(req.send().await?)
+    }
+}
+
 /// Ensure the required HL7 R5 extension StructureDefinitions are present in the
 /// FHIR repository. If a profile is missing (404), uploads the embedded minimal
 /// StructureDefinition so the HAPI validator can resolve profile URIs used in
 /// extension slicing discriminators.
 pub async fn ensure_r5_extension_profiles(write_endpoint: &WriteEndpoint) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
-
-    let base_url = match write_endpoint {
-        WriteEndpoint::Repository { base_url, .. } => base_url,
-        WriteEndpoint::Server { base_url, .. } => base_url,
-    };
+    let client = FhirRepositoryClient::new(write_endpoint)?;
 
     for (id, canonical_url, embedded_json) in R5_EXTENSION_PROFILES {
-        let repo_url = format!("{}/StructureDefinition/{}", base_url, id);
-
-        // Always PUT the embedded StructureDefinition to ensure the latest version
-        // is present. HAPI handles idempotent updates gracefully.
-
         // Parse the embedded minimal StructureDefinition
         let sd_json: serde_json::Value = serde_json::from_str(embedded_json)
             .with_context(|| format!("Failed to parse embedded StructureDefinition for {}", id))?;
 
         // Upload to repository
-        let put_req = client
-            .put(&repo_url)
-            .header("Content-Type", "application/fhir+json")
-            .header("Accept", "application/fhir+json")
-            .json(&sd_json);
-        let put_req = add_write_auth(put_req, write_endpoint);
-
-        match put_req.send().await {
+        match client
+            .put_resource("StructureDefinition", id, &sd_json)
+            .await
+        {
             Ok(r) if r.status().as_u16() < 300 => {
                 tracing::info!("Uploaded R5 extension profile: {}", canonical_url);
                 println!("  Uploaded R5 profile: {}", canonical_url);
@@ -215,14 +294,7 @@ pub async fn upload_supplement_resources(
     value_set_systems: &std::collections::HashMap<String, String>,
     write_endpoint: &WriteEndpoint,
 ) -> Result<HashMap<String, Vec<String>>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
-
-    let base_url = match write_endpoint {
-        WriteEndpoint::Repository { base_url, .. } => base_url,
-        WriteEndpoint::Server { base_url, .. } => base_url,
-    };
+    let client = FhirRepositoryClient::new(write_endpoint)?;
 
     let mut supplement_ids: HashMap<String, Vec<String>> = HashMap::new();
     let mut any_uploaded = false;
@@ -260,21 +332,13 @@ pub async fn upload_supplement_resources(
         };
 
         let id = format!("{}-1", resource_type.to_lowercase());
-        let url = format!("{}/{}/{}", base_url, resource_type, id);
 
         if !any_uploaded {
             println!("\n── Uploading supplement resources (uncovered types) ──");
             any_uploaded = true;
         }
 
-        let req = client
-            .put(&url)
-            .header("Content-Type", "application/fhir+json")
-            .header("Accept", "application/fhir+json")
-            .json(&resource);
-        let req = add_write_auth(req, write_endpoint);
-
-        match req.send().await {
+        match client.put_resource(resource_type, &id, &resource).await {
             Ok(r) if r.status().as_u16() < 300 => {
                 tracing::info!("Uploaded supplement {} ({})", resource_type, id);
                 println!("  {} {}", resource_type, id);
@@ -453,19 +517,8 @@ pub async fn upload_ndjson_files(
     write_endpoint: &WriteEndpoint,
     concurrency: usize,
 ) -> Result<HashMap<String, Vec<String>>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
-
-    let base_url = match write_endpoint {
-        WriteEndpoint::Repository { base_url, .. } => base_url,
-        WriteEndpoint::Server { base_url, .. } => base_url,
-    };
-
-    let upload_method = match write_endpoint {
-        WriteEndpoint::Repository { upload_method, .. }
-        | WriteEndpoint::Server { upload_method, .. } => *upload_method,
-    };
+    let repo_client = Arc::new(FhirRepositoryClient::new(write_endpoint)?);
+    let upload_method = repo_client.upload_method();
 
     let mut all_ids: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -496,7 +549,7 @@ pub async fn upload_ndjson_files(
             "Uploading {} {} resources to {}",
             total,
             resource_type,
-            base_url
+            repo_client.base_url()
         );
 
         let mut ids: Vec<String> = Vec::with_capacity(total);
@@ -537,16 +590,8 @@ pub async fn upload_ndjson_files(
                     resource.as_object_mut().map(|o| o.remove("id"));
                 }
 
-                let url = if upload_method == UploadMethod::Put {
-                    // PUT /{rtype}/{id} — update-as-create with client-assigned ID
-                    format!("{}/{}/{}", base_url, resource_type, client_id)
-                } else {
-                    // POST /{rtype} — server-assigned ID
-                    format!("{}/{}", base_url, resource_type)
-                };
-
-                let client = client.clone();
-                let write_endpoint = write_endpoint.clone();
+                let repo_client = repo_client.clone();
+                let resource_type = resource_type.clone();
                 // Acquire a permit before spawning so at most `concurrency`
                 // requests are ever in flight; the permit is released when the
                 // task finishes, immediately admitting the next one.
@@ -554,21 +599,13 @@ pub async fn upload_ndjson_files(
 
                 join_set.spawn(async move {
                     let _permit = permit;
-                    let req = if upload_method == UploadMethod::Put {
-                        client
-                            .put(&url)
-                            .header("Content-Type", "application/fhir+json")
-                            .header("Accept", "application/fhir+json")
-                            .json(&resource)
+                    let resp = if upload_method == UploadMethod::Put {
+                        repo_client
+                            .put_resource(&resource_type, &client_id, &resource)
+                            .await?
                     } else {
-                        client
-                            .post(&url)
-                            .header("Content-Type", "application/fhir+json")
-                            .header("Accept", "application/fhir+json")
-                            .json(&resource)
+                        repo_client.post_resource(&resource_type, &resource).await?
                     };
-                    let req = add_write_auth(req, &write_endpoint);
-                    let resp = req.send().await?;
                     let status = resp.status();
                     let body: serde_json::Value = resp.json().await.unwrap_or_default();
                     anyhow::Ok((client_id, status.as_u16(), body))
@@ -635,14 +672,7 @@ pub async fn delete_all_resources(
     write_endpoint: &WriteEndpoint,
     concurrency: usize,
 ) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()?;
-
-    let base_url = match write_endpoint {
-        WriteEndpoint::Repository { base_url, .. } => base_url,
-        WriteEndpoint::Server { base_url, .. } => base_url,
-    };
+    let repo_client = Arc::new(FhirRepositoryClient::new(write_endpoint)?);
 
     let mut total_errors = 0usize;
 
@@ -663,16 +693,12 @@ pub async fn delete_all_resources(
                 let mut handles = Vec::new();
 
                 for id in chunk {
-                    let url = format!("{}/{}/{}", base_url, resource_type, id);
-                    let client = client.clone();
-                    let write_endpoint = write_endpoint.clone();
+                    let repo_client = repo_client.clone();
+                    let resource_type = resource_type.clone();
+                    let id = id.clone();
 
                     handles.push(tokio::spawn(async move {
-                        let req = client
-                            .delete(&url)
-                            .header("Accept", "application/fhir+json");
-                        let req = add_write_auth(req, &write_endpoint);
-                        let resp = req.send().await?;
+                        let resp = repo_client.delete_resource(&resource_type, &id).await?;
                         Ok::<u16, anyhow::Error>(resp.status().as_u16())
                     }));
                 }
