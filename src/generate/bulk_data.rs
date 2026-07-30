@@ -866,14 +866,19 @@ fn overlay_cross_references(
                 );
             }
 
-            if let Some(ref_str) = target_ref {
+            // entity.what must reference a stable resource that won't be
+            // deleted during the test run. Using the same reference as
+            // target risks HAPI-1096 ("Resource is deleted") when a
+            // DELETE test removes that resource. Use Organization
+            // (a root-level resource) instead.
+            if !org_ids.is_empty() {
                 obj.insert(
                     "entity".to_string(),
                     serde_json::json!([
                         {
                             "role": "source",
                             "what": {
-                                "reference": ref_str
+                                "reference": random_ref("Organization", org_ids, rng)
                             }
                         }
                     ]),
