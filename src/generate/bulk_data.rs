@@ -880,12 +880,24 @@ fn overlay_cross_references(
             );
 
             if let Some(ref_str) = target_ref.as_deref() {
-                obj.insert(
-                    "target".to_string(),
-                    serde_json::json!([{
-                        "reference": ref_str
-                    }]),
-                );
+                // Preserve mustSupport sub-fields (e.g. target.extension)
+                // that were populated during resource generation.
+                // Merge the reference into the first existing target
+                // object rather than replacing the entire array.
+                if let Some(targets) = obj.get_mut("target").and_then(|t| t.as_array_mut()) {
+                    if let Some(first) = targets.first_mut()
+                        && let Some(target_obj) = first.as_object_mut()
+                    {
+                        target_obj.insert("reference".to_string(), serde_json::json!(ref_str));
+                    }
+                } else {
+                    obj.insert(
+                        "target".to_string(),
+                        serde_json::json!([{
+                            "reference": ref_str
+                        }]),
+                    );
+                }
             }
 
             // Override activity with a valid code from the Provenance activity type
