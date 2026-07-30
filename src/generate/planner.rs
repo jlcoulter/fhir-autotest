@@ -81,14 +81,6 @@ pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<Re
                 max_entries: Some(1), // we request _count=1
                 ..ResponseAssertion::none()
             }),
-            "_sort" => Some(ResponseAssertion {
-                bundle_type: Some("searchset".to_string()),
-                sort_by: Some(SortAssertion {
-                    field: "_lastUpdated".to_string(),
-                    direction: "asc".to_string(),
-                }),
-                ..ResponseAssertion::none()
-            }),
             _ => Some(ResponseAssertion {
                 bundle_type: Some("searchset".to_string()),
                 min_entries: Some(0),
