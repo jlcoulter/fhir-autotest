@@ -1,3 +1,4 @@
+use crate::model::search_param::SearchParameter;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -150,8 +151,9 @@ pub fn resolve_search_value(
     if param_type == "reference" {
         // Try to find the target resource type from common reference patterns
         // e.g. "subject" → Patient, "organization" → Organization
-        let target_type = resolve_reference_target(param_name);
-        if let Some(id) = created_ids.get(&target_type) {
+        if let Some(target_type) = resolve_reference_target(resource_type, param_name, None)
+            && let Some(id) = created_ids.get(&target_type)
+        {
             return Some(format!("{}/{}", target_type, id));
         }
         // Fall back to any created resource of matching type
@@ -175,8 +177,25 @@ pub fn resolve_search_value(
 }
 
 /// Resolve a reference search param name to the likely target resource type.
-pub fn resolve_reference_target(param_name: &str) -> String {
-    match param_name {
+///
+/// First tries to infer the target from the SearchParameter's FHIRPath expression
+/// (e.g., `"Patient.name | Practitioner.name"` → `"Patient"`). Falls back to a
+/// hardcoded mapping of common search parameter names, then capitalizes the first
+/// letter as a last resort.
+pub fn resolve_reference_target(
+    _resource_type: &str,
+    param_name: &str,
+    search_params: Option<&[SearchParameter]>,
+) -> Option<String> {
+    // Try SearchParameter-based inference first
+    if let Some(params) = search_params
+        && let Some(target) = infer_from_search_params(param_name, params)
+    {
+        return Some(target);
+    }
+
+    // Fallback: hardcoded mapping for common FHIR search parameter names
+    Some(match param_name {
         "subject" | "patient" => "Patient".to_string(),
         "organization" | "managingOrganization" => "Organization".to_string(),
         "location" => "Location".to_string(),
@@ -185,6 +204,12 @@ pub fn resolve_reference_target(param_name: &str) -> String {
         "endpoint" => "Endpoint".to_string(),
         "target" => "Provenance".to_string(), // most common target
         "partOf" => "Organization".to_string(),
+        "encounter" => "Encounter".to_string(),
+        "partof" => "Organization".to_string(),
+        "device" => "Device".to_string(),
+        "service" => "HealthcareService".to_string(),
+        "group" => "Group".to_string(),
+        "specimen" => "Specimen".to_string(),
         _ => {
             // Capitalize first letter as fallback
             let mut chars = param_name.chars();
@@ -193,7 +218,33 @@ pub fn resolve_reference_target(param_name: &str) -> String {
                 Some(c) => c.to_uppercase().chain(chars).collect(),
             }
         }
+    })
+}
+
+/// Try to infer the target resource type from a SearchParameter's expression field.
+/// Extracts the first resource type from the FHIRPath expression (e.g.,
+/// `"Patient.name | Practitioner.name"` → `"Patient"`).
+fn infer_from_search_params(param_name: &str, search_params: &[SearchParameter]) -> Option<String> {
+    if let Some(sp) = search_params.iter().find(|sp| sp.code == param_name)
+        && let Some(expression) = sp.expression.as_deref()
+    {
+        let types: Vec<&str> = expression
+            .split('|')
+            .filter_map(|part| {
+                let part = part.trim();
+                let rtype = part.split('.').next()?;
+                if rtype.chars().next()?.is_uppercase() && !rtype.contains('-') {
+                    Some(rtype)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !types.is_empty() {
+            return Some(types.first()?.to_string());
+        }
     }
+    None
 }
 
 #[cfg(test)]
