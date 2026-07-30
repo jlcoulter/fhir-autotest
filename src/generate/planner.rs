@@ -1001,7 +1001,7 @@ fn build_result_param_test(
     value: &str,
     profile_url: &Option<String>,
     declared_params: &[RestSearchParam],
-    created_ids: &HashMap<String, String>,
+    _created_ids: &HashMap<String, String>,
 ) -> Vec<TestCase> {
     // For _sort, determine the actual sort field based on declared params
     let (actual_param, actual_value, sort_field): (&str, String, Option<String>) =
@@ -1053,7 +1053,9 @@ fn build_result_param_test(
 
     // Test A: with real resource ID (uses {id} placeholder resolved at runtime)
     // This exercises the result param behaviour on actual data.
-    if created_ids.contains_key(resource_type) {
+    // The {id} placeholder is resolved at runtime by the orchestrator; if no
+    // resource was created for this type, the test is skipped gracefully.
+    {
         let url = format!("/{resource_type}?{actual_param}={actual_value}&_id={{id}}");
 
         let response_assertion = match param {
@@ -1648,8 +1650,8 @@ mod tests {
         assert_eq!(operations, 1);
         // 2 negative tests per resource
         assert_eq!(negatives, 2);
-        // 3 result params (_summary, _count, _sort)
-        assert_eq!(result_params, 3);
+        // 3 result params (_summary, _count, _sort) × 2 variants each (real ID + empty)
+        assert_eq!(result_params, 6);
 
         // Total should be substantially more than the old 4 interaction + 2 search
         assert!(
@@ -2132,19 +2134,37 @@ mod tests {
 
     #[test]
     fn build_result_param_test_count() {
-        let test = build_result_param_test("Patient", "_count", "1", &None, &[], &HashMap::new());
-        // With no created_ids, only the empty-id variant is produced
-        assert_eq!(test.len(), 1);
-        let tc = &test[0];
-        assert_eq!(tc.request.method, "GET");
-        assert!(
-            tc.request.url.contains("?_count=1"),
-            "URL: {}",
-            tc.request.url
+        let tests = build_result_param_test("Patient", "_count", "1", &None, &[], &HashMap::new());
+        // Test A (real ID with {id} placeholder) is always generated now;
+        // the orchestrator skips it at runtime if no resource was created.
+        assert_eq!(
+            tests.len(),
+            2,
+            "Should produce both real-ID and empty-ID variants"
         );
-        assert!(tc.request.url.contains("&_id=nonexistent-id-99999"));
-        assert_eq!(tc.name, "patient_result_count_empty");
-        assert!(matches!(tc.kind, TestCaseKind::ResultParam { ref param } if param == "_count"));
+
+        // Test A: real-ID variant
+        let real_test = tests.iter().find(|t| !t.name.contains("empty")).unwrap();
+        assert_eq!(real_test.request.method, "GET");
+        assert!(
+            real_test.request.url.contains("?_count=1"),
+            "URL: {}",
+            real_test.request.url
+        );
+        assert!(
+            real_test.request.url.contains("&_id={id}"),
+            "Real URL should have {{id}} placeholder: {}",
+            real_test.request.url
+        );
+        assert_eq!(real_test.name, "patient_result_count");
+        assert!(
+            matches!(real_test.kind, TestCaseKind::ResultParam { ref param } if param == "_count")
+        );
+
+        // Test B: empty-ID variant
+        let empty_test = tests.iter().find(|t| t.name.contains("empty")).unwrap();
+        assert!(empty_test.request.url.contains("&_id=nonexistent-id-99999"));
+        assert_eq!(empty_test.name, "patient_result_count_empty");
     }
 
     #[test]
