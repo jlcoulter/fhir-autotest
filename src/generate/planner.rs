@@ -461,6 +461,122 @@ fn build_test_group(
             &inline_params,
             created_ids,
         ));
+
+        // --- _has (reverse chaining) tests ---
+        // For each reference param on this resource, find resources that
+        // reference this type and chain into their search params.
+        for sp in &inline_params {
+            if sp.param_type == "reference"
+                && let Some(target_type) =
+                    resolve_reference_target(&resource.resource_type, &sp.name, Some(search_params))
+            {
+                // Find search params on the target resource to chain into
+                let target_params: Vec<&SearchParameter> = search_params
+                    .iter()
+                    .filter(|tsp| tsp.base.contains(&target_type) && tsp.param_type == "string")
+                    .take(1) // limit to 1 to avoid explosion
+                    .collect();
+
+                for target_sp in target_params {
+                    let value = resolve_param_value(
+                        &resource.resource_type,
+                        &target_sp.code,
+                        "string",
+                        field_values,
+                        created_ids,
+                    );
+                    let url = format!(
+                        "/{}?_has:{}:{}:{}={}",
+                        resource.resource_type, target_type, sp.name, target_sp.code, value
+                    );
+                    tests.push(TestCase {
+                        name: format!(
+                            "{}_result_has_{}_{}_{}",
+                            resource.resource_type.to_lowercase(),
+                            target_type.to_lowercase(),
+                            sp.name.replace('-', "_"),
+                            target_sp.code.replace('-', "_"),
+                        ),
+                        kind: TestCaseKind::ResultParam {
+                            param: "_has".to_string(),
+                        },
+                        interaction: Interaction::SearchType,
+                        resource_type: resource.resource_type.to_string(),
+                        profile_url: profile_url.clone(),
+                        request: HttpRequest {
+                            method: "GET".to_string(),
+                            url,
+                            headers: HashMap::new(),
+                            body: None,
+                        },
+                        validation: ValidationSpec {
+                            expected_status: 200,
+                            profile_url: None,
+                            required_elements: Vec::new(),
+                            forbidden_elements: Vec::new(),
+                            response_assertion: Some(ResponseAssertion {
+                                bundle_type: Some("searchset".to_string()),
+                                min_entries: Some(0),
+                                ..ResponseAssertion::none()
+                            }),
+                        },
+                    });
+                }
+            }
+        }
+
+        // --- _list test ---
+        // Tests the _list result parameter. Since we don't know if the server
+        // has a list with this ID, we accept either 200 (valid Bundle) or 404.
+        tests.push(TestCase {
+            name: format!("{}_result_list", resource.resource_type.to_lowercase()),
+            kind: TestCaseKind::ResultParam {
+                param: "_list".to_string(),
+            },
+            interaction: Interaction::SearchType,
+            resource_type: resource.resource_type.to_string(),
+            profile_url: profile_url.clone(),
+            request: HttpRequest {
+                method: "GET".to_string(),
+                url: format!("/{}?_list=test-list-id-99999", resource.resource_type),
+                headers: HashMap::new(),
+                body: None,
+            },
+            validation: ValidationSpec {
+                expected_status: 0, // 0 = accept any status
+                profile_url: None,
+                required_elements: Vec::new(),
+                forbidden_elements: Vec::new(),
+                response_assertion: None,
+            },
+        });
+
+        // --- _query test ---
+        // Tests the _query result parameter with a non-existent query name.
+        // Per FHIR spec, unknown named queries may be rejected (404/400) or
+        // ignored (200 with Bundle), so we accept any status.
+        tests.push(TestCase {
+            name: format!("{}_result_query", resource.resource_type.to_lowercase()),
+            kind: TestCaseKind::ResultParam {
+                param: "_query".to_string(),
+            },
+            interaction: Interaction::SearchType,
+            resource_type: resource.resource_type.to_string(),
+            profile_url: profile_url.clone(),
+            request: HttpRequest {
+                method: "GET".to_string(),
+                url: format!("/{}?_query=nonexistent-query", resource.resource_type),
+                headers: HashMap::new(),
+                body: None,
+            },
+            validation: ValidationSpec {
+                expected_status: 0, // 0 = accept any status
+                profile_url: None,
+                required_elements: Vec::new(),
+                forbidden_elements: Vec::new(),
+                response_assertion: None,
+            },
+        });
     }
 
     // --- $operation tests from CS rest.operation ---
@@ -1610,8 +1726,9 @@ mod tests {
         assert_eq!(operations, 1);
         // 2 negative tests per resource
         assert_eq!(negatives, 2);
-        // 3 result params (_summary, _count, _sort) × 2 variants each (real ID + empty)
-        assert_eq!(result_params, 6);
+        // 3 result params (_summary, _count, _sort) × 2 variants each (real ID + empty) = 6
+        // + 1 _list test + 1 _query test = 8 total
+        assert_eq!(result_params, 8);
 
         // Total should be substantially more than the old 4 interaction + 2 search
         assert!(
