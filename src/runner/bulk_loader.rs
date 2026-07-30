@@ -387,13 +387,11 @@ fn collect_same_type_refs(value: &serde_json::Value, prefix: &str, out: &mut Vec
         serde_json::Value::Object(map) => {
             for (key, val) in map {
                 if key == "reference" {
-                    if let Some(s) = val.as_str() {
-                        if let Some(id) = s.strip_prefix(prefix) {
-                            if !id.is_empty() && !id.contains('/') {
+                    if let Some(s) = val.as_str()
+                        && let Some(id) = s.strip_prefix(prefix)
+                            && !id.is_empty() && !id.contains('/') {
                                 out.push(id.to_string());
                             }
-                        }
-                    }
                 } else {
                     collect_same_type_refs(val, prefix, out);
                 }
