@@ -38,4 +38,8 @@ pub const NON_RESOURCE_TYPES: &[&str] = &[
     "Annotation",
     "Signature",
     "Timing",
+    // Parameters is a special FHIR resource type used only as an
+    // operation request/response container — it is not a persistable
+    // resource and servers correctly return 404 for CRUD/search.
+    "Parameters",
 ];

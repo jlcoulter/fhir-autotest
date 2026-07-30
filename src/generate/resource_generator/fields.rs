@@ -238,6 +238,19 @@ pub fn populate_required_fields(
             apply_identifier_profile_constraints(&mut value, type_def, all_profiles);
         }
 
+        // For complex types (Reference, CodeableConcept, etc.), populate
+        // mustSupport sub-fields (e.g. target.extension inside Reference).
+        if is_complex_type(type_code) {
+            let child_path = format!("{}.{}", resource_type, field_name);
+            populate_nested_required_fields(
+                &mut value,
+                &child_path,
+                elements,
+                all_profiles,
+                value_set_systems,
+            );
+        }
+
         // For BackboneElement, populate required sub-fields from nested elements
         if type_code == "BackboneElement" {
             let mut backbone = value.as_object().cloned().unwrap_or_default();

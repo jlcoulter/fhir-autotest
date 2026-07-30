@@ -155,6 +155,12 @@ pub fn generate_conformance_tests(
         }
 
         for resource in &rest.resource {
+            // Skip non-resource types (e.g. Parameters) that are declared
+            // in the CapabilityStatement but are not persistable resources.
+            if crate::generate::NON_RESOURCE_TYPES.contains(&resource.resource_type.as_str()) {
+                continue;
+            }
+
             let has_search_type = resource.interaction.iter().any(|i| i.code == "search-type");
 
             // --- MustSupport field presence tests ---
