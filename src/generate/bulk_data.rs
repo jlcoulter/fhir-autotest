@@ -1047,7 +1047,10 @@ fn ensure_telecom_contact_purpose(obj: &mut serde_json::Map<String, serde_json::
         && let Some(first_obj) = first.as_object_mut()
         && !first_obj.contains_key("extension")
     {
-        first_obj.insert("extension".to_string(), serde_json::json!([contact_purpose]));
+        first_obj.insert(
+            "extension".to_string(),
+            serde_json::json!([contact_purpose]),
+        );
     }
 }
 
@@ -2182,7 +2185,8 @@ mod tests {
         ];
         let mut rng = rand::rng();
 
-        let mut anchor = serde_json::json!({ "resourceType": "Organization", "id": "organization-1" });
+        let mut anchor =
+            serde_json::json!({ "resourceType": "Organization", "id": "organization-1" });
         overlay_cross_references(
             &mut anchor,
             "Organization",
