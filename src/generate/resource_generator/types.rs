@@ -21,9 +21,11 @@ pub fn generate_typed_value(
             serde_json::json!("https://example.org/fhir/StructureDefinition/example")
         }
         "code" => {
-            // daysOfWeek only accepts mon/tue/wed/thu/fri/sat/sun, not generic "active"
-            if element.path.ends_with("daysOfWeek") {
-                serde_json::json!("mon")
+            // When a code type has a required binding (e.g. daysOfWeek bound to
+            // DaysOfWeek value set), use a valid code from that system instead
+            // of the generic "active" default which HAPI rejects.
+            if let Some(system) = bound_system {
+                code_value_for_system(&system)
             } else {
                 serde_json::json!("active")
             }
@@ -561,4 +563,18 @@ pub fn direct_fixed_or_pattern_value(element: &ElementDefinition) -> Option<serd
     }
 
     None
+}
+
+/// Return a valid code value for a known bound system.
+///
+/// When a `code`-typed element has a required binding (e.g. `daysOfWeek`
+/// bound to `http://hl7.org/fhir/ValueSet/days-of-week`), the generic
+/// default `"active"` is invalid and HAPI rejects it. This function
+/// returns a valid code from the bound system.
+fn code_value_for_system(system: &str) -> serde_json::Value {
+    match system {
+        "http://hl7.org/fhir/days-of-week" => serde_json::json!("mon"),
+        "http://hl7.org/fhir/administrative-gender" => serde_json::json!("male"),
+        _ => serde_json::json!("active"),
+    }
 }

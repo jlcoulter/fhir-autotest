@@ -1748,4 +1748,607 @@ mod tests {
             near_test.request.url
         );
     }
+
+    // ─── Builder unit tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn build_interaction_test_read() {
+        let test = build_interaction_test("Patient", &Interaction::Read, &None);
+        assert_eq!(test.request.method, "GET");
+        assert_eq!(test.request.url, "/Patient/{id}");
+        assert_eq!(test.name, "patient_read");
+        assert_eq!(test.kind, TestCaseKind::Interaction);
+        assert_eq!(test.validation.expected_status, 200);
+        assert_eq!(test.validation.required_elements, vec!["Patient.id"]);
+        assert!(test.validation.profile_url.is_none());
+    }
+
+    #[test]
+    fn build_interaction_test_create() {
+        let profile = Some("http://example.org/Profile".to_string());
+        let test = build_interaction_test("Patient", &Interaction::Create, &profile);
+        assert_eq!(test.request.method, "POST");
+        assert_eq!(test.request.url, "/Patient");
+        assert_eq!(test.name, "patient_create");
+        assert_eq!(test.kind, TestCaseKind::Interaction);
+        assert_eq!(test.validation.expected_status, 201);
+        assert_eq!(test.validation.required_elements, vec!["Patient.id"]);
+        assert_eq!(
+            test.validation.profile_url,
+            Some("http://example.org/Profile".to_string())
+        );
+    }
+
+    #[test]
+    fn build_interaction_test_delete() {
+        let test = build_interaction_test("Observation", &Interaction::Delete, &None);
+        assert_eq!(test.request.method, "DELETE");
+        assert_eq!(test.request.url, "/Observation/{id}");
+        assert_eq!(test.name, "observation_delete");
+        assert_eq!(test.validation.expected_status, 204);
+        assert!(test.validation.required_elements.is_empty());
+    }
+
+    #[test]
+    fn build_interaction_test_search_type() {
+        let test = build_interaction_test("Patient", &Interaction::SearchType, &None);
+        assert_eq!(test.request.method, "GET");
+        assert_eq!(test.request.url, "/Patient?_count=1");
+        assert_eq!(test.name, "patient_searchtype");
+        assert_eq!(test.validation.expected_status, 200);
+    }
+
+    #[test]
+    fn build_interaction_test_operation() {
+        let test = build_interaction_test(
+            "Patient",
+            &Interaction::Operation("everything".to_string()),
+            &None,
+        );
+        assert_eq!(test.request.method, "POST");
+        assert_eq!(test.request.url, "/Patient/$everything");
+        assert_eq!(test.name, "patient_operation-everything");
+        assert_eq!(test.validation.expected_status, 200);
+    }
+
+    #[test]
+    fn build_search_single_test_produces_correct_url_and_kind() {
+        let test = build_search_single_test(
+            "Patient",
+            "name",
+            "string",
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.request.method, "GET");
+        assert!(
+            test.request.url.contains("?name="),
+            "URL should contain ?name=, got {}",
+            test.request.url
+        );
+        assert!(
+            test.request.url.contains("&_id={id}"),
+            "URL should contain &_id={{id}}, got {}",
+            test.request.url
+        );
+        assert_eq!(test.name, "patient_search_name");
+        assert!(
+            matches!(test.kind, TestCaseKind::SearchSingle { ref param_name, .. } if param_name == "name")
+        );
+        assert_eq!(test.interaction, Interaction::SearchType);
+        assert_eq!(test.validation.expected_status, 200);
+        assert_eq!(
+            test.validation
+                .response_assertion
+                .as_ref()
+                .unwrap()
+                .bundle_type,
+            Some("searchset".to_string())
+        );
+    }
+
+    #[test]
+    fn build_search_single_test_with_profile() {
+        let profile = Some("http://example.org/Profile".to_string());
+        let test = build_search_single_test(
+            "Patient",
+            "birthdate",
+            "date",
+            &profile,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.profile_url, profile);
+        assert!(test.request.url.contains("?birthdate="));
+        assert!(matches!(
+            test.kind,
+            TestCaseKind::SearchSingle { ref param_name, ref param_type }
+                if param_name == "birthdate" && param_type == "date"
+        ));
+    }
+
+    #[test]
+    fn build_search_modifier_test_exact() {
+        let test = build_search_modifier_test(
+            "Patient",
+            "name",
+            "string",
+            &SearchModifier::Exact,
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.request.method, "GET");
+        assert!(
+            test.request.url.contains("name:exact="),
+            "URL should contain name:exact=, got {}",
+            test.request.url
+        );
+        assert_eq!(test.name, "patient_search_name_exact");
+        assert!(matches!(
+            test.kind,
+            TestCaseKind::SearchModifier { ref param_name, ref modifier }
+                if param_name == "name" && modifier == &SearchModifier::Exact
+        ));
+    }
+
+    #[test]
+    fn build_search_modifier_test_missing() {
+        let test = build_search_modifier_test(
+            "Patient",
+            "birthdate",
+            "date",
+            &SearchModifier::Missing,
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.request.method, "GET");
+        assert_eq!(test.request.url, "/Patient?birthdate:missing=true");
+        assert_eq!(test.name, "patient_search_birthdate_missing");
+        assert!(matches!(
+            test.kind,
+            TestCaseKind::SearchModifier { ref modifier, .. }
+                if modifier == &SearchModifier::Missing
+        ));
+    }
+
+    #[test]
+    fn build_search_prefix_test_eq() {
+        let test = build_search_prefix_test(
+            "Patient",
+            "birthdate",
+            "date",
+            &SearchPrefix::Eq,
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.request.method, "GET");
+        assert!(
+            test.request.url.contains("birthdate=eq"),
+            "URL should contain birthdate=eq, got {}",
+            test.request.url
+        );
+        assert_eq!(test.name, "patient_search_birthdate_eq");
+        assert!(matches!(
+            test.kind,
+            TestCaseKind::SearchPrefix { ref param_name, ref prefix }
+                if param_name == "birthdate" && prefix == &SearchPrefix::Eq
+        ));
+    }
+
+    #[test]
+    fn build_search_prefix_test_gt() {
+        let test = build_search_prefix_test(
+            "Observation",
+            "value",
+            "quantity",
+            &SearchPrefix::Gt,
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(
+            test.request.url.contains("value=gt"),
+            "URL should contain value=gt, got {}",
+            test.request.url
+        );
+        assert_eq!(test.name, "observation_search_value_gt");
+    }
+
+    #[test]
+    fn build_search_near_test_produces_coordinate_url() {
+        let test = build_search_near_test("Location", "near", &None);
+        assert_eq!(test.request.method, "GET");
+        assert!(
+            test.request.url.contains("near="),
+            "URL should contain near=, got {}",
+            test.request.url
+        );
+        assert!(
+            test.request.url.contains("%7C"),
+            "URL should contain %7C (pipe encoding), got {}",
+            test.request.url
+        );
+        assert_eq!(test.name, "location_search_near_near_10km");
+        assert!(
+            matches!(test.kind, TestCaseKind::SearchNear { ref param_name } if param_name == "near")
+        );
+        assert_eq!(test.validation.expected_status, 200);
+    }
+
+    #[test]
+    fn build_search_combo_test_combines_params() {
+        let params: [(&str, &str); 2] = [("name", "string"), ("birthdate", "date")];
+        let test =
+            build_search_combo_test("Patient", &params, &None, &HashMap::new(), &HashMap::new());
+        assert_eq!(test.request.method, "GET");
+        assert!(
+            test.request.url.contains("?name="),
+            "URL should contain ?name=, got {}",
+            test.request.url
+        );
+        assert!(
+            test.request.url.contains("&birthdate="),
+            "URL should contain &birthdate=, got {}",
+            test.request.url
+        );
+        assert_eq!(test.name, "patient_search_combo_name_and_birthdate");
+        assert!(matches!(
+            test.kind,
+            TestCaseKind::SearchCombo { ref params } if params == &vec!["name".to_string(), "birthdate".to_string()]
+        ));
+    }
+
+    #[test]
+    fn build_chained_search_test_produces_chain_url() {
+        let test = build_chained_search_test(
+            "Patient",
+            "organization",
+            "name",
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.request.method, "GET");
+        assert!(
+            test.request.url.contains("?organization.name="),
+            "URL should contain ?organization.name=, got {}",
+            test.request.url
+        );
+        assert_eq!(test.name, "patient_search_chain_organization_name");
+        assert!(matches!(
+            test.kind,
+            TestCaseKind::SearchChained { ref chain_param, ref target_param }
+                if chain_param == "organization" && target_param == "name"
+        ));
+    }
+
+    #[test]
+    fn build_include_test_forward_include() {
+        let test = build_include_test("Patient", "organization", false, None, None, &None);
+        assert_eq!(test.request.method, "GET");
+        assert!(
+            test.request.url.contains("?_include=Patient:organization"),
+            "URL should contain ?_include=Patient:organization, got {}",
+            test.request.url
+        );
+        assert_eq!(test.name, "patient_include_organization");
+        assert!(matches!(
+            test.kind,
+            TestCaseKind::Include { ref param, revinclude: false }
+                if param == "organization"
+        ));
+        assert_eq!(
+            test.validation
+                .response_assertion
+                .as_ref()
+                .unwrap()
+                .include_requires_distinct_from,
+            Some("Patient".to_string())
+        );
+    }
+
+    #[test]
+    fn build_include_test_revinclude() {
+        let test = build_include_test("Observation", "subject", true, Some("Patient"), None, &None);
+        assert!(
+            test.request.url.contains("?_revinclude=Patient:subject"),
+            "URL should contain ?_revinclude=Patient:subject, got {}",
+            test.request.url
+        );
+        assert_eq!(test.name, "observation_revinclude_subject");
+        assert!(matches!(
+            test.kind,
+            TestCaseKind::Include { ref param, revinclude: true }
+                if param == "subject"
+        ));
+    }
+
+    #[test]
+    fn build_include_test_with_expected_type() {
+        let test = build_include_test(
+            "Patient",
+            "organization",
+            false,
+            None,
+            Some("Organization".to_string()),
+            &None,
+        );
+        let assertion = test.validation.response_assertion.unwrap();
+        assert_eq!(
+            assertion.include_types.get("Organization"),
+            Some(&"organization".to_string())
+        );
+        assert!(assertion.include_requires_distinct_from.is_none());
+    }
+
+    #[test]
+    fn build_result_param_test_count() {
+        let test = build_result_param_test("Patient", "_count", "1", &None, &[], &HashMap::new());
+        // With no created_ids, only the empty-id variant is produced
+        assert_eq!(test.len(), 1);
+        let tc = &test[0];
+        assert_eq!(tc.request.method, "GET");
+        assert!(
+            tc.request.url.contains("?_count=1"),
+            "URL: {}",
+            tc.request.url
+        );
+        assert!(tc.request.url.contains("&_id=nonexistent-id-99999"));
+        assert_eq!(tc.name, "patient_result_count_empty");
+        assert!(matches!(tc.kind, TestCaseKind::ResultParam { ref param } if param == "_count"));
+    }
+
+    #[test]
+    fn build_result_param_test_with_created_ids() {
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Patient".to_string(), "pat-001".to_string());
+        let tests = build_result_param_test("Patient", "_count", "1", &None, &[], &created_ids);
+        assert_eq!(
+            tests.len(),
+            2,
+            "Should produce both real-ID and empty-ID variants"
+        );
+
+        let real_test = tests.iter().find(|t| !t.name.contains("empty")).unwrap();
+        assert!(
+            real_test.request.url.contains("&_id={id}"),
+            "Real URL should have {{id}} placeholder: {}",
+            real_test.request.url
+        );
+        assert_eq!(real_test.name, "patient_result_count");
+        assert_eq!(
+            real_test
+                .validation
+                .response_assertion
+                .as_ref()
+                .unwrap()
+                .max_entries,
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn build_result_param_test_sort() {
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Patient".to_string(), "pat-001".to_string());
+        let declared_params = vec![RestSearchParam {
+            name: "birthdate".to_string(),
+            param_type: "date".to_string(),
+            definition: None,
+            documentation: None,
+        }];
+        let tests = build_result_param_test(
+            "Patient",
+            "_sort",
+            "_lastUpdated",
+            &None,
+            &declared_params,
+            &created_ids,
+        );
+        assert!(!tests.is_empty());
+        let sort_test = &tests[0];
+        assert!(
+            sort_test.request.url.contains("?_sort="),
+            "URL: {}",
+            sort_test.request.url
+        );
+        assert!(
+            matches!(sort_test.kind, TestCaseKind::ResultParam { ref param } if param == "_sort")
+        );
+        let assertion = sort_test.validation.response_assertion.as_ref().unwrap();
+        assert_eq!(assertion.sort_by.as_ref().unwrap().field, "birthdate");
+        assert_eq!(assertion.sort_by.as_ref().unwrap().direction, "asc");
+    }
+
+    #[test]
+    fn build_operation_test_instance_scope() {
+        let op_def = OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/OperationDefinition/Patient-everything".to_string(),
+            name: "everything".to_string(),
+            code: "everything".to_string(),
+            system: Some(false),
+            type_: Some(false),
+            instance: Some(true),
+            parameter: vec![],
+        };
+        let test = build_operation_test(
+            "Patient",
+            "everything",
+            Some(&op_def),
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.request.method, "POST");
+        assert_eq!(test.request.url, "/Patient/{id}/$everything");
+        assert_eq!(test.name, "patient_operation_everything");
+        assert!(matches!(test.kind, TestCaseKind::Operation { ref code } if code == "everything"));
+        assert_eq!(test.validation.expected_status, 200);
+        let assertion = test.validation.response_assertion.as_ref().unwrap();
+        assert_eq!(
+            assertion.response_contains_key,
+            Some("resourceType".to_string())
+        );
+    }
+
+    #[test]
+    fn build_operation_test_system_scope() {
+        let op_def = OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/uv/bulkdata/OperationDefinition/export".to_string(),
+            name: "export".to_string(),
+            code: "export".to_string(),
+            system: Some(true),
+            type_: Some(false),
+            instance: Some(false),
+            parameter: vec![],
+        };
+        let test = build_operation_test(
+            "System",
+            "export",
+            Some(&op_def),
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.request.url, "/$export");
+        assert_eq!(test.name, "system_operation_export");
+    }
+
+    #[test]
+    fn build_operation_test_with_body_params() {
+        let op_def = OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/OperationDefinition/Patient-everything".to_string(),
+            name: "everything".to_string(),
+            code: "everything".to_string(),
+            system: Some(false),
+            type_: Some(false),
+            instance: Some(true),
+            parameter: vec![OperationParameter {
+                name: "start".to_string(),
+                use_: Some("in".to_string()),
+                min: Some(1),
+                max: Some("1".to_string()),
+                param_type: Some("date".to_string()),
+            }],
+        };
+        let test = build_operation_test(
+            "Patient",
+            "everything",
+            Some(&op_def),
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(
+            test.request.body.is_some(),
+            "Should have a request body for operations with required params"
+        );
+        let body = test.request.body.unwrap();
+        assert_eq!(body["resourceType"], "Parameters");
+        assert!(body["parameter"].is_array());
+        assert_eq!(body["parameter"][0]["name"], "start");
+    }
+
+    #[test]
+    fn build_negative_test_produces_correct_structure() {
+        let test = build_negative_test("Patient", "bad-request", "POST", "/Patient", 400, &None);
+        assert_eq!(test.request.method, "POST");
+        assert_eq!(test.request.url, "/Patient");
+        assert_eq!(test.name, "patient_negative_bad_request");
+        assert!(
+            matches!(test.kind, TestCaseKind::Negative { ref description } if description == "bad-request")
+        );
+        assert_eq!(test.validation.expected_status, 400);
+        assert_eq!(test.interaction, Interaction::Read);
+    }
+
+    #[test]
+    fn assertion_for_kind_search_single() {
+        let kind = TestCaseKind::SearchSingle {
+            param_name: "name".to_string(),
+            param_type: "string".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+        assert_eq!(assertion.min_entries, Some(0));
+    }
+
+    #[test]
+    fn assertion_for_kind_interaction() {
+        let kind = TestCaseKind::Interaction;
+        let assertion = assertion_for_kind(&kind, "Patient");
+        assert!(
+            assertion.is_none(),
+            "Interaction should have no response assertion"
+        );
+    }
+
+    #[test]
+    fn assertion_for_kind_include() {
+        let kind = TestCaseKind::Include {
+            param: "organization".to_string(),
+            revinclude: false,
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+        assert_eq!(assertion.min_entries, Some(0));
+    }
+
+    #[test]
+    fn assertion_for_kind_negative() {
+        let kind = TestCaseKind::Negative {
+            description: "bad-request".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient");
+        assert!(
+            assertion.is_none(),
+            "Negative should have no response assertion"
+        );
+    }
+
+    #[test]
+    fn sample_value_returns_correct_defaults() {
+        assert_eq!(sample_value("string"), "test-value");
+        assert_eq!(sample_value("token"), "test-code");
+        assert_eq!(sample_value("reference"), "Patient/test-id");
+        assert_eq!(sample_value("number"), "1");
+        assert_eq!(sample_value("date"), "2024-01-01");
+        assert_eq!(sample_value("dateTime"), "2024-01-01T00:00:00Z");
+        assert_eq!(sample_value("uri"), "http://example.org");
+        assert_eq!(
+            sample_value("quantity"),
+            "5.0||http://unitsofmeasure.org|kg"
+        );
+        assert!(
+            sample_value("special").contains("%7C"),
+            "special should contain pipe encoding"
+        );
+        assert_eq!(sample_value("unknown"), "test-value");
+    }
+
+    #[test]
+    fn resolve_param_value_falls_back_to_sample_value() {
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let value = resolve_param_value("Patient", "name", "string", &empty_fv, &empty_ids);
+        assert_eq!(value, "test-value");
+    }
+
+    #[test]
+    fn resolve_param_value_uses_field_values() {
+        let mut field_values = HashMap::new();
+        let mut patient_values = HashMap::new();
+        patient_values.insert("Patient.name".to_string(), "John".to_string());
+        field_values.insert("Patient".to_string(), patient_values);
+        let empty_ids = HashMap::new();
+        let value = resolve_param_value("Patient", "name", "string", &field_values, &empty_ids);
+        assert_eq!(value, "John");
+    }
 }

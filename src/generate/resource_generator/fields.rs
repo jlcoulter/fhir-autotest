@@ -7,6 +7,95 @@ use crate::model::*;
 use anyhow::Result;
 use std::collections::HashMap;
 
+/// Populate mustSupport fields with min=0 that are not BackboneElements.
+///
+/// The required-fields pass (pass 1) only populates fields with min > 0.
+/// But many profiles mark optional fields as mustSupport (e.g.
+/// Organization.telecom, Location.alias, Provenance.activity). The
+/// conformance checker verifies these fields are present in responses,
+/// so the generated test resource should include them.
+///
+/// This pass generates a single default value for each such field.
+/// Sub-fields (e.g. telecom.system, telecom.value) are handled by
+/// generate_typed_value which populates complex types with defaults.
+pub fn populate_must_support_optional_fields(
+    resource: &mut serde_json::Value,
+    elements: &[ElementDefinition],
+    resource_type: &str,
+    all_profiles: &[StructureDefinition],
+    value_set_systems: &HashMap<String, String>,
+) {
+    for element in elements {
+        let field_name = match get_field_name(&element.path, resource_type) {
+            Some(name) => name,
+            None => continue,
+        };
+        if field_name == resource_type || field_name.contains(':') {
+            continue;
+        }
+
+        // Must be optional (min=0) and mustSupport
+        if element.min.unwrap_or(0) != 0 {
+            continue;
+        }
+        if !element.must_support {
+            continue;
+        }
+
+        // Skip BackboneElements — handled by populate_must_support_backbones
+        if element.type_.first().map(|t| t.code.as_str()) == Some("BackboneElement") {
+            continue;
+        }
+
+        // Skip if the field is already populated
+        if resource.get(&field_name).is_some() {
+            continue;
+        }
+
+        // Skip fields with no type information
+        if element.type_.is_empty() {
+            continue;
+        }
+
+        let type_def = &element.type_[0];
+        let type_code = &type_def.code;
+
+        // Skip Extension — can't generate valid extensions without knowing the URL
+        if type_code == "Extension" {
+            continue;
+        }
+
+        let target_profiles = &type_def.target_profile;
+
+        let mut value =
+            generate_typed_value(type_code, target_profiles, element, value_set_systems);
+
+        if type_code == "Identifier" {
+            apply_identifier_profile_constraints(&mut value, type_def, all_profiles);
+        }
+
+        // For complex types inside a mustSupport field, check for required sub-fields
+        // at depth 2 (e.g. telecom.system, telecom.value)
+        if is_complex_type(type_code) {
+            let child_path = format!("{}.{}", resource_type, field_name);
+            populate_nested_required_fields(
+                &mut value,
+                &child_path,
+                elements,
+                all_profiles,
+                value_set_systems,
+            );
+        }
+
+        let max = element.max.as_deref().unwrap_or("1");
+        if max != "1" || is_base_spec_repeatable(resource_type, &field_name) {
+            resource[&field_name] = serde_json::json!([value]);
+        } else {
+            resource[&field_name] = value;
+        }
+    }
+}
+
 /// Populate mustSupport BackboneElement fields that have min=0 but whose children
 /// include at least one required field (min ≥ 1).
 ///
@@ -48,19 +137,21 @@ pub fn populate_must_support_backbones(
             continue;
         }
 
-        // Check whether any direct child has min ≥ 1 (would be populated in a backbone)
+        // Check whether any direct child has min ≥ 1 or is mustSupport.
+        // A backbone with all-min=0 children that are mustSupport still needs
+        // to be generated so the conformance checker can verify field presence.
         let parent_path = format!("{}.{}", resource_type, field_name);
-        let has_required_child = elements.iter().any(|e| {
+        let has_relevant_child = elements.iter().any(|e| {
             e.path.starts_with(&format!("{}.", parent_path))
                 && !e
                     .path
                     .strip_prefix(&format!("{}.", parent_path))
                     .unwrap_or("")
                     .contains('.')
-                && e.min.unwrap_or(0) >= 1
+                && (e.min.unwrap_or(0) >= 1 || e.must_support)
         });
 
-        if !has_required_child {
+        if !has_relevant_child {
             continue;
         }
 
@@ -287,11 +378,84 @@ pub fn populate_backbone_fields(
             backbone.insert(field_name.to_string(), value);
         }
     }
+
+    // Second pass: populate mustSupport children with min=0.
+    // These are optional in the profile but marked mustSupport, so the
+    // conformance checker expects them in responses. Examples:
+    //   availableTime.daysOfWeek, availableTime.allDay,
+    //   availableTime.availableStartTime, availableTime.availableEndTime,
+    //   notAvailable.during, eligibility.code
+    for element in elements {
+        if !element.path.starts_with(&format!("{}.", parent_path)) {
+            continue;
+        }
+
+        let suffix = element
+            .path
+            .strip_prefix(&format!("{}.", parent_path))
+            .unwrap_or("");
+        if suffix.contains('.') {
+            continue;
+        }
+
+        let field_name = suffix.split(':').next().unwrap_or(suffix);
+        if backbone.contains_key(field_name) {
+            continue;
+        }
+
+        // Must be optional (min=0) and mustSupport
+        if element.min.unwrap_or(0) != 0 {
+            continue;
+        }
+        if !element.must_support {
+            continue;
+        }
+
+        if element.type_.is_empty() {
+            continue;
+        }
+
+        let type_def = &element.type_[0];
+        let type_code = &type_def.code;
+
+        if type_code == "Extension" {
+            continue;
+        }
+
+        let target_profiles = &type_def.target_profile;
+        let mut value =
+            generate_typed_value(type_code, target_profiles, element, value_set_systems);
+
+        if type_code == "Identifier" {
+            apply_identifier_profile_constraints(&mut value, type_def, all_profiles);
+        }
+
+        // For complex types inside a backbone, check for required sub-fields
+        if is_complex_type(type_code) {
+            let child_path = format!("{}.{}", parent_path, field_name);
+            populate_nested_required_fields(
+                &mut value,
+                &child_path,
+                elements,
+                all_profiles,
+                value_set_systems,
+            );
+        }
+
+        let max = element.max.as_deref().unwrap_or("1");
+        if max != "1" || is_base_spec_repeatable(resource_type, field_name) {
+            backbone.insert(field_name.to_string(), serde_json::json!([value]));
+        } else {
+            backbone.insert(field_name.to_string(), value);
+        }
+    }
 }
 
 /// Populate required sub-fields at depth 2 inside a complex type.
 /// E.g., for "Practitioner.qualification.code", find
 /// "Practitioner.qualification.code.text" (min=1) and populate it.
+/// Also populates mustSupport sub-fields with min=0 (e.g.
+/// "telecom.extension", "qualification.issuer", "availableTime.daysOfWeek").
 pub fn populate_nested_required_fields(
     value: &mut serde_json::Value,
     parent_path: &str,
@@ -304,6 +468,7 @@ pub fn populate_nested_required_fields(
         None => return,
     };
 
+    // First pass: populate required children (min > 0)
     for element in elements {
         if !element.path.starts_with(&format!("{}.", parent_path)) {
             continue;
@@ -354,6 +519,67 @@ pub fn populate_nested_required_fields(
         if type_code == "Identifier" {
             apply_identifier_profile_constraints(&mut child_value, type_def, all_profiles);
         }
+        let max = element.max.as_deref().unwrap_or("1");
+        if max != "1" {
+            obj.insert(field_name.to_string(), serde_json::json!([child_value]));
+        } else {
+            obj.insert(field_name.to_string(), child_value);
+        }
+    }
+
+    // Second pass: populate mustSupport children with min=0.
+    // These are optional in the profile but marked mustSupport, so the
+    // conformance checker expects them in responses. Examples:
+    //   telecom.extension, qualification.issuer, target.extension,
+    //   availableTime.daysOfWeek, availableTime.allDay,
+    //   availableTime.availableStartTime, availableTime.availableEndTime,
+    //   notAvailable.during, eligibility.code
+    for element in elements {
+        if !element.path.starts_with(&format!("{}.", parent_path)) {
+            continue;
+        }
+
+        let suffix = element
+            .path
+            .strip_prefix(&format!("{}.", parent_path))
+            .unwrap_or("");
+        if suffix.contains('.') {
+            continue;
+        }
+
+        let field_name = suffix.split(':').next().unwrap_or(suffix);
+        if obj.contains_key(field_name) {
+            continue;
+        }
+
+        // Must be optional (min=0) and mustSupport
+        if element.min.unwrap_or(0) != 0 {
+            continue;
+        }
+        if !element.must_support {
+            continue;
+        }
+
+        if element.type_.is_empty() {
+            continue;
+        }
+
+        let type_def = &element.type_[0];
+        let type_code = &type_def.code;
+
+        // Skip Extension — can't generate valid extensions without knowing the URL
+        if type_code == "Extension" {
+            continue;
+        }
+
+        let target_profiles = &type_def.target_profile;
+        let mut child_value =
+            generate_typed_value(type_code, target_profiles, element, value_set_systems);
+
+        if type_code == "Identifier" {
+            apply_identifier_profile_constraints(&mut child_value, type_def, all_profiles);
+        }
+
         let max = element.max.as_deref().unwrap_or("1");
         if max != "1" {
             obj.insert(field_name.to_string(), serde_json::json!([child_value]));
