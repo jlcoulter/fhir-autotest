@@ -327,8 +327,15 @@ fn merge_snapshot_elements(child: &mut StructureDefinition, parent_elements: &[E
 
 /// Write a downloaded profile to the disk cache.
 fn cache_profile(path: &std::path::Path, sd: &StructureDefinition) {
-    if let Ok(json) = serde_json::to_string_pretty(sd) {
-        std::fs::write(path, &json).ok();
+    match serde_json::to_string_pretty(sd) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(path, &json) {
+                tracing::debug!("Failed to cache profile to {}: {}", path.display(), e);
+            }
+        }
+        Err(e) => {
+            tracing::debug!("Failed to serialize profile for caching: {}", e);
+        }
     }
 }
 
