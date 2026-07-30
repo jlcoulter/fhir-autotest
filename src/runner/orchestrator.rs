@@ -1,7 +1,6 @@
 use crate::config::models::*;
 use crate::generate::value_resolver::extract_field_values;
 use crate::generate::*;
-use crate::parse::*;
 use crate::runner::bulk_loader::*;
 use crate::runner::executor::*;
 use crate::runner::response_assertions::assert_response;
@@ -170,22 +169,12 @@ impl Orchestrator {
 
     /// Run the full test pipeline against the server.
     pub async fn run(&self, ig_package_path: &str) -> Result<RunReport> {
-        // 1. Parse the IG package
-        let pkg = parse_package(ig_package_path)?;
-        let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
+        // 1. Parse the IG package, select CS, resolve creation order, load fixtures
+        let ctx = crate::prepare_plan_context(ig_package_path, &self.config).await?;
 
-        // 2. Select responder CapabilityStatement (config override or package fallback)
-        let cs = crate::select_capability_statement(&pkg, &self.config)?;
+        tracing::info!("Resource creation order: {:?}", ctx.creation_order);
 
-        // 3. Extract dependencies and determine creation order
-        let auto_deps = extract_dependencies(&pkg.structure_definitions);
-        let auto_order = resolve_creation_order(&auto_deps)?;
-        let creation_order =
-            merge_creation_order(&auto_order, &self.config.overrides.creation_order);
-
-        tracing::info!("Resource creation order: {:?}", creation_order);
-
-        // 4. Determine data setup strategy
+        // 2. Determine data setup strategy
         let has_bulk_data = !self.config.data_generation.counts.is_empty();
         let write_endpoint = self.config.write_endpoint();
         let upload_method = match &write_endpoint {
@@ -213,7 +202,7 @@ impl Orchestrator {
             let counts = self.config.data_generation.counts.clone();
             // Ensure creation order includes all types from counts
             for rt in counts.keys() {
-                if !creation_order.contains(rt) {
+                if !ctx.creation_order.contains(rt) {
                     tracing::warn!(
                         "Data generation type '{}' not in creation order, appending",
                         rt
@@ -226,7 +215,8 @@ impl Orchestrator {
             // meta.profile instead of hardcoded Plan-Net URLs.
             // Strip FHIR version suffixes (e.g. "|26.0.0") — meta.profile
             // should contain the plain canonical URL for server compatibility.
-            let profile_urls: HashMap<String, String> = cs
+            let profile_urls: HashMap<String, String> = ctx
+                .cs
                 .rest
                 .iter()
                 .flat_map(|r| &r.resource)
@@ -241,9 +231,9 @@ impl Orchestrator {
             let generated_ids = generate_bulk_data(
                 &counts,
                 &profile_urls,
-                &pkg.structure_definitions,
-                &value_set_systems,
-                &pkg.raw_resources,
+                &ctx.pkg.structure_definitions,
+                &ctx.value_set_systems,
+                &ctx.pkg.raw_resources,
                 output_path,
             )?;
             let data_creation_order = bulk_data_creation_order(&counts);
@@ -260,12 +250,12 @@ impl Orchestrator {
             // Write supplement resources (one per uncovered type) to NDJSON files
             // so they appear in the data output alongside the bulk data.
             let supplement_ids = write_supplement_ndjson(
-                &creation_order,
+                &ctx.creation_order,
                 &self.config.data_generation.counts,
                 &profile_urls,
-                &pkg.structure_definitions,
-                &value_set_systems,
-                &pkg.raw_resources,
+                &ctx.pkg.structure_definitions,
+                &ctx.value_set_systems,
+                &ctx.pkg.raw_resources,
                 output_path,
             )?;
             if !supplement_ids.is_empty() {
@@ -330,29 +320,30 @@ impl Orchestrator {
             }
         }
 
-        // 4. Load fixture overrides (for single-resource setup, not bulk)
+        // 3. Load fixture overrides (for single-resource setup, not bulk)
         let fixtures = self.config.load_fixtures()?;
 
-        // 5. Generate or load individual resources (when NOT using bulk data)
+        // 4. Generate or load individual resources (when NOT using bulk data)
         let mut resources: HashMap<String, serde_json::Value> = HashMap::new();
         let mut created_ids: HashMap<String, String> = HashMap::new();
         let mut resource_field_values: HashMap<String, HashMap<String, String>> = HashMap::new();
 
         if !has_bulk_data {
-            for resource_type in &creation_order {
+            for resource_type in &ctx.creation_order {
                 if let Some(fixture) = fixtures.get(resource_type) {
                     tracing::info!("Using fixture for {}", resource_type);
                     resources.insert(resource_type.clone(), fixture.clone());
                 } else {
-                    let profile = pkg
+                    let profile = ctx
+                        .pkg
                         .structure_definitions
                         .iter()
                         .find(|sd| sd.base_type == *resource_type);
                     if let Some(profile) = profile {
                         let generated = generate_resource_with_value_sets(
                             profile,
-                            &pkg.structure_definitions,
-                            &value_set_systems,
+                            &ctx.pkg.structure_definitions,
+                            &ctx.value_set_systems,
                         )?;
                         tracing::info!("Generated resource for {}", resource_type);
                         resources.insert(resource_type.clone(), generated);
@@ -374,19 +365,19 @@ impl Orchestrator {
             }
         }
 
-        // 6. Generate test plan (with field values from generated resources)
+        // 5. Generate test plan (with field values from generated resources)
         let mut plan = generate_test_plan(
-            &cs,
-            &pkg.search_parameters,
-            Some(&pkg.operation_definitions),
+            &ctx.cs,
+            &ctx.pkg.search_parameters,
+            Some(&ctx.pkg.operation_definitions),
             None,
             &resource_field_values,
             &created_ids,
         );
-        plan.creation_order = creation_order.clone();
+        plan.creation_order = ctx.creation_order.clone();
 
         // 6b. Validate CapabilityStatement well-formedness
-        let cs_validation = validate_capability_statement(&cs);
+        let cs_validation = validate_capability_statement(&ctx.cs);
         for warning in &cs_validation.warnings {
             tracing::warn!("CapabilityStatement warning: {}", warning);
         }
@@ -395,7 +386,7 @@ impl Orchestrator {
         }
 
         // 6c. Generate conformance tests and add them to the plan
-        let conformance_tests = generate_conformance_tests(&cs, &pkg.structure_definitions);
+        let conformance_tests = generate_conformance_tests(&ctx.cs, &ctx.pkg.structure_definitions);
         if !conformance_tests.is_empty() {
             // Convert conformance tests into regular test cases and add to plan
             let mut conformance_group = TestGroup {
@@ -431,7 +422,7 @@ impl Orchestrator {
 
         if !has_bulk_data {
             println!("\n── Setup: creating resources on {} ──", write_url);
-            for resource_type in &creation_order {
+            for resource_type in &ctx.creation_order {
                 if let Some(body) = resources.get(resource_type) {
                     let mut body = body.clone();
                     resolve_references(&mut body, resource_type, &created_ids);
@@ -533,7 +524,8 @@ impl Orchestrator {
                         // Profile validation
                         if let Some(profile_url) = &test.validation.profile_url
                             && let Some(response_body) = &result.response_body
-                            && let Some(profile) = pkg
+                            && let Some(profile) = ctx
+                                .pkg
                                 .structure_definitions
                                 .iter()
                                 .find(|sd| &sd.url == profile_url)
@@ -586,12 +578,13 @@ impl Orchestrator {
                 "\n── Cleanup: bulk-deleting resources from {} ──",
                 write_url
             );
-            delete_all_resources(&bulk_ids, &creation_order, &write_endpoint, concurrency).await?;
+            delete_all_resources(&bulk_ids, &ctx.creation_order, &write_endpoint, concurrency)
+                .await?;
             println!("  Bulk deletion complete");
         } else {
             // Delete individual setup resources in reverse order
             println!("\n── Cleanup: deleting resources from {} ──", write_url);
-            for resource_type in creation_order.iter().rev() {
+            for resource_type in ctx.creation_order.iter().rev() {
                 if let Some(id) = created_ids.get(resource_type) {
                     print!("  DELETE {}/{} ... ", resource_type, id);
                     if let Err(e) = executor.delete_resource(resource_type, id).await {

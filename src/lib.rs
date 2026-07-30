@@ -16,6 +16,55 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Shared context produced by [`prepare_plan_context`], containing all the
+/// parsed and resolved data needed to generate a test plan and resources.
+pub(crate) struct PlanContext {
+    pub pkg: IgPackage,
+    pub cs: CapabilityStatement,
+    pub profiles: Vec<StructureDefinition>,
+    pub creation_order: Vec<String>,
+    pub value_set_systems: HashMap<String, String>,
+    pub fixtures: HashMap<String, serde_json::Value>,
+}
+
+/// Parse the IG package, select the CapabilityStatement, resolve parent
+/// profile chains, determine creation order, and load fixtures.
+///
+/// This is the shared setup used by `run_generate`, `run_dry_run`, and
+/// `Orchestrator::run` — each caller then generates resources and produces
+/// output in its own way.
+pub(crate) async fn prepare_plan_context(
+    package_path: &str,
+    config: &TestConfig,
+) -> Result<PlanContext> {
+    let pkg = parse_package(package_path)?;
+    let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
+    let cs = select_capability_statement(&pkg, config)?;
+
+    // Resolve parent profile chains — download missing parent profiles
+    // from the FHIR package registry and merge their snapshots so that
+    // slice definitions with discriminator patterns are available.
+    let mut profiles = pkg.structure_definitions.clone();
+    resolve_parent_chain(&mut profiles).await?;
+
+    // Resolve dependencies (by resource type)
+    let auto_deps = extract_dependencies(&profiles);
+    let auto_order = resolve_creation_order(&auto_deps)?;
+    let creation_order = merge_creation_order(&auto_order, &config.overrides.creation_order);
+
+    // Load fixture overrides
+    let fixtures = config.load_fixtures()?;
+
+    Ok(PlanContext {
+        pkg,
+        cs,
+        profiles,
+        creation_order,
+        value_set_systems,
+        fixtures,
+    })
+}
+
 /// Select the CapabilityStatement used to generate responder-driven tests.
 ///
 /// If `overrides.capability_statement_file` is configured, that JSON file is
@@ -81,23 +130,7 @@ pub(crate) fn select_capability_statement(
 /// Generates one resource per profile, named after the profile (e.g.
 /// `TestPatient.json`), and includes `meta.profile` with the profile URL.
 pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
-    let pkg = parse_package(package_path)?;
-    let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
-    let cs = select_capability_statement(&pkg, config)?;
-
-    // Resolve parent profile chains — download missing parent profiles
-    // from the FHIR package registry and merge their snapshots so that
-    // slice definitions with discriminator patterns are available.
-    let mut profiles = pkg.structure_definitions;
-    resolve_parent_chain(&mut profiles).await?;
-
-    // Resolve dependencies (by resource type)
-    let auto_deps = extract_dependencies(&profiles);
-    let auto_order = resolve_creation_order(&auto_deps)?;
-    let creation_order = merge_creation_order(&auto_order, &config.overrides.creation_order);
-
-    // Load fixture overrides
-    let fixtures = config.load_fixtures()?;
+    let ctx = prepare_plan_context(package_path, config).await?;
 
     // Generate or load resources for EACH profile (not just one per type).
     // Each gets a unique filename based on the profile name.
@@ -107,9 +140,9 @@ pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()>
     // so the orchestrator can pick one per type for the setup phase.
     let mut type_to_profile: HashMap<String, String> = HashMap::new();
 
-    for resource_type in &creation_order {
+    for resource_type in &ctx.creation_order {
         // Check fixtures first
-        if let Some(fixture) = fixtures.get(resource_type) {
+        if let Some(fixture) = ctx.fixtures.get(resource_type) {
             let profile_name = resource_type.clone();
             profile_resources.push((profile_name.clone(), resource_type.clone(), fixture.clone()));
             if !type_to_profile.contains_key(resource_type) {
@@ -119,7 +152,8 @@ pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()>
         }
 
         // Generate one resource per profile for this resource type
-        let profiles_for_type: Vec<_> = profiles
+        let profiles_for_type: Vec<_> = ctx
+            .profiles
             .iter()
             .filter(|sd| sd.base_type == *resource_type)
             .collect();
@@ -134,7 +168,7 @@ pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()>
 
         for profile in profiles_for_type {
             let generated =
-                generate_resource_with_value_sets(profile, &profiles, &value_set_systems)?;
+                generate_resource_with_value_sets(profile, &ctx.profiles, &ctx.value_set_systems)?;
             // Use the profile name as the unique key (e.g. "TestPatient", "HcpdPractitioner")
             let profile_name = profile.name.clone();
             profile_resources.push((profile_name.clone(), resource_type.clone(), generated));
@@ -153,14 +187,14 @@ pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()>
 
     // Generate test plan (with field values from generated resources)
     let mut plan = generate_test_plan(
-        &cs,
-        &pkg.search_parameters,
-        Some(&pkg.operation_definitions),
+        &ctx.cs,
+        &ctx.pkg.search_parameters,
+        Some(&ctx.pkg.operation_definitions),
         None,
         &field_values,
         &HashMap::new(), // created_ids not available at generate time
     );
-    plan.creation_order = creation_order.clone();
+    plan.creation_order = ctx.creation_order.clone();
 
     // Write output
     let output_path = Path::new(&config.output);
@@ -223,31 +257,25 @@ pub async fn run_tests(package_path: &str, config: &TestConfig) -> Result<()> {
 
 /// Dry-run: generate the test plan and print all test URLs without executing them.
 pub async fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> {
-    let pkg = parse_package(package_path)?;
-    let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
-    let cs = select_capability_statement(&pkg, config)?;
-
-    // Resolve parent profile chains
-    let mut profiles = pkg.structure_definitions;
-    resolve_parent_chain(&mut profiles).await?;
-
-    let auto_deps = extract_dependencies(&profiles);
-    let auto_order = resolve_creation_order(&auto_deps)?;
-    let creation_order = merge_creation_order(&auto_order, &config.overrides.creation_order);
-
-    let fixtures = config.load_fixtures()?;
+    let ctx = prepare_plan_context(package_path, config).await?;
 
     // Build a type-keyed map for dry-run display
     let mut resources: HashMap<String, serde_json::Value> = HashMap::new();
-    for resource_type in &creation_order {
-        if let Some(fixture) = fixtures.get(resource_type) {
+    for resource_type in &ctx.creation_order {
+        if let Some(fixture) = ctx.fixtures.get(resource_type) {
             resources.insert(resource_type.clone(), fixture.clone());
         } else {
             // Use first profile for each type
-            let profile = profiles.iter().find(|sd| sd.base_type == *resource_type);
+            let profile = ctx
+                .profiles
+                .iter()
+                .find(|sd| sd.base_type == *resource_type);
             if let Some(profile) = profile {
-                let generated =
-                    generate_resource_with_value_sets(profile, &profiles, &value_set_systems)?;
+                let generated = generate_resource_with_value_sets(
+                    profile,
+                    &ctx.profiles,
+                    &ctx.value_set_systems,
+                )?;
                 resources.insert(resource_type.clone(), generated);
             }
         }
@@ -261,14 +289,14 @@ pub async fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> 
     }
 
     let mut plan = generate_test_plan(
-        &cs,
-        &pkg.search_parameters,
-        Some(&pkg.operation_definitions),
+        &ctx.cs,
+        &ctx.pkg.search_parameters,
+        Some(&ctx.pkg.operation_definitions),
         None,
         &field_values,
         &HashMap::new(), // created_ids not available at dry-run time
     );
-    plan.creation_order = creation_order.clone();
+    plan.creation_order = ctx.creation_order.clone();
 
     println!(
         "=== Dry Run: {} test groups, {} total tests ===",
@@ -300,7 +328,7 @@ pub async fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> 
         .unwrap_or(UploadMethod::Put);
 
     println!("Setup resources (creation order):");
-    for rt in &creation_order {
+    for rt in &ctx.creation_order {
         if resources.contains_key(rt) {
             println!("  {} {}/{}  [will create]", upload_method, write_url, rt);
         } else {
@@ -330,7 +358,7 @@ pub async fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> 
     println!();
     println!(
         "Cleanup: DELETE {} resources from {}",
-        creation_order.len(),
+        ctx.creation_order.len(),
         write_url
     );
     println!();
