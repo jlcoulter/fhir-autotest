@@ -65,7 +65,7 @@ password = "admin123"
 upload_method = "PUT"
 # Concurrency for upload/delete operations. 1 = sequential, safe for most
 # repositories. Increase if the repository can handle parallel requests.
-concurrency = 1
+concurrency = 100
 
 # ── Overrides ────────────────────────────────────────────────────────────────
 
@@ -115,10 +115,10 @@ capability_statement_file = "./package/metadata.json"
 
 # Number of resources to generate per type.
 # Comment out or remove types you don't need.
-counts.Organization = 20
-counts.Practitioner = 100
-counts.PractitionerRole = 300
-counts.Location = 20
-counts.HealthcareService = 100
-counts.Endpoint = 50
-counts.Provenance = 100
+counts.Organization = 20_000
+counts.Practitioner = 100_000
+counts.PractitionerRole = 300_000
+counts.Location = 20_000
+counts.HealthcareService = 100_000
+counts.Endpoint = 50_000
+counts.Provenance = 100_000
