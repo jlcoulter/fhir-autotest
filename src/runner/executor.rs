@@ -1,4 +1,4 @@
-use crate::config::models::{WriteEndpoint, default_concurrency, default_upload_method};
+use crate::config::models::{UploadMethod, WriteEndpoint, default_concurrency};
 use crate::generate::model::*;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -338,7 +338,7 @@ mod tests {
             WriteEndpoint::Server {
                 base_url: server.addr.clone(),
                 headers: HashMap::new(),
-                upload_method: "POST".to_string(),
+                upload_method: UploadMethod::Post,
                 concurrency: 1,
             },
         )
@@ -408,7 +408,7 @@ mod tests {
             WriteEndpoint::Server {
                 base_url: server.addr.clone(),
                 headers: HashMap::new(),
-                upload_method: "PUT".to_string(),
+                upload_method: UploadMethod::Put,
                 concurrency: 1,
             },
         )
@@ -438,7 +438,7 @@ mod tests {
                 base_url: server.addr.clone(),
                 username: "admin".to_string(),
                 password: "s3cret".to_string(),
-                upload_method: "PUT".to_string(),
+                upload_method: UploadMethod::Put,
                 concurrency: 1,
             },
         )
@@ -532,7 +532,7 @@ impl TestExecutor {
             WriteEndpoint::Server {
                 base_url: base_url.to_string(),
                 headers,
-                upload_method: default_upload_method(),
+                upload_method: UploadMethod::default(),
                 concurrency: default_concurrency(),
             },
         )
@@ -656,10 +656,10 @@ impl TestExecutor {
     ) -> Result<(String, serde_json::Value)> {
         let method = match &self.write_endpoint {
             WriteEndpoint::Repository { upload_method, .. }
-            | WriteEndpoint::Server { upload_method, .. } => upload_method.to_uppercase(),
+            | WriteEndpoint::Server { upload_method, .. } => *upload_method,
         };
 
-        if method == "PUT" {
+        if method == UploadMethod::Put {
             // PUT (update-as-create): include client-assigned ID in URL and body
             let id = body.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
                 anyhow::anyhow!("PUT upload requires resource to have an 'id' field")
