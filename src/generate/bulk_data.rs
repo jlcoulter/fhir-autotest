@@ -732,8 +732,16 @@ fn overlay_cross_references(
             // HCPD requires practitioner, organization, and healthcareService references.
             // practitioner and organization are always required; healthcareService
             // references depend on HealthcareService IDs which may not exist yet.
+            // Ensure deterministic coverage for _revinclude=PractitionerRole:practitioner
+            // on practitioner-1.
             if !prac_ids.is_empty() {
-                let ref_str = random_ref("Practitioner", prac_ids, rng);
+                let ref_str = if _id == "practitionerrole-1"
+                    && prac_ids.iter().any(|id| id == "practitioner-1")
+                {
+                    "Practitioner/practitioner-1".to_string()
+                } else {
+                    random_ref("Practitioner", prac_ids, rng)
+                };
                 obj.insert(
                     "practitioner".to_string(),
                     serde_json::json!({ "reference": ref_str }),
@@ -781,8 +789,15 @@ fn overlay_cross_references(
                 "managingOrganization".to_string(),
                 serde_json::json!({ "reference": ref_str }),
             );
+            // Ensure deterministic coverage for _revinclude=Location:endpoint
+            // on endpoint-1.
             if !endpoint_ids.is_empty() {
-                let endpoint_ref = random_ref("Endpoint", endpoint_ids, rng);
+                let endpoint_ref =
+                    if _id == "location-1" && endpoint_ids.iter().any(|id| id == "endpoint-1") {
+                        "Endpoint/endpoint-1".to_string()
+                    } else {
+                        random_ref("Endpoint", endpoint_ids, rng)
+                    };
                 obj.insert(
                     "endpoint".to_string(),
                     serde_json::json!([{ "reference": endpoint_ref }]),
