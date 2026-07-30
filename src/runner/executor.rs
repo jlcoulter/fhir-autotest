@@ -736,6 +736,9 @@ impl TestExecutor {
     }
 
     /// Delete a resource from the repository.
+    ///
+    /// Returns `Ok(())` on success or if the resource is already gone (404).
+    /// Returns an error for any other non-2xx response.
     pub async fn delete_resource(&self, resource_type: &str, id: &str) -> Result<()> {
         let url = format!("{}/{}/{}", self.write_base_url(), resource_type, id);
 
@@ -743,9 +746,15 @@ impl TestExecutor {
         let req = self.add_write_auth(req);
         let req = req.header("Accept", "application/fhir+json");
 
-        req.send()
+        let resp = req
+            .send()
             .await
             .with_context(|| format!("Failed to delete {}/{}", resource_type, id))?;
+
+        let status = resp.status();
+        if !status.is_success() && status != reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!("DELETE {}/{} returned {}", resource_type, id, status);
+        }
 
         Ok(())
     }
