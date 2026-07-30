@@ -23,6 +23,38 @@ impl std::fmt::Display for UploadMethod {
     }
 }
 
+/// Resolve `${ENV_VAR}` references in a string to their environment variable values.
+///
+/// If the referenced variable is not set, the placeholder is left as-is so the
+/// user gets a clear error downstream rather than silently substituting an
+/// empty string.
+fn resolve_env_vars(s: &str) -> String {
+    let mut result = String::new();
+    let mut rest = s;
+    while let Some(start) = rest.find("${") {
+        // Push everything before the placeholder
+        result.push_str(&rest[..start]);
+        rest = &rest[start + 2..];
+        if let Some(end) = rest.find('}') {
+            let var_name = &rest[..end];
+            match std::env::var(var_name) {
+                Ok(val) => result.push_str(&val),
+                Err(_) => {
+                    // Leave unresolved — the original placeholder stays so the
+                    // user sees it in error messages rather than a silent empty string.
+                    result.push_str(&format!("${{{}}}", var_name));
+                }
+            }
+            rest = &rest[end + 1..];
+        } else {
+            // No closing brace — push the "${" and continue
+            result.push_str("${");
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
 /// Configuration for running tests against a FHIR server.
 ///
 /// The config file is the single source of truth: it defines the IG package,
@@ -113,16 +145,47 @@ pub struct ServerConfig {
 ///
 /// The repository is a FHIR server (or proxy) that accepts POST/PUT/DELETE
 /// but may not be publicly accessible. Username/password auth is typical.
+///
+/// # Security
+///
+/// Username and password support `${ENV_VAR}` syntax to read from environment
+/// variables instead of storing plaintext credentials in the config file:
+///
+/// ```toml
+/// [repository]
+/// username = "${FHIR_REPO_USER}"
+/// password = "${FHIR_REPO_PASS}"
+/// ```
+///
+/// You can also use `credential_file` to point to a separate file (e.g.
+/// `~/.fhir-autotest/credentials.toml`) with restricted permissions that
+/// contains the credentials. The file format is:
+///
+/// ```toml
+/// username = "admin"
+/// password = "s3cret"
+/// ```
+///
+/// When `credential_file` is set, its values override `username`/`password`
+/// from the main config.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RepositoryConfig {
     /// Base URL of the repository FHIR server (e.g. "http://repo.internal:8080/fhir").
     pub base_url: String,
 
-    /// Username for basic auth.
+    /// Username for basic auth. Supports `${ENV_VAR}` syntax.
     pub username: String,
 
-    /// Password for basic auth.
+    /// Password for basic auth. Supports `${ENV_VAR}` syntax.
     pub password: String,
+
+    /// Optional path to a separate credentials file (TOML with `username` and `password`).
+    ///
+    /// When set, values from this file override `username`/`password` from the
+    /// main config. The file should have restricted permissions (e.g. 600).
+    /// Supports `${ENV_VAR}` syntax in the path itself.
+    #[serde(default)]
+    pub credential_file: Option<PathBuf>,
 
     /// HTTP method for resource upload: "PUT" (default) or "POST".
     ///
@@ -192,9 +255,42 @@ pub struct DataGenerationConfig {
 
 impl TestConfig {
     /// Load a TestConfig from a TOML file.
+    ///
+    /// After deserialization, `${ENV_VAR}` references in `username` and
+    /// `password` fields are resolved from the environment. If a
+    /// `credential_file` is configured, its values override the main config.
     pub fn load(path: &str) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        let config: TestConfig = toml::from_str(&content)?;
+        let mut config: TestConfig = toml::from_str(&content)?;
+
+        // Resolve env vars in repository credentials
+        if let Some(repo) = &mut config.repository {
+            repo.username = resolve_env_vars(&repo.username);
+            repo.password = resolve_env_vars(&repo.password);
+
+            // Load credential file if configured
+            if let Some(cred_path) = &repo.credential_file {
+                let cred_path = resolve_env_vars(&cred_path.to_string_lossy());
+                let cred_content = std::fs::read_to_string(&cred_path).map_err(|e| {
+                    anyhow::anyhow!("Failed to read credential file '{}': {}", cred_path, e)
+                })?;
+                #[derive(Deserialize)]
+                struct CredentialFile {
+                    username: Option<String>,
+                    password: Option<String>,
+                }
+                let creds: CredentialFile = toml::from_str(&cred_content).map_err(|e| {
+                    anyhow::anyhow!("Failed to parse credential file '{}': {}", cred_path, e)
+                })?;
+                if let Some(u) = creds.username {
+                    repo.username = resolve_env_vars(&u);
+                }
+                if let Some(p) = creds.password {
+                    repo.password = resolve_env_vars(&p);
+                }
+            }
+        }
+
         Ok(config)
     }
 
@@ -503,5 +599,146 @@ concurrency = 10
 "#;
         let config: TestConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.repository.unwrap().concurrency, 10);
+    }
+
+    #[test]
+    fn resolve_env_vars_replaces_known_var() {
+        unsafe { std::env::set_var("TEST_FHIR_USER", "env-admin") };
+        let result = resolve_env_vars("${TEST_FHIR_USER}");
+        assert_eq!(result, "env-admin");
+    }
+
+    #[test]
+    fn resolve_env_vars_leaves_unknown_var() {
+        let result = resolve_env_vars("${DOES_NOT_EXIST_XYZ123}");
+        assert_eq!(result, "${DOES_NOT_EXIST_XYZ123}");
+    }
+
+    #[test]
+    fn resolve_env_vars_mixed_plaintext_and_env() {
+        unsafe {
+            std::env::set_var("TEST_FHIR_USER", "env-admin");
+            std::env::set_var("TEST_FHIR_PASS", "s3cret!");
+        }
+        let result = resolve_env_vars("user_${TEST_FHIR_USER}_pass_${TEST_FHIR_PASS}");
+        assert_eq!(result, "user_env-admin_pass_s3cret!");
+    }
+
+    #[test]
+    fn resolve_env_vars_no_placeholder() {
+        let result = resolve_env_vars("plaintext-value");
+        assert_eq!(result, "plaintext-value");
+    }
+
+    #[test]
+    fn resolve_env_vars_empty_var_name() {
+        let result = resolve_env_vars("prefix_${}_suffix");
+        // Empty var name won't be found in env, so left as-is
+        assert_eq!(result, "prefix_${}_suffix");
+    }
+
+    #[test]
+    fn resolve_env_vars_multiple_vars() {
+        unsafe {
+            std::env::set_var("TEST_VAR_A", "alpha");
+            std::env::set_var("TEST_VAR_B", "beta");
+        }
+        let result = resolve_env_vars("${TEST_VAR_A}_${TEST_VAR_B}");
+        assert_eq!(result, "alpha_beta");
+    }
+
+    #[test]
+    fn load_config_resolves_env_vars_in_repository() {
+        unsafe {
+            std::env::set_var("FHIR_REPO_USER_TEST", "env-user");
+            std::env::set_var("FHIR_REPO_PASS_TEST", "env-pass");
+        }
+        let toml = r#"
+[server]
+base_url = "http://localhost:8080/fhir"
+
+[repository]
+base_url = "http://repo.internal:8080/fhir"
+username = "${FHIR_REPO_USER_TEST}"
+password = "${FHIR_REPO_PASS_TEST}"
+"#;
+        // Write to a temp file and load via TestConfig::load
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, toml).unwrap();
+        let config = TestConfig::load(config_path.to_str().unwrap()).unwrap();
+        let repo = config.repository.unwrap();
+        assert_eq!(repo.username, "env-user");
+        assert_eq!(repo.password, "env-pass");
+    }
+
+    #[test]
+    fn load_config_credential_file_overrides() {
+        unsafe {
+            std::env::set_var("CRED_FILE_USER_TEST", "cred-user");
+            std::env::set_var("CRED_FILE_PASS_TEST", "cred-pass");
+        }
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write credential file
+        let cred_path = dir.path().join("credentials.toml");
+        std::fs::write(
+            &cred_path,
+            r#"username = "${CRED_FILE_USER_TEST}"
+password = "${CRED_FILE_PASS_TEST}""#,
+        )
+        .unwrap();
+
+        // Write config that references the credential file
+        let config_toml = format!(
+            r#"
+[server]
+base_url = "http://localhost:8080/fhir"
+
+[repository]
+base_url = "http://repo.internal:8080/fhir"
+username = "should-be-overridden"
+password = "should-be-overridden"
+credential_file = "{}"
+"#,
+            cred_path.to_str().unwrap().replace('\\', "\\\\")
+        );
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, &config_toml).unwrap();
+        let config = TestConfig::load(config_path.to_str().unwrap()).unwrap();
+        let repo = config.repository.unwrap();
+        assert_eq!(repo.username, "cred-user");
+        assert_eq!(repo.password, "cred-pass");
+    }
+
+    #[test]
+    fn load_config_credential_file_partial_override() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write credential file with only password
+        let cred_path = dir.path().join("creds.toml");
+        std::fs::write(&cred_path, r#"password = "from-file""#).unwrap();
+
+        let config_toml = format!(
+            r#"
+[server]
+base_url = "http://localhost:8080/fhir"
+
+[repository]
+base_url = "http://repo.internal:8080/fhir"
+username = "main-user"
+password = "main-pass"
+credential_file = "{}"
+"#,
+            cred_path.to_str().unwrap().replace('\\', "\\\\")
+        );
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, &config_toml).unwrap();
+        let config = TestConfig::load(config_path.to_str().unwrap()).unwrap();
+        let repo = config.repository.unwrap();
+        // username should come from main config (not overridden)
+        assert_eq!(repo.username, "main-user");
+        // password should be overridden by credential file
+        assert_eq!(repo.password, "from-file");
     }
 }

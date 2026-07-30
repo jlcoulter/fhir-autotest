@@ -58,8 +58,17 @@ base_url = "http://localhost:8888/api/v1/fhir"
 # This is useful when the public API only allows search/read.
 # Uncomment and configure as needed.
 #
+# ⚠ SECURITY: Username and password are stored in plaintext in this file.
+#   To avoid committing credentials to version control:
+#   1. Use ${ENV_VAR} syntax: username = "${FHIR_REPO_USER}"
+#   2. Or use credential_file to point to a separate file with restricted
+#      permissions (e.g. chmod 600).
+#
 [repository]
 base_url = "http://localhost:8080/fhir"
+# Use environment variables instead of plaintext:
+# username = "${FHIR_REPO_USER}"
+# password = "${FHIR_REPO_PASS}"
 username = "admin"
 password = "admin123"
 upload_method = "PUT"
