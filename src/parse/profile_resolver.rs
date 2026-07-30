@@ -3,6 +3,7 @@ use crate::parse::parse_package;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Default cache directory for downloaded FHIR packages.
 fn cache_dir() -> Result<PathBuf> {
@@ -124,6 +125,12 @@ pub async fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Re
 
     let mut package_cache = PackageCache::new()?;
 
+    // Create a shared HTTP client with a generous timeout
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("fhir-autotest/0.1")
+        .build()?;
+
     // Resolve each profile's parent chain
     let mut i = 0;
     while i < profiles.len() {
@@ -145,7 +152,7 @@ pub async fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Re
                 cached.clone()
             } else {
                 // Try downloading the individual profile
-                match download_profile(&base_url).await {
+                match download_profile(&base_url, &client).await {
                     Ok(p) => p,
                     Err(_) => {
                         // Individual download failed — try downloading the parent's FHIR package
@@ -239,7 +246,7 @@ pub async fn resolve_parent_chain(profiles: &mut Vec<StructureDefinition>) -> Re
             }
 
             // Try downloading the individual profile
-            match download_profile(url).await {
+            match download_profile(url, &client).await {
                 Ok(p) => {
                     url_map.insert(p.url.clone(), profiles.len());
                     profiles.push(p);
@@ -347,6 +354,65 @@ fn cache_profile(path: &std::path::Path, sd: &StructureDefinition) {
     }
 }
 
+/// Determine if an error is retryable (transient network failure).
+fn is_retryable(err: &reqwest::Error) -> bool {
+    if err.is_timeout() || err.is_connect() {
+        return true;
+    }
+    if let Some(status) = err.status() {
+        return status.as_u16() == 503 || status.as_u16() == 502 || status.as_u16() == 429;
+    }
+    false
+}
+
+/// Download a URL with retry logic and exponential backoff.
+///
+/// Retries up to 3 times on transient failures (timeouts, connection errors,
+/// 502/503/429 responses), sleeping 2^attempt seconds between retries.
+async fn download_with_retry(url: &str, client: &reqwest::Client) -> Result<reqwest::Response> {
+    let mut attempts = 0;
+    loop {
+        let response = client
+            .get(url)
+            .header("Accept", "application/fhir+json")
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) if resp.status().is_success() => return Ok(resp),
+            Ok(resp) if attempts < 3 && is_retryable(&resp.error_for_status_ref().unwrap_err()) => {
+                let status = resp.status();
+                attempts += 1;
+                let delay = Duration::from_secs(2u64.pow(attempts));
+                tracing::debug!(
+                    "Retryable status {} for {}, retry {}/3 after {}ms",
+                    status,
+                    url,
+                    attempts,
+                    delay.as_millis()
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(e) if attempts < 3 && is_retryable(&e) => {
+                attempts += 1;
+                let delay = Duration::from_secs(2u64.pow(attempts));
+                tracing::debug!(
+                    "Retryable error for {}: {} (retry {}/3 after {}ms)",
+                    url,
+                    e,
+                    attempts,
+                    delay.as_millis()
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Ok(resp) => {
+                return Err(resp.error_for_status().unwrap_err().into());
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
 /// Download a StructureDefinition from the FHIR package registry or HL7 servers.
 ///
 /// Tries multiple URL patterns:
@@ -355,7 +421,7 @@ fn cache_profile(path: &std::path::Path, sd: &StructureDefinition) {
 ///
 /// Results are cached to disk at ~/.cache/fhir-autotest/packages/<name>.json
 /// so subsequent runs don't re-download.
-async fn download_profile(url: &str) -> Result<StructureDefinition> {
+async fn download_profile(url: &str, client: &reqwest::Client) -> Result<StructureDefinition> {
     // Strip FHIR version suffix (e.g. "|4.0.1") if present
     let clean_url = url.split('|').next().unwrap_or(url);
     // Extract the profile name from the URL
@@ -374,32 +440,16 @@ async fn download_profile(url: &str) -> Result<StructureDefinition> {
         }
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .user_agent("fhir-autotest/0.1")
-        .build()?;
-
-    // Try the FHIR package registry first
+    // Try the FHIR package registry first (with retry)
     let registry_url = format!("https://packages.fhir.org/StructureDefinition/{}", name);
-    let response = client
-        .get(&registry_url)
-        .header("Accept", "application/fhir+json")
-        .send()
-        .await;
+    let response = download_with_retry(&registry_url, client).await;
 
     match response {
-        Ok(resp) if resp.status().is_success() => {
+        Ok(resp) => {
             let sd: StructureDefinition = resp.json().await?;
             tracing::info!("Downloaded parent profile: {} ({})", sd.name, sd.url);
             cache_profile(&cache_path, &sd);
             return Ok(sd);
-        }
-        Ok(resp) => {
-            tracing::debug!(
-                "Registry returned {} for {}, trying HL7 fallback",
-                resp.status(),
-                url
-            );
         }
         Err(e) => {
             tracing::debug!("Registry request failed for {}: {}", url, e);
@@ -421,21 +471,17 @@ async fn download_profile(url: &str) -> Result<StructureDefinition> {
         ]
     };
 
-    let mut last_status = 0u16;
+    let mut last_error: Option<anyhow::Error> = None;
     for fallback_url in &fallback_urls {
         tracing::debug!("Trying HL7 fallback URL: {}", fallback_url);
-        let response = client
-            .get(fallback_url)
-            .header("Accept", "application/fhir+json")
-            .send()
-            .await?;
-
-        last_status = response.status().as_u16();
-        tracing::debug!("HL7 fallback returned status: {}", last_status);
-
-        if !response.status().is_success() {
-            continue;
-        }
+        let response = match download_with_retry(fallback_url, client).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::debug!("HL7 fallback failed for {}: {}", fallback_url, e);
+                last_error = Some(e);
+                continue;
+            }
+        };
 
         // Verify the response is actually JSON (some servers return HTML with 200)
         let content_type = response
@@ -469,9 +515,12 @@ async fn download_profile(url: &str) -> Result<StructureDefinition> {
     }
 
     anyhow::bail!(
-        "Failed to download parent profile {} from registry or HL7 (status: {})",
+        "Failed to download parent profile {} from registry or HL7: {}",
         url,
-        last_status
+        last_error
+            .as_ref()
+            .map(|e| format!("{:#}", e))
+            .unwrap_or_default()
     )
 }
 
@@ -784,9 +833,16 @@ mod tests {
         unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
 
         // download_profile should read from cache without making network calls
-        let result = download_profile("http://example.org/StructureDefinition/TestProfile")
-            .await
-            .expect("download_profile should succeed from cache");
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("Failed to build test client");
+        let result = download_profile(
+            "http://example.org/StructureDefinition/TestProfile",
+            &client,
+        )
+        .await
+        .expect("download_profile should succeed from cache");
 
         assert_eq!(result.name, "TestProfile");
         assert_eq!(
@@ -813,9 +869,16 @@ mod tests {
         unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
 
         // URL with FHIR version suffix — should still hit cache (stripped before lookup)
-        let result = download_profile("http://example.org/StructureDefinition/TestProfile|4.0.1")
-            .await
-            .expect("download_profile should succeed from cache with version suffix");
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("Failed to build test client");
+        let result = download_profile(
+            "http://example.org/StructureDefinition/TestProfile|4.0.1",
+            &client,
+        )
+        .await
+        .expect("download_profile should succeed from cache with version suffix");
 
         assert_eq!(result.name, "TestProfile");
     }
@@ -827,7 +890,15 @@ mod tests {
         unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
 
         // No cache file exists — should fail with network error (no server running)
-        let result = download_profile("http://example.org/StructureDefinition/NonExistent").await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("Failed to build test client");
+        let result = download_profile(
+            "http://example.org/StructureDefinition/NonExistent",
+            &client,
+        )
+        .await;
 
         assert!(
             result.is_err(),
