@@ -112,6 +112,37 @@ const R5_EXTENSION_PROFILES: &[(&str, &str, &str)] = &[
   }
 }"#,
     ),
+    (
+        "targetPath",
+        "http://hl7.org/fhir/StructureDefinition/targetPath",
+        r#"{
+  "resourceType": "StructureDefinition",
+  "id": "targetPath",
+  "url": "http://hl7.org/fhir/StructureDefinition/targetPath",
+  "version": "5.3.0",
+  "name": "TargetPath",
+  "title": "Target Path",
+  "status": "active",
+  "kind": "complex-type",
+  "abstract": false,
+  "context": [{"type": "element", "expression": "Provenance.target"}],
+  "type": "Extension",
+  "baseDefinition": "http://hl7.org/fhir/StructureDefinition/Extension",
+  "derivation": "constraint",
+  "snapshot": {
+    "element": [
+      {"id": "Extension", "path": "Extension", "min": 0, "max": "*",
+       "type": [{"code": "Extension"}]},
+      {"id": "Extension.extension", "path": "Extension.extension", "min": 0, "max": "0",
+       "type": [{"code": "Extension"}]},
+      {"id": "Extension.url", "path": "Extension.url", "min": 1, "max": "1",
+       "fixedUri": "http://hl7.org/fhir/StructureDefinition/targetPath"},
+      {"id": "Extension.value[x]", "path": "Extension.value[x]", "min": 1, "max": "1",
+       "type": [{"code": "string"}]}
+    ]
+  }
+}"#,
+    ),
 ];
 
 /// Ensure the required HL7 R5 extension StructureDefinitions are present in the
@@ -1349,8 +1380,8 @@ mod tests {
         ensure_r5_extension_profiles(&endpoint).await.unwrap();
 
         let log = log.lock().unwrap();
-        // Should upload all 3 R5 extension profiles
-        assert_eq!(log.requests.len(), 3);
+        // Should upload all R5 extension profiles
+        assert_eq!(log.requests.len(), 4);
         for req in log.requests.iter() {
             assert_eq!(req.0, "PUT");
             assert!(req.1.contains("/StructureDefinition/"));
@@ -1359,6 +1390,7 @@ mod tests {
         assert!(log.requests[0].1.contains("individual-recordedSexOrGender"));
         assert!(log.requests[1].1.contains("individual-genderIdentity"));
         assert!(log.requests[2].1.contains("individual-pronouns"));
+        assert!(log.requests[3].1.contains("targetPath"));
     }
 
     // ── add_write_auth tests ──

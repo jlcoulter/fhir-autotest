@@ -844,6 +844,11 @@ fn overlay_cross_references(
             } else {
                 obj.remove("coverageArea");
             }
+
+            // Populate the mustSupport `telecom.extension` (contact-purpose),
+            // which the profile-driven generator skips because it is an
+            // Extension-typed field.
+            ensure_telecom_contact_purpose(obj);
         }
         "Endpoint" if !org_ids.is_empty() => {
             let ref_str = random_ref("Organization", org_ids, rng);
@@ -859,19 +864,44 @@ fn overlay_cross_references(
             // backward, so there is a valid upload order (guaranteed by the
             // wave ordering in upload_ndjson_files) and no reference cycles can
             // form. Most Organizations are therefore roots with no parent.
+            //
+            // Exception: the conformance must_support test always queries
+            // `organization-1`, so that resource must exhibit every mustSupport
+            // field — including partOf. Point it deterministically at
+            // `organization-2` (which exists whenever there is more than one
+            // Organization). This is the only forward reference; the upload
+            // wave ordering commits organization-2 before organization-1, so it
+            // resolves at upload time. `organization-2` is forced to be a root
+            // (no partOf) so organization-1 → organization-2 cannot form a cycle.
             const PART_OF_PROBABILITY: f64 = 0.01; // ~1 in 100
-            let self_index = org_ids.iter().position(|id| id.as_str() == _id);
-            match self_index {
-                Some(idx) if idx > 0 && rng.random_bool(PART_OF_PROBABILITY) => {
-                    // Pick a random Organization that appears before this one.
-                    let parent = &org_ids[rng.random_range(0..idx)];
+            const MUST_SUPPORT_ANCHOR: &str = "organization-1";
+            const ANCHOR_PARENT: &str = "organization-2";
+            if _id == MUST_SUPPORT_ANCHOR {
+                if org_ids.iter().any(|id| id.as_str() == ANCHOR_PARENT) {
                     obj.insert(
                         "partOf".to_string(),
-                        serde_json::json!({ "reference": format!("Organization/{parent}") }),
+                        serde_json::json!({ "reference": format!("Organization/{ANCHOR_PARENT}") }),
                     );
-                }
-                _ => {
+                } else {
                     obj.remove("partOf");
+                }
+            } else if _id == ANCHOR_PARENT {
+                // Keep the anchor's parent a root to avoid a reference cycle.
+                obj.remove("partOf");
+            } else {
+                let self_index = org_ids.iter().position(|id| id.as_str() == _id);
+                match self_index {
+                    Some(idx) if idx > 0 && rng.random_bool(PART_OF_PROBABILITY) => {
+                        // Pick a random Organization that appears before this one.
+                        let parent = &org_ids[rng.random_range(0..idx)];
+                        obj.insert(
+                            "partOf".to_string(),
+                            serde_json::json!({ "reference": format!("Organization/{parent}") }),
+                        );
+                    }
+                    _ => {
+                        obj.remove("partOf");
+                    }
                 }
             }
         }
@@ -897,12 +927,17 @@ fn overlay_cross_references(
                         && let Some(target_obj) = first.as_object_mut()
                     {
                         target_obj.insert("reference".to_string(), serde_json::json!(ref_str));
+                        ensure_target_path_extension(target_obj);
                     }
                 } else {
                     obj.insert(
                         "target".to_string(),
                         serde_json::json!([{
-                            "reference": ref_str
+                            "reference": ref_str,
+                            "extension": [{
+                                "url": "http://hl7.org/fhir/StructureDefinition/targetPath",
+                                "valueString": "id"
+                            }]
                         }]),
                     );
                 }
@@ -953,6 +988,66 @@ fn overlay_cross_references(
             }
         }
         _ => {}
+    }
+}
+
+/// Ensure a Provenance `target` object carries the mustSupport `target.extension`.
+///
+/// The HCPD Provenance profile marks `Provenance.target.extension` as
+/// mustSupport, but the profile-driven generator skips Extension-typed fields
+/// because it cannot invent a valid extension URL. The standard `targetPath`
+/// extension (which records the element a change applied to) satisfies the
+/// mustSupport presence check; `id` is a FHIRPath that is valid on every target
+/// resource type. Only added when no extension is already present.
+fn ensure_target_path_extension(target_obj: &mut serde_json::Map<String, serde_json::Value>) {
+    if target_obj.contains_key("extension") {
+        return;
+    }
+    target_obj.insert(
+        "extension".to_string(),
+        serde_json::json!([{
+            "url": "http://hl7.org/fhir/StructureDefinition/targetPath",
+            "valueString": "id"
+        }]),
+    );
+}
+
+/// Ensure a HealthcareService carries the mustSupport `telecom.extension`.
+///
+/// The HCPD HealthcareService profile slices `telecom.extension` on the AU Base
+/// `contact-purpose` extension (mustSupport). The profile-driven generator
+/// skips Extension-typed fields, so the generated `telecom` has no extension
+/// and the conformance presence check fails. Add the `contact-purpose`
+/// extension to the first telecom entry (creating a default entry if none
+/// exists). The value binding is extensible, so the `UNK` NullFlavor coding —
+/// the fallback used elsewhere in this generator — is accepted.
+fn ensure_telecom_contact_purpose(obj: &mut serde_json::Map<String, serde_json::Value>) {
+    let contact_purpose = serde_json::json!({
+        "url": "http://hl7.org.au/fhir/StructureDefinition/contact-purpose",
+        "valueCodeableConcept": {
+            "coding": [{
+                "system": "http://terminology.hl7.org/CodeSystem/v3-NullFlavor",
+                "code": "UNK"
+            }],
+            "text": "unknown"
+        }
+    });
+
+    let telecoms = obj
+        .entry("telecom")
+        .or_insert_with(|| serde_json::json!([{ "system": "phone", "value": "555-0000" }]));
+
+    let Some(telecoms) = telecoms.as_array_mut() else {
+        return;
+    };
+    if telecoms.is_empty() {
+        telecoms.push(serde_json::json!({ "system": "phone", "value": "555-0000" }));
+    }
+    if let Some(first) = telecoms.first_mut()
+        && let Some(first_obj) = first.as_object_mut()
+        && !first_obj.contains_key("extension")
+    {
+        first_obj.insert("extension".to_string(), serde_json::json!([contact_purpose]));
     }
 }
 
@@ -2032,6 +2127,137 @@ mod tests {
         assert!(
             ["Organization/organization-1", "Organization/organization-2",].contains(&entity_ref),
             "entity.what should reference an Organization ID"
+        );
+    }
+
+    #[test]
+    fn provenance_overlay_populates_target_extension() {
+        // Provenance.target.extension is a mustSupport field of type Extension,
+        // which the profile-driven generator skips. The overlay must add the
+        // standard targetPath extension so the conformance check passes.
+        let mut provenance = serde_json::json!({
+            "resourceType": "Provenance",
+            "id": "provenance-1",
+            "target": [{ "reference": "Organization/placeholder" }],
+        });
+
+        let org_ids = vec!["organization-1".to_string()];
+        let mut rng = rand::rng();
+
+        overlay_cross_references(
+            &mut provenance,
+            "Provenance",
+            "provenance-1",
+            &org_ids,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &mut rng,
+        );
+
+        let ext = &provenance["target"][0]["extension"];
+        assert!(ext.is_array(), "target.extension should be populated");
+        assert_eq!(
+            ext[0]["url"].as_str(),
+            Some("http://hl7.org/fhir/StructureDefinition/targetPath"),
+            "target.extension should be the standard targetPath extension"
+        );
+        assert!(
+            ext[0]["valueString"].is_string(),
+            "targetPath extension should carry a valueString"
+        );
+    }
+
+    #[test]
+    fn organization_overlay_anchor_has_partof() {
+        // The conformance must_support test queries organization-1, so it must
+        // always carry partOf. It points at organization-2, which must remain a
+        // root to avoid a reference cycle.
+        let org_ids = vec![
+            "organization-1".to_string(),
+            "organization-2".to_string(),
+            "organization-3".to_string(),
+        ];
+        let mut rng = rand::rng();
+
+        let mut anchor = serde_json::json!({ "resourceType": "Organization", "id": "organization-1" });
+        overlay_cross_references(
+            &mut anchor,
+            "Organization",
+            "organization-1",
+            &org_ids,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &mut rng,
+        );
+        assert_eq!(
+            anchor["partOf"]["reference"].as_str(),
+            Some("Organization/organization-2"),
+            "organization-1 must reference organization-2 via partOf"
+        );
+
+        let mut parent = serde_json::json!({ "resourceType": "Organization", "id": "organization-2", "partOf": { "reference": "Organization/organization-1" } });
+        overlay_cross_references(
+            &mut parent,
+            "Organization",
+            "organization-2",
+            &org_ids,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &mut rng,
+        );
+        assert!(
+            parent.get("partOf").is_none(),
+            "organization-2 must be a root (no partOf) to prevent a cycle"
+        );
+    }
+
+    #[test]
+    fn healthcareservice_overlay_populates_telecom_contact_purpose() {
+        // telecom.extension:contact-purpose is a mustSupport Extension field
+        // the profile-driven generator skips. The overlay must add it.
+        let mut hs = serde_json::json!({
+            "resourceType": "HealthcareService",
+            "id": "healthcareservice-1",
+            "telecom": [{ "system": "phone", "value": "555-0000" }]
+        });
+
+        let org_ids = vec!["organization-1".to_string()];
+        let loc_ids = vec!["location-1".to_string()];
+        let endpoint_ids = vec!["endpoint-1".to_string()];
+        let mut rng = rand::rng();
+
+        overlay_cross_references(
+            &mut hs,
+            "HealthcareService",
+            "healthcareservice-1",
+            &org_ids,
+            &[],
+            &loc_ids,
+            &[],
+            &[],
+            &endpoint_ids,
+            &mut rng,
+        );
+
+        let ext = &hs["telecom"][0]["extension"];
+        assert!(ext.is_array(), "telecom.extension should be populated");
+        assert_eq!(
+            ext[0]["url"].as_str(),
+            Some("http://hl7.org.au/fhir/StructureDefinition/contact-purpose"),
+            "telecom.extension should be the contact-purpose extension"
+        );
+        assert!(
+            ext[0]["valueCodeableConcept"]["coding"][0]["code"].is_string(),
+            "contact-purpose should carry a valueCodeableConcept coding"
         );
     }
 
