@@ -150,7 +150,7 @@ pub fn resolve_search_value(
     if param_type == "reference" {
         // Try to find the target resource type from common reference patterns
         // e.g. "subject" → Patient, "organization" → Organization
-        let target_type = resolve_reference_target(resource_type, param_name);
+        let target_type = resolve_reference_target(param_name);
         if let Some(id) = created_ids.get(&target_type) {
             return Some(format!("{}/{}", target_type, id));
         }
@@ -175,7 +175,7 @@ pub fn resolve_search_value(
 }
 
 /// Resolve a reference search param name to the likely target resource type.
-pub fn resolve_reference_target(_resource_type: &str, param_name: &str) -> String {
+pub fn resolve_reference_target(param_name: &str) -> String {
     match param_name {
         "subject" | "patient" => "Patient".to_string(),
         "organization" | "managingOrganization" => "Organization".to_string(),
