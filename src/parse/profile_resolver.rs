@@ -499,22 +499,24 @@ mod tests {
 
     /// Serializes tests that mutate the process-global `HOME` environment
     /// variable so they cannot race with one another under parallel execution.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Async-aware so the guard can be held across the `.await` points in the
+    /// tests without tripping clippy's `await_holding_lock` lint.
+    static ENV_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
     /// Helper to set up a temporary cache directory for testing.
-    /// Returns the temp dir (kept alive for the duration of the test) and the
-    /// path to the cache directory.
-    fn setup_test_cache() -> (
-        std::sync::MutexGuard<'static, ()>,
+    /// Returns the env-lock guard (held for the duration of the test), the temp
+    /// dir (kept alive for the duration of the test) and the path to the cache
+    /// directory.
+    async fn setup_test_cache() -> (
+        tokio::sync::MutexGuard<'static, ()>,
         tempfile::TempDir,
         std::path::PathBuf,
     ) {
         // Serialize all tests that mutate the global `HOME` env var. Cargo runs
         // tests in parallel, so without this guard one test's `set_var("HOME")`
         // clobbers another's cache path mid-run, causing spurious failures.
-        // Recover from a poisoned lock (a prior test panicked) rather than
-        // cascading the failure into every subsequent test.
-        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = ENV_LOCK.lock().await;
 
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let cache_dir = temp_dir
@@ -750,7 +752,7 @@ mod tests {
     #[tokio::test]
     async fn test_download_profile_cache_hit() {
         // Override HOME to a temp directory so cache_dir() points to our test cache
-        let (_env_guard, temp_dir, cache_dir) = setup_test_cache();
+        let (_env_guard, temp_dir, cache_dir) = setup_test_cache().await;
 
         // Create a test profile and write it to the cache
         let profile = make_test_profile(
@@ -781,7 +783,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_profile_cache_hit_with_version_suffix() {
-        let (_env_guard, temp_dir, cache_dir) = setup_test_cache();
+        let (_env_guard, temp_dir, cache_dir) = setup_test_cache().await;
 
         let profile = make_test_profile(
             "http://example.org/StructureDefinition/TestProfile",
@@ -805,7 +807,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_profile_cache_miss_returns_error() {
-        let (_env_guard, temp_dir, _cache_dir) = setup_test_cache();
+        let (_env_guard, temp_dir, _cache_dir) = setup_test_cache().await;
         // SAFETY: test-only, single-threaded, no concurrent env access
         unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
 
@@ -820,7 +822,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_parent_chain_with_cached_parent() {
-        let (_env_guard, temp_dir, cache_dir) = setup_test_cache();
+        let (_env_guard, temp_dir, cache_dir) = setup_test_cache().await;
         // SAFETY: test-only, single-threaded, no concurrent env access
         unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
 
@@ -905,7 +907,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_parent_chain_second_pass_resolves_profiled_types() {
-        let (_env_guard, temp_dir, cache_dir) = setup_test_cache();
+        let (_env_guard, temp_dir, cache_dir) = setup_test_cache().await;
         // SAFETY: test-only, single-threaded, no concurrent env access
         unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
 
@@ -959,7 +961,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_parent_chain_missing_parent_warns_not_errors() {
-        let (_env_guard, temp_dir, _cache_dir) = setup_test_cache();
+        let (_env_guard, temp_dir, _cache_dir) = setup_test_cache().await;
         // SAFETY: test-only, single-threaded, no concurrent env access
         unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
 
@@ -992,7 +994,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_parent_chain_no_base_definition() {
-        let (_env_guard, temp_dir, _cache_dir) = setup_test_cache();
+        let (_env_guard, temp_dir, _cache_dir) = setup_test_cache().await;
         // SAFETY: test-only, single-threaded, no concurrent env access
         unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
 
