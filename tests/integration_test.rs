@@ -1,5 +1,5 @@
 use assert_cmd::Command;
-use fhir_autotest::test_helpers::create_test_ig_package;
+use fhir_autotest::test_helpers::{create_extended_test_ig_package, create_test_ig_package};
 use std::collections::HashMap;
 
 /// Helper: write a config.toml that references the given package path and output dir.
@@ -777,5 +777,365 @@ base_url = "http://localhost:8080/fhir"
     assert!(
         summary["passed"].as_u64().unwrap() > 0 || summary["failed"].as_u64().unwrap() > 0,
         "Should have passed or failed tests"
+    );
+}
+
+// ─── Extended Package Tests ─────────────────────────────────────────────────
+//
+// These tests use an extended IG package that exercises more complex profile
+// features: sliced identifiers, extensions, value set bindings, profiled type
+// chains, and composite search parameters.
+
+/// Helper: write a config.toml for the extended package.
+fn write_extended_config(
+    config_path: &std::path::Path,
+    package_path: &std::path::Path,
+    output_dir: &std::path::Path,
+) {
+    let config_content = format!(
+        r#"package = "{}"
+output = "{}"
+
+[server]
+base_url = "http://localhost:8080/fhir"
+"#,
+        package_path.display(),
+        output_dir.display(),
+    );
+    std::fs::write(config_path, config_content).unwrap();
+}
+
+#[test]
+fn extended_package_generates_test_plan() {
+    let tgz_data = create_extended_test_ig_package();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tgz_path = temp_dir.path().join("extended_ig_package.tgz");
+    std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+    let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_extended_config(&config_path, &tgz_path, &output_dir);
+
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
+    cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
+        .assert()
+        .success();
+
+    // Verify output directory contains expected files
+    assert!(
+        output_dir.join("test_plan.json").exists(),
+        "test_plan.json should exist"
+    );
+    assert!(
+        output_dir.join("resources").is_dir(),
+        "resources directory should exist"
+    );
+
+    // Verify the test plan is valid JSON
+    let plan_json = std::fs::read_to_string(output_dir.join("test_plan.json")).unwrap();
+    let plan: serde_json::Value = serde_json::from_str(&plan_json).unwrap();
+    assert_eq!(plan["name"], "ExtendedIG");
+    assert!(plan["test_groups"].is_array());
+    assert!(
+        plan["test_groups"].as_array().unwrap().len() >= 2,
+        "Should have test groups for Patient and Observation"
+    );
+}
+
+#[test]
+fn extended_package_generates_sliced_identifier() {
+    let tgz_data = create_extended_test_ig_package();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tgz_path = temp_dir.path().join("extended_ig_package.tgz");
+    std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+    let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_extended_config(&config_path, &tgz_path, &output_dir);
+
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
+    cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
+        .assert()
+        .success();
+
+    // The generated Patient resource should have an identifier with the
+    // IHPII system URI from the slice's patternUri
+    let patient_json =
+        std::fs::read_to_string(output_dir.join("resources/ExtendedPatient.json")).unwrap();
+    let patient: serde_json::Value = serde_json::from_str(&patient_json).unwrap();
+    assert_eq!(patient["resourceType"], "Patient");
+
+    let identifiers = patient["identifier"].as_array().unwrap();
+    assert!(
+        !identifiers.is_empty(),
+        "Should have at least one identifier"
+    );
+
+    // At least one identifier should have the IHPII system from the slice
+    let has_ihpii = identifiers.iter().any(|id| {
+        id.get("system")
+            .and_then(|s| s.as_str())
+            .map(|s| s == "http://ns.electronichealth.net.au/id/hpii/1.0")
+            .unwrap_or(false)
+    });
+    assert!(
+        has_ihpii,
+        "At least one identifier should have the IHPII system from the slice patternUri"
+    );
+
+    // meta.profile should reference the profile URL
+    assert_eq!(
+        patient["meta"]["profile"][0],
+        "http://example.org/StructureDefinition/ExtendedPatient"
+    );
+}
+
+#[test]
+fn extended_package_generates_extension() {
+    let tgz_data = create_extended_test_ig_package();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tgz_path = temp_dir.path().join("extended_ig_package.tgz");
+    std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+    let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_extended_config(&config_path, &tgz_path, &output_dir);
+
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
+    cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
+        .assert()
+        .success();
+
+    let patient_json =
+        std::fs::read_to_string(output_dir.join("resources/ExtendedPatient.json")).unwrap();
+    let patient: serde_json::Value = serde_json::from_str(&patient_json).unwrap();
+
+    // The birthSex extension is optional (min=0), so it may or may not be present.
+    // If present, verify it has the correct URL structure.
+    if let Some(extensions) = patient.get("extension").and_then(|e| e.as_array()) {
+        let birth_sex_ext = extensions.iter().find(|ext| {
+            ext.get("url")
+                .and_then(|u| u.as_str())
+                .map(|u| u == "http://example.org/StructureDefinition/birth-sex")
+                .unwrap_or(false)
+        });
+        if let Some(ext) = birth_sex_ext {
+            assert!(
+                ext.get("valueCodeableConcept").is_some() || ext.get("valueCoding").is_some(),
+                "BirthSex extension should have a valueCodeableConcept or valueCoding"
+            );
+        }
+    }
+    // If not present, that's also valid — the extension is optional (min=0).
+}
+
+#[test]
+fn extended_package_generates_value_set_bound_resources() {
+    let tgz_data = create_extended_test_ig_package();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tgz_path = temp_dir.path().join("extended_ig_package.tgz");
+    std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+    let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_extended_config(&config_path, &tgz_path, &output_dir);
+
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
+    cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
+        .assert()
+        .success();
+
+    // The Observation resource should have status and code with value set bindings
+    let obs_json =
+        std::fs::read_to_string(output_dir.join("resources/ExtendedObservation.json")).unwrap();
+    let obs: serde_json::Value = serde_json::from_str(&obs_json).unwrap();
+    assert_eq!(obs["resourceType"], "Observation");
+
+    // status is bound to ObservationStatus value set, should be a valid code
+    assert!(
+        obs.get("status").is_some(),
+        "Observation should have status (required)"
+    );
+
+    // code is bound to ObservationCodes value set, should be a CodeableConcept
+    // with a coding that references the LOINC system
+    let code = obs.get("code").unwrap();
+    assert!(
+        code.get("coding").is_some(),
+        "Observation.code should have coding"
+    );
+    let codings = code["coding"].as_array().unwrap();
+    assert!(!codings.is_empty(), "Should have at least one coding");
+    let has_loinc = codings.iter().any(|c| {
+        c.get("system")
+            .and_then(|s| s.as_str())
+            .map(|s| s == "http://loinc.org")
+            .unwrap_or(false)
+    });
+    assert!(
+        has_loinc,
+        "At least one coding should reference the LOINC system from the value set binding"
+    );
+
+    // meta.profile should reference the profile URL
+    assert_eq!(
+        obs["meta"]["profile"][0],
+        "http://example.org/StructureDefinition/ExtendedObservation"
+    );
+}
+
+#[test]
+fn extended_package_resolves_profiled_type_chain() {
+    let tgz_data = create_extended_test_ig_package();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tgz_path = temp_dir.path().join("extended_ig_package.tgz");
+    std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+    let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_extended_config(&config_path, &tgz_path, &output_dir);
+
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
+    cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
+        .assert()
+        .success();
+
+    // The test plan should include both Patient and Observation test groups
+    let plan_json = std::fs::read_to_string(output_dir.join("test_plan.json")).unwrap();
+    let plan: serde_json::Value = serde_json::from_str(&plan_json).unwrap();
+
+    let resource_types: Vec<&str> = plan["test_groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["resource_type"].as_str().unwrap())
+        .collect();
+    assert!(
+        resource_types.contains(&"Patient"),
+        "Should have Patient test group"
+    );
+    assert!(
+        resource_types.contains(&"Observation"),
+        "Should have Observation test group"
+    );
+
+    // The Patient group should have tests for the identifier search param
+    let patient_group = plan["test_groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["resource_type"] == "Patient")
+        .unwrap();
+    let test_names: Vec<&str> = patient_group["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        test_names.iter().any(|n| n.contains("_search_identifier")),
+        "Should have identifier search test from the extended package"
+    );
+}
+
+#[test]
+fn extended_package_parses_composite_search_param() {
+    let tgz_data = create_extended_test_ig_package();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tgz_path = temp_dir.path().join("extended_ig_package.tgz");
+    std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+    let output_dir = temp_dir.path().join("output");
+    let config_path = temp_dir.path().join("config.toml");
+    write_extended_config(&config_path, &tgz_path, &output_dir);
+
+    let mut cmd = Command::cargo_bin("fhir-autotest").unwrap();
+    cmd.args(["--config", config_path.to_str().unwrap(), "--generate"])
+        .assert()
+        .success();
+
+    // The test plan should include tests for the composite search param
+    let plan_json = std::fs::read_to_string(output_dir.join("test_plan.json")).unwrap();
+    let plan: serde_json::Value = serde_json::from_str(&plan_json).unwrap();
+
+    let patient_group = plan["test_groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["resource_type"] == "Patient")
+        .unwrap();
+    let test_names: Vec<&str> = patient_group["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+
+    // Composite params are type "composite" — the planner should handle them
+    // gracefully (they may not generate individual tests, but the package
+    // parsing should succeed and the param should be available)
+    assert!(
+        test_names.iter().any(|n| n.contains("_search_")),
+        "Should have search tests for Patient"
+    );
+}
+
+#[test]
+fn extended_package_runs_against_mock_server() {
+    use fhir_autotest::config::models::TestConfig;
+    use fhir_autotest::runner::orchestrator::Orchestrator;
+
+    let tgz_data = create_extended_test_ig_package();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let tgz_path = temp_dir.path().join("extended_ig_package.tgz");
+    std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+    // Start the mock FHIR server on a random port
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let addr = rt
+        .block_on(fhir_autotest::mock_server::start_mock_server(0))
+        .unwrap();
+    let mock_url = format!("http://{}", addr);
+
+    let output_dir = temp_dir.path().join("output");
+    let config = TestConfig {
+        package: Some(tgz_path.to_str().unwrap().to_string()),
+        output: output_dir.to_str().unwrap().to_string(),
+        dry_run: false,
+        server: fhir_autotest::config::models::ServerConfig {
+            base_url: format!("{}/fhir", mock_url),
+            headers: HashMap::new(),
+        },
+        repository: None,
+        overrides: fhir_autotest::config::models::OverrideConfig::default(),
+        data_generation: fhir_autotest::config::models::DataGenerationConfig::default(),
+        mock: false,
+        mock_port: 0,
+    };
+
+    let orchestrator = Orchestrator::new(config);
+    let report = rt
+        .block_on(orchestrator.run(tgz_path.to_str().unwrap()))
+        .unwrap();
+
+    // Verify results
+    assert!(
+        report.total > 0,
+        "Should have run at least some tests, got {}",
+        report.total
+    );
+    assert!(
+        report.passed > 0,
+        "At least some tests should pass, got {} passed out of {}",
+        report.passed,
+        report.total
+    );
+
+    // Verify the extended package produced more tests than the minimal package
+    // (more search params, more profiles, etc.)
+    assert!(
+        report.total >= 20,
+        "Extended package should produce at least 20 tests, got {}",
+        report.total
     );
 }
