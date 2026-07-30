@@ -286,6 +286,12 @@ pub fn populate_backbone_fields(
     all_profiles: &[StructureDefinition],
     value_set_systems: &HashMap<String, String>,
 ) {
+    // Only apply base-spec repeatability rules at the top level
+    // (parent_path == resource_type). Nested fields inside backbones
+    // (e.g. HealthcareService.eligibility.code) should use the
+    // element's own max cardinality, not the top-level field rule.
+    let is_top_level = parent_path == resource_type;
+
     // First pass: populate direct children (depth 1)
     for element in elements {
         if !element.path.starts_with(&format!("{}.", parent_path)) {
@@ -368,7 +374,7 @@ pub fn populate_backbone_fields(
         }
 
         let max = element.max.as_deref().unwrap_or("1");
-        if max != "1" || is_base_spec_repeatable(resource_type, field_name) {
+        if max != "1" || (is_top_level && is_base_spec_repeatable(resource_type, field_name)) {
             if value_prewrapped_by_slices {
                 backbone.insert(field_name.to_string(), value);
                 continue;
@@ -443,7 +449,7 @@ pub fn populate_backbone_fields(
         }
 
         let max = element.max.as_deref().unwrap_or("1");
-        if max != "1" || is_base_spec_repeatable(resource_type, field_name) {
+        if max != "1" || (is_top_level && is_base_spec_repeatable(resource_type, field_name)) {
             backbone.insert(field_name.to_string(), serde_json::json!([value]));
         } else {
             backbone.insert(field_name.to_string(), value);
