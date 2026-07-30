@@ -1929,11 +1929,7 @@ mod tests {
         // HAPI-1096 ("Resource is deleted") when a DELETE test removes
         // the referenced resource before Provenance is created.
         assert!(
-            [
-                "Organization/organization-1",
-                "Organization/organization-2",
-            ]
-            .contains(&target_ref),
+            ["Organization/organization-1", "Organization/organization-2",].contains(&target_ref),
             "target should reference an Organization ID"
         );
         assert!(
@@ -1942,11 +1938,7 @@ mod tests {
             "agent.who should reference an existing Organization ID"
         );
         assert!(
-            [
-                "Organization/organization-1",
-                "Organization/organization-2",
-            ]
-            .contains(&entity_ref),
+            ["Organization/organization-1", "Organization/organization-2",].contains(&entity_ref),
             "entity.what should reference an Organization ID"
         );
     }
