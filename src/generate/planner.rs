@@ -3,6 +3,20 @@ use crate::generate::value_resolver::resolve_search_value;
 use crate::model::*;
 use std::collections::HashMap;
 
+/// Fields that are never summary in FHIR R4 and should be absent when `_summary=true`.
+///
+/// Per the FHIR specification, `_summary=true` returns only elements with
+/// `isSummary=true`. The following elements are never summary across all
+/// resource types in the base FHIR R4 specification.
+fn summary_absent_fields() -> Vec<String> {
+    vec![
+        "text".to_string(),
+        "contained".to_string(),
+        "extension".to_string(),
+        "modifierExtension".to_string(),
+    ]
+}
+
 /// Build a ResponseAssertion appropriate for the test case kind.
 pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<ResponseAssertion> {
     match kind {
@@ -71,7 +85,7 @@ pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<Re
                 Some(ResponseAssertion {
                     bundle_type: Some("searchset".to_string()),
                     min_entries: Some(0),
-                    absent_fields: vec!["text".to_string()],
+                    absent_fields: summary_absent_fields(),
                     required_fields: required,
                     ..ResponseAssertion::none()
                 })
@@ -1052,7 +1066,7 @@ fn build_result_param_test(
             "_summary" => Some(ResponseAssertion {
                 bundle_type: Some("searchset".to_string()),
                 min_entries: Some(1),
-                absent_fields: vec!["text".to_string()],
+                absent_fields: summary_absent_fields(),
                 ..ResponseAssertion::none()
             }),
             "_sort" => Some(ResponseAssertion {
