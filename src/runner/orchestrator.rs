@@ -377,7 +377,6 @@ impl Orchestrator {
         // 6. Generate test plan (with field values from generated resources)
         let mut plan = generate_test_plan(
             &cs,
-            &pkg.structure_definitions,
             &pkg.search_parameters,
             Some(&pkg.operation_definitions),
             None,
