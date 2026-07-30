@@ -919,65 +919,24 @@ fn overlay_cross_references(
 
 #[allow(clippy::too_many_arguments)]
 fn provenance_target_for_id(
-    provenance_id: &str,
+    _provenance_id: &str,
     org_ids: &[String],
-    prac_ids: &[String],
-    loc_ids: &[String],
-    hs_ids: &[String],
-    practitioner_role_ids: &[String],
-    endpoint_ids: &[String],
+    _prac_ids: &[String],
+    _loc_ids: &[String],
+    _hs_ids: &[String],
+    _practitioner_role_ids: &[String],
+    _endpoint_ids: &[String],
     rng: &mut impl Rng,
 ) -> Option<String> {
-    // Deterministically seed coverage for _revinclude=Provenance:target checks
-    // that query with _id={type}-1.
-    let seeded_targets = [
-        ("Organization", org_ids),
-        ("Practitioner", prac_ids),
-        ("Location", loc_ids),
-        ("HealthcareService", hs_ids),
-        ("PractitionerRole", practitioner_role_ids),
-        ("Endpoint", endpoint_ids),
-    ];
-    if let Some(seed_index) = provenance_sequence_number(provenance_id) {
-        let mut available: Vec<(&str, &str)> = Vec::new();
-        for (rtype, ids) in seeded_targets {
-            if let Some(first_id) = ids.first() {
-                available.push((rtype, first_id.as_str()));
-            }
-        }
-        if !available.is_empty() {
-            let idx = (seed_index - 1) % available.len();
-            let (rtype, id) = available[idx];
-            return Some(format!("{}/{}", rtype, id));
-        }
-    }
-
-    // After deterministic seed coverage is established, spread remaining
-    // references randomly across all available resource types.
-    let mut candidates: Vec<String> = Vec::new();
-    candidates.extend(org_ids.iter().map(|id| format!("Organization/{}", id)));
-    candidates.extend(prac_ids.iter().map(|id| format!("Practitioner/{}", id)));
-    candidates.extend(loc_ids.iter().map(|id| format!("Location/{}", id)));
-    candidates.extend(hs_ids.iter().map(|id| format!("HealthcareService/{}", id)));
-    candidates.extend(
-        practitioner_role_ids
-            .iter()
-            .map(|id| format!("PractitionerRole/{}", id)),
-    );
-    candidates.extend(endpoint_ids.iter().map(|id| format!("Endpoint/{}", id)));
-
-    if candidates.is_empty() {
+    // Only reference Organization — root-level resources are never deleted
+    // during the test run. Referencing PractitionerRole, HealthcareService,
+    // Location, or Endpoint risks HAPI-1096 ("Resource is deleted") when a
+    // DELETE test removes that resource before Provenance is created.
+    if org_ids.is_empty() {
         None
     } else {
-        Some(candidates[rng.random_range(0..candidates.len())].clone())
+        Some(random_ref("Organization", org_ids, rng))
     }
-}
-
-fn provenance_sequence_number(provenance_id: &str) -> Option<usize> {
-    provenance_id
-        .rsplit_once('-')
-        .and_then(|(_, n)| n.parse::<usize>().ok())
-        .filter(|n| *n > 0)
 }
 
 fn random_ref(resource_type: &str, ids: &[String], rng: &mut impl Rng) -> String {
@@ -1999,14 +1958,12 @@ mod tests {
             .as_str()
             .unwrap();
 
+        // target and entity now always reference Organization to avoid
+        // HAPI-1096 ("Resource is deleted") when a DELETE test removes
+        // the referenced resource before Provenance is created.
         assert!(
-            [
-                "Organization/organization-1",
-                "Organization/organization-2",
-                "Practitioner/practitioner-1",
-            ]
-            .contains(&target_ref),
-            "target should reference an existing resource ID"
+            ["Organization/organization-1", "Organization/organization-2",].contains(&target_ref),
+            "target should reference an Organization ID"
         );
         assert!(
             agent_ref == "Organization/organization-1"
@@ -2014,13 +1971,8 @@ mod tests {
             "agent.who should reference an existing Organization ID"
         );
         assert!(
-            [
-                "Organization/organization-1",
-                "Organization/organization-2",
-                "Practitioner/practitioner-1",
-            ]
-            .contains(&entity_ref),
-            "entity.what should reference an existing resource ID"
+            ["Organization/organization-1", "Organization/organization-2",].contains(&entity_ref),
+            "entity.what should reference an Organization ID"
         );
     }
 
@@ -2132,11 +2084,8 @@ mod tests {
 
         let mut p1 = serde_json::json!({ "resourceType": "Provenance", "id": "provenance-1" });
         let mut p2 = serde_json::json!({ "resourceType": "Provenance", "id": "provenance-2" });
-        let mut p3 = serde_json::json!({ "resourceType": "Provenance", "id": "provenance-3" });
-        let mut p4 = serde_json::json!({ "resourceType": "Provenance", "id": "provenance-4" });
-        let mut p5 = serde_json::json!({ "resourceType": "Provenance", "id": "provenance-5" });
 
-        for p in [&mut p1, &mut p2, &mut p3, &mut p4, &mut p5] {
+        for p in [&mut p1, &mut p2] {
             let id = p["id"].as_str().unwrap().to_string();
             overlay_cross_references(
                 p,
@@ -2152,25 +2101,16 @@ mod tests {
             );
         }
 
+        // All Provenance targets now reference Organization to avoid
+        // HAPI-1096 ("Resource is deleted") when a DELETE test removes
+        // the referenced resource before Provenance is created.
         assert_eq!(
             p1["target"][0]["reference"].as_str().unwrap(),
             "Organization/organization-1"
         );
         assert_eq!(
             p2["target"][0]["reference"].as_str().unwrap(),
-            "Practitioner/practitioner-1"
-        );
-        assert_eq!(
-            p3["target"][0]["reference"].as_str().unwrap(),
-            "Location/location-1"
-        );
-        assert_eq!(
-            p4["target"][0]["reference"].as_str().unwrap(),
-            "HealthcareService/healthcareservice-1"
-        );
-        assert_eq!(
-            p5["target"][0]["reference"].as_str().unwrap(),
-            "PractitionerRole/practitionerrole-1"
+            "Organization/organization-1"
         );
     }
 
