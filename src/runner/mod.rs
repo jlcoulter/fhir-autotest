@@ -1,6 +1,5 @@
 pub mod bulk_loader;
 pub mod executor;
-pub mod model;
 pub mod orchestrator;
 pub mod response_assertions;
 pub mod validator;
