@@ -883,13 +883,22 @@ fn overlay_cross_references(
                 obj.insert(
                     "target".to_string(),
                     serde_json::json!([{
-                        "reference": ref_str,
-                        "extension": [{
-                            "url": "http://example.org/fhir/StructureDefinition/generated-extension"
-                        }]
+                        "reference": ref_str
                     }]),
                 );
             }
+
+            // Override activity with a valid code from the Provenance activity type
+            // value set to avoid Terminology_TX_NoValid_2_CC warnings.
+            obj.insert(
+                "activity".to_string(),
+                serde_json::json!({
+                    "coding": [{
+                        "system": "http://terminology.hl7.org/CodeSystem/provenance-activity-type",
+                        "code": "CREATE"
+                    }]
+                }),
+            );
 
             if !org_ids.is_empty() {
                 obj.insert(
