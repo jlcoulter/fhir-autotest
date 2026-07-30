@@ -143,6 +143,13 @@ pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()>
         }
     }
 
+    // Extract field values from generated resources for use in test URLs
+    let mut field_values: HashMap<String, HashMap<String, String>> = HashMap::new();
+    for (profile_name, resource_type, resource) in &profile_resources {
+        let values = generate::value_resolver::extract_field_values(resource_type, resource);
+        field_values.insert(profile_name.clone(), values);
+    }
+
     // Generate test plan (with field values from generated resources)
     let mut plan = generate_test_plan(
         &cs,
@@ -150,7 +157,7 @@ pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()>
         &pkg.search_parameters,
         Some(&pkg.operation_definitions),
         None,
-        &HashMap::new(), // field_values not available at generate time
+        &field_values,
         &HashMap::new(), // created_ids not available at generate time
     );
     plan.creation_order = creation_order.clone();
@@ -246,13 +253,20 @@ pub async fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> 
         }
     }
 
+    // Extract field values from generated resources for use in test URLs
+    let mut field_values: HashMap<String, HashMap<String, String>> = HashMap::new();
+    for (resource_type, resource) in &resources {
+        let values = generate::value_resolver::extract_field_values(resource_type, resource);
+        field_values.insert(resource_type.clone(), values);
+    }
+
     let mut plan = generate_test_plan(
         &cs,
         &profiles,
         &pkg.search_parameters,
         Some(&pkg.operation_definitions),
         None,
-        &HashMap::new(), // field_values not available at dry-run time
+        &field_values,
         &HashMap::new(), // created_ids not available at dry-run time
     );
     plan.creation_order = creation_order.clone();
