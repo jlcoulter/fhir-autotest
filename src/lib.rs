@@ -4,6 +4,7 @@ pub mod mock_server;
 pub mod model;
 pub mod parse;
 pub mod runner;
+pub mod test_helpers;
 
 // Re-export key types
 pub use config::models::*;
