@@ -44,7 +44,7 @@ impl PackageCache {
 
     /// Ensure a package is loaded, downloading it if not cached.
     async fn ensure_package(&mut self, package_id: &str, version: &str) -> Result<()> {
-        let cache_key = format!("{}@{}\n", package_id, version);
+        let cache_key = format!("{}@{}", package_id, version);
         if self.packages.contains_key(&cache_key) {
             return Ok(());
         }
