@@ -14,7 +14,7 @@ struct Cli {
     /// specific fields when provided.
     ///
     /// Defaults to "config.toml" in the current directory.
-    #[arg(short, long, default_value = "config.toml")]
+    #[arg(short, long, default_value = "./config.toml")]
     config: String,
 
     /// Override the IG package path from the config file.
