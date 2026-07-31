@@ -112,6 +112,15 @@ pub(crate) fn build_operation_test(
         assertion.response_contains_key = Some("parameter".to_string());
         assertion.response_resource_types =
             vec!["Parameters".to_string(), "OperationOutcome".to_string()];
+        // Collect output parameter names for validation
+        if let Some(def) = op_def {
+            assertion.operation_output_params = def
+                .parameter
+                .iter()
+                .filter(|p| p.use_.as_deref() == Some("out"))
+                .map(|p| p.name.clone())
+                .collect();
+        }
     }
 
     TestCase {
@@ -142,6 +151,292 @@ pub(crate) fn build_operation_test(
     }
 }
 
+/// Build a test that invokes an operation twice to verify idempotency.
+/// Operations with `idempotent=true` should return the same result when called
+/// multiple times with the same parameters.
+pub(crate) fn build_operation_idempotent_test(
+    resource_type: &str,
+    code: &str,
+    op_def: Option<&OperationDefinition>,
+    profile_url: &Option<String>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
+) -> TestCase {
+    let base_test = build_operation_test(
+        resource_type,
+        code,
+        op_def,
+        profile_url,
+        field_values,
+        created_ids,
+    );
+
+    // For idempotent tests, we use expected_status=0 to accept any status
+    // (the executor will call the operation twice and compare responses).
+    // The test name and kind signal that this is an idempotency check.
+    TestCase {
+        name: format!(
+            "{}_operation_{}_idempotent",
+            resource_type.to_lowercase(),
+            code.replace('-', "_")
+        ),
+        kind: TestCaseKind::Conformance {
+            description: format!("{} operation idempotent", code),
+        },
+        interaction: Interaction::Operation(code.to_string()),
+        resource_type: resource_type.to_string(),
+        profile_url: profile_url.clone(),
+        request: base_test.request,
+        validation: ValidationSpec {
+            expected_status: 0, // executor handles the comparison
+            profile_url: None,
+            required_elements: Vec::new(),
+            forbidden_elements: Vec::new(),
+            response_assertion: None,
+        },
+    }
+}
+
+/// Build a test that invokes an operation twice to verify no side effects.
+/// Operations with `affectsState=false` should be safe to call (no side effects).
+pub(crate) fn build_operation_affects_state_test(
+    resource_type: &str,
+    code: &str,
+    op_def: Option<&OperationDefinition>,
+    profile_url: &Option<String>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
+) -> TestCase {
+    let base_test = build_operation_test(
+        resource_type,
+        code,
+        op_def,
+        profile_url,
+        field_values,
+        created_ids,
+    );
+
+    TestCase {
+        name: format!(
+            "{}_operation_{}_affects_state",
+            resource_type.to_lowercase(),
+            code.replace('-', "_")
+        ),
+        kind: TestCaseKind::Conformance {
+            description: format!("{} operation affectsState=false", code),
+        },
+        interaction: Interaction::Operation(code.to_string()),
+        resource_type: resource_type.to_string(),
+        profile_url: profile_url.clone(),
+        request: base_test.request,
+        validation: ValidationSpec {
+            expected_status: 0, // executor handles the comparison
+            profile_url: None,
+            required_elements: Vec::new(),
+            forbidden_elements: Vec::new(),
+            response_assertion: None,
+        },
+    }
+}
+
+/// Build a negative test for an operation invoked without required parameters.
+/// Operations with required input params (min > 0) should reject requests
+/// that omit those parameters with a 4xx error.
+pub(crate) fn build_operation_error_test(
+    resource_type: &str,
+    code: &str,
+    op_def: Option<&OperationDefinition>,
+    profile_url: &Option<String>,
+) -> TestCase {
+    // Determine URL based on operation scope (same logic as build_operation_test)
+    let url = match op_def {
+        Some(def)
+            if def.system.unwrap_or(false)
+                && !def.type_.unwrap_or(false)
+                && !def.instance.unwrap_or(false) =>
+        {
+            format!("/${code}")
+        }
+        Some(def) if def.instance.unwrap_or(false) => {
+            format!("/{resource_type}/{{id}}/${code}")
+        }
+        Some(def) if def.type_.unwrap_or(false) => {
+            format!("/{resource_type}/${code}")
+        }
+        _ => {
+            format!("/{resource_type}/${code}")
+        }
+    };
+
+    TestCase {
+        name: format!(
+            "{}_operation_{}_missing_required_params",
+            resource_type.to_lowercase(),
+            code.replace('-', "_")
+        ),
+        kind: TestCaseKind::Negative {
+            description: format!("{} operation missing required params", code),
+        },
+        interaction: Interaction::Operation(code.to_string()),
+        resource_type: resource_type.to_string(),
+        profile_url: profile_url.clone(),
+        request: HttpRequest {
+            method: "POST".to_string(),
+            url,
+            headers: HashMap::new(),
+            body: Some(serde_json::json!({
+                "resourceType": "Parameters",
+                "parameter": []
+            })),
+        },
+        validation: ValidationSpec {
+            expected_status: 0, // accept any non-2xx (400, 422, etc.)
+            profile_url: None,
+            required_elements: Vec::new(),
+            forbidden_elements: Vec::new(),
+            response_assertion: None,
+        },
+    }
+}
+
+/// Build a negative test for invoking an operation at an undeclared scope.
+/// Operations should only be invocable at their declared scopes (system, type, instance).
+pub(crate) fn build_operation_scope_test(
+    resource_type: &str,
+    code: &str,
+    op_def: Option<&OperationDefinition>,
+    profile_url: &Option<String>,
+) -> Vec<TestCase> {
+    let mut tests = Vec::new();
+
+    let def = match op_def {
+        Some(d) => d,
+        None => return tests,
+    };
+
+    let is_system = def.system.unwrap_or(false);
+    let is_type = def.type_.unwrap_or(false);
+    let is_instance = def.instance.unwrap_or(false);
+
+    // For system-only operations: try at resource/instance level
+    if is_system && !is_type && !is_instance {
+        tests.push(TestCase {
+            name: format!(
+                "{}_operation_{}_scope_type_level",
+                resource_type.to_lowercase(),
+                code.replace('-', "_")
+            ),
+            kind: TestCaseKind::Negative {
+                description: format!("{} operation at type scope (system-only)", code),
+            },
+            interaction: Interaction::Operation(code.to_string()),
+            resource_type: resource_type.to_string(),
+            profile_url: profile_url.clone(),
+            request: HttpRequest {
+                method: "GET".to_string(),
+                url: format!("/{resource_type}/${code}"),
+                headers: HashMap::new(),
+                body: None,
+            },
+            validation: ValidationSpec {
+                expected_status: 0, // accept any non-2xx
+                profile_url: None,
+                required_elements: Vec::new(),
+                forbidden_elements: Vec::new(),
+                response_assertion: None,
+            },
+        });
+        tests.push(TestCase {
+            name: format!(
+                "{}_operation_{}_scope_instance_level",
+                resource_type.to_lowercase(),
+                code.replace('-', "_")
+            ),
+            kind: TestCaseKind::Negative {
+                description: format!("{} operation at instance scope (system-only)", code),
+            },
+            interaction: Interaction::Operation(code.to_string()),
+            resource_type: resource_type.to_string(),
+            profile_url: profile_url.clone(),
+            request: HttpRequest {
+                method: "GET".to_string(),
+                url: format!("/{resource_type}/{{id}}/${code}"),
+                headers: HashMap::new(),
+                body: None,
+            },
+            validation: ValidationSpec {
+                expected_status: 0,
+                profile_url: None,
+                required_elements: Vec::new(),
+                forbidden_elements: Vec::new(),
+                response_assertion: None,
+            },
+        });
+    }
+
+    // For instance-only operations: try at system level
+    if !is_system && !is_type && is_instance {
+        tests.push(TestCase {
+            name: format!(
+                "{}_operation_{}_scope_system_level",
+                resource_type.to_lowercase(),
+                code.replace('-', "_")
+            ),
+            kind: TestCaseKind::Negative {
+                description: format!("{} operation at system scope (instance-only)", code),
+            },
+            interaction: Interaction::Operation(code.to_string()),
+            resource_type: resource_type.to_string(),
+            profile_url: profile_url.clone(),
+            request: HttpRequest {
+                method: "GET".to_string(),
+                url: format!("/${code}"),
+                headers: HashMap::new(),
+                body: None,
+            },
+            validation: ValidationSpec {
+                expected_status: 0,
+                profile_url: None,
+                required_elements: Vec::new(),
+                forbidden_elements: Vec::new(),
+                response_assertion: None,
+            },
+        });
+    }
+
+    // For type-only operations: try at instance level
+    if !is_system && is_type && !is_instance {
+        tests.push(TestCase {
+            name: format!(
+                "{}_operation_{}_scope_instance_level",
+                resource_type.to_lowercase(),
+                code.replace('-', "_")
+            ),
+            kind: TestCaseKind::Negative {
+                description: format!("{} operation at instance scope (type-only)", code),
+            },
+            interaction: Interaction::Operation(code.to_string()),
+            resource_type: resource_type.to_string(),
+            profile_url: profile_url.clone(),
+            request: HttpRequest {
+                method: "GET".to_string(),
+                url: format!("/{resource_type}/{{id}}/${code}"),
+                headers: HashMap::new(),
+                body: None,
+            },
+            validation: ValidationSpec {
+                expected_status: 0,
+                profile_url: None,
+                required_elements: Vec::new(),
+                forbidden_elements: Vec::new(),
+                response_assertion: None,
+            },
+        });
+    }
+
+    tests
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +453,8 @@ mod tests {
             type_: Some(false),
             instance: Some(true),
             parameter: vec![],
+            affects_state: None,
+            idempotent: None,
         };
         let test = build_operation_test(
             "Patient",
@@ -192,6 +489,8 @@ mod tests {
             type_: Some(false),
             instance: Some(false),
             parameter: vec![],
+            affects_state: None,
+            idempotent: None,
         };
         let test = build_operation_test(
             "System",
@@ -223,6 +522,8 @@ mod tests {
                 max: Some("1".to_string()),
                 param_type: Some("date".to_string()),
             }],
+            affects_state: None,
+            idempotent: None,
         };
         let test = build_operation_test(
             "Patient",

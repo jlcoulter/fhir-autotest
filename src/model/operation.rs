@@ -15,6 +15,15 @@ pub struct OperationDefinition {
     pub instance: Option<bool>,
     #[serde(default)]
     pub parameter: Vec<OperationParameter>,
+    /// Whether the operation modifies server state.
+    /// Operations with affectsState=false should be safe to call (no side effects).
+    #[serde(default)]
+    pub affects_state: Option<bool>,
+    /// Whether the operation is idempotent.
+    /// Operations with idempotent=true should return the same result when called
+    /// multiple times with the same parameters.
+    #[serde(default)]
+    pub idempotent: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

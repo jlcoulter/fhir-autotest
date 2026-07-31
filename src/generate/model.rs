@@ -117,6 +117,11 @@ pub struct ResponseAssertion {
     /// actual status matches any of these codes OR the `expected_status`.
     #[serde(default)]
     pub accept_statuses: Vec<u16>,
+
+    /// For $operation: expected output parameter names in the response.
+    /// The response `parameter` array must contain entries with matching names.
+    #[serde(default)]
+    pub operation_output_params: Vec<String>,
 }
 
 /// Sort direction assertion for _sort tests.
@@ -155,6 +160,7 @@ impl ResponseAssertion {
             required_extensions: HashMap::new(),
             type_constraints: HashMap::new(),
             reference_targets: HashMap::new(),
+            operation_output_params: Vec::new(),
         }
     }
 }
