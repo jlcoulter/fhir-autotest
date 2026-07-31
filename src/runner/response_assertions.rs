@@ -314,6 +314,39 @@ pub fn assert_response(
         }
     }
 
+    // --- Operation output parameter validation ---
+    // For $operation responses: check that the `parameter` array contains
+    // entries with the expected output parameter names.
+    if !assertion.operation_output_params.is_empty() {
+        if let Some(body) = body {
+            if let Some(param_array) = body.get("parameter").and_then(|v| v.as_array()) {
+                let param_names: std::collections::HashSet<String> = param_array
+                    .iter()
+                    .filter_map(|p| {
+                        p.get("name")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .collect();
+                for expected_name in &assertion.operation_output_params {
+                    if !param_names.contains(expected_name) {
+                        errors.push(format!(
+                            "Expected output parameter '{}' not found in response parameter array (found: {:?})",
+                            expected_name, param_names
+                        ));
+                    }
+                }
+            } else {
+                errors.push(
+                    "Response has no 'parameter' array for operation output param assertion"
+                        .to_string(),
+                );
+            }
+        } else {
+            errors.push("No response body for operation output param assertion".to_string());
+        }
+    }
+
     // --- Bundle total presence ---
     if let Some(expect_total) = assertion.bundle_total_present {
         if let Some(body) = body {

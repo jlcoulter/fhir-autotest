@@ -211,10 +211,44 @@ pub fn generate_test_plan(
             test.validation.response_assertion =
                 assertion_for_kind(&test.kind, &test.resource_type);
 
+            let mut sys_tests = vec![test];
+
+            // System-level operation conformance tests
+            if let Some(def) = op_def {
+                if def.affects_state == Some(false) {
+                    sys_tests.push(build_operation_affects_state_test(
+                        "",
+                        &op.name,
+                        op_def,
+                        &None,
+                        field_values,
+                        created_ids,
+                    ));
+                }
+                if def.idempotent == Some(true) {
+                    sys_tests.push(build_operation_idempotent_test(
+                        "",
+                        &op.name,
+                        op_def,
+                        &None,
+                        field_values,
+                        created_ids,
+                    ));
+                }
+                let has_required_input = def
+                    .parameter
+                    .iter()
+                    .any(|p| p.use_.as_deref() == Some("in") && p.min.unwrap_or(0) > 0);
+                if has_required_input {
+                    sys_tests.push(build_operation_error_test("", &op.name, op_def, &None));
+                }
+                sys_tests.extend(build_operation_scope_test("", &op.name, op_def, &None));
+            }
+
             test_groups.push(TestGroup {
                 resource_type: format!("$${}", op.name),
                 profile_url: None,
-                tests: vec![test],
+                tests: sys_tests,
             });
         }
     }
@@ -1025,6 +1059,59 @@ fn build_test_group(
             field_values,
             created_ids,
         ));
+
+        // --- Operation conformance tests ---
+        if let Some(def) = op_def {
+            // 1. Output parameter validation is already handled inside build_operation_test
+            //    via operation_output_params in the ResponseAssertion.
+
+            // 2. affectsState=false: verify the operation is safe to call (no side effects)
+            if def.affects_state == Some(false) {
+                tests.push(build_operation_affects_state_test(
+                    &resource.resource_type,
+                    &op.name,
+                    op_def,
+                    profile_url,
+                    field_values,
+                    created_ids,
+                ));
+            }
+
+            // 3. idempotent=true: verify the operation returns the same result when called twice
+            if def.idempotent == Some(true) {
+                tests.push(build_operation_idempotent_test(
+                    &resource.resource_type,
+                    &op.name,
+                    op_def,
+                    profile_url,
+                    field_values,
+                    created_ids,
+                ));
+            }
+
+            // 4. Error handling: operations with required input params should reject
+            //    requests that omit those params
+            let has_required_input = def
+                .parameter
+                .iter()
+                .any(|p| p.use_.as_deref() == Some("in") && p.min.unwrap_or(0) > 0);
+            if has_required_input {
+                tests.push(build_operation_error_test(
+                    &resource.resource_type,
+                    &op.name,
+                    op_def,
+                    profile_url,
+                ));
+            }
+
+            // 5. Scope validation: operations should reject requests at undeclared scopes
+            tests.extend(build_operation_scope_test(
+                &resource.resource_type,
+                &op.name,
+                op_def,
+                profile_url,
+            ));
+        }
     }
 
     // --- Negative / error tests ---
@@ -1174,6 +1261,8 @@ mod tests {
                 max: Some("1".to_string()),
                 param_type: Some("date".to_string()),
             }],
+            affects_state: None,
+            idempotent: None,
         }]
     }
 
@@ -1348,8 +1437,8 @@ mod tests {
         assert_eq!(combos, 1);
         // 1 operation ($everything)
         assert_eq!(operations, 1);
-        // 2 negative tests per resource
-        assert_eq!(negatives, 2);
+        // 2 negative tests (read_nonexistent, search_invalid_param) + 1 scope test (instance-only → system level)
+        assert_eq!(negatives, 3);
         // 4 result params (_summary, _count, _sort, _elements) × 2 variants each (real ID + empty) = 8
         // + 1 _list test + 1 _query test = 10 total
         // + _summary count/text/data variants: 3 × 2 = 6
