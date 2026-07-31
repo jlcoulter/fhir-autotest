@@ -314,6 +314,63 @@ pub fn assert_response(
         }
     }
 
+    // --- Bundle total presence ---
+    if let Some(expect_total) = assertion.bundle_total_present {
+        if let Some(body) = body {
+            let has_total = body.get("total").is_some();
+            if expect_total && !has_total {
+                errors.push("Bundle should have a 'total' field but it is missing".to_string());
+            }
+            if !expect_total && has_total {
+                errors.push("Bundle should NOT have a 'total' field but it is present".to_string());
+            }
+        } else {
+            errors.push("No response body for bundle_total_present assertion".to_string());
+        }
+    }
+
+    // --- Summary mode assertion ---
+    if let Some(summary_mode) = &assertion.summary_mode {
+        if let Some(body) = body {
+            if let Some(entries) = body.get("entry").and_then(|v| v.as_array()) {
+                match summary_mode.as_str() {
+                    "count" => {
+                        // _summary=count: Bundle should have total but no entries
+                        if !entries.is_empty() {
+                            errors.push(
+                                "_summary=count: Bundle should have no entries but has some"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    "text" => {
+                        // _summary=text: Resources must have text field
+                        for entry in entries {
+                            if let Some(resource) = entry.get("resource")
+                                && resource.get("text").is_none()
+                            {
+                                errors.push("_summary=text: Resource should have 'text' field but it is missing".to_string());
+                            }
+                        }
+                    }
+                    "data" => {
+                        // _summary=data: Resources must NOT have text field
+                        for entry in entries {
+                            if let Some(resource) = entry.get("resource")
+                                && resource.get("text").is_some()
+                            {
+                                errors.push("_summary=data: Resource should NOT have 'text' field but it is present".to_string());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            errors.push("No response body for summary_mode assertion".to_string());
+        }
+    }
+
     // --- MustSupport required field presence (best-effort) ---
     // Checks that specified fields exist in Bundle entries, regardless of their value.
     // Per FHIR R4 §2.1.2.1.12, mustSupport means "the server SHALL populate the
@@ -826,6 +883,7 @@ mod tests {
             sort_by: Some(SortAssertion {
                 field: "birthDate".to_string(),
                 direction: "asc".to_string(),
+                additional_fields: Vec::new(),
             }),
             ..ResponseAssertion::none()
         };
@@ -848,6 +906,7 @@ mod tests {
             sort_by: Some(SortAssertion {
                 field: "birthDate".to_string(),
                 direction: "desc".to_string(),
+                additional_fields: Vec::new(),
             }),
             ..ResponseAssertion::none()
         };
@@ -870,6 +929,7 @@ mod tests {
             sort_by: Some(SortAssertion {
                 field: "birthDate".to_string(),
                 direction: "asc".to_string(),
+                additional_fields: Vec::new(),
             }),
             ..ResponseAssertion::none()
         };
