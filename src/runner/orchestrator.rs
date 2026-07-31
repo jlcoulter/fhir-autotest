@@ -388,7 +388,11 @@ impl Orchestrator {
         }
 
         // 6c. Generate conformance tests and add them to the plan
-        let conformance_tests = generate_conformance_tests(&ctx.cs, &ctx.pkg.structure_definitions);
+        let conformance_tests = generate_conformance_tests(
+            &ctx.cs,
+            &ctx.pkg.structure_definitions,
+            &ctx.pkg.search_parameters,
+        );
         if !conformance_tests.is_empty() {
             // Convert conformance tests into regular test cases and add to plan
             let mut conformance_group = TestGroup {

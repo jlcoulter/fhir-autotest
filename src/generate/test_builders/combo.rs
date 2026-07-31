@@ -98,6 +98,119 @@ pub(crate) fn build_chained_search_test(
     }
 }
 
+/// Build a chained search test with a modifier on the target param.
+///
+/// FHIR R4 §3.1.4.2.2.1 — Chained params can have modifiers: `?subject.name:exact=Smith`
+/// Uses `expected_status: 0` since chained modifiers may not be fully supported.
+pub(crate) fn build_chained_search_modifier_test(
+    resource_type: &str,
+    chain_param: &str,
+    target_param: &str,
+    modifier: &SearchModifier,
+    profile_url: &Option<String>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
+) -> TestCase {
+    let value = resolve_param_value(
+        resource_type,
+        target_param,
+        "string",
+        field_values,
+        created_ids,
+    );
+    let url = format!(
+        "/{resource_type}?{chain_param}.{target_param}{}={value}",
+        modifier.suffix()
+    );
+
+    TestCase {
+        name: format!(
+            "{}_search_chain_{}_{}_{}",
+            resource_type.to_lowercase(),
+            chain_param.replace('-', "_"),
+            target_param.replace('-', "_"),
+            format!("{:?}", modifier).to_lowercase()
+        ),
+        kind: TestCaseKind::SearchChainedModifier {
+            chain_param: chain_param.to_string(),
+            target_param: target_param.to_string(),
+            modifier: modifier.clone(),
+        },
+        interaction: Interaction::SearchType,
+        resource_type: resource_type.to_string(),
+        profile_url: profile_url.clone(),
+        request: HttpRequest {
+            method: "GET".to_string(),
+            url,
+            headers: HashMap::new(),
+            body: None,
+        },
+        validation: ValidationSpec {
+            expected_status: 0, // 0 = accept any status
+            profile_url: None,
+            required_elements: Vec::new(),
+            forbidden_elements: Vec::new(),
+            response_assertion: None,
+        },
+    }
+}
+
+/// Build a multi-hop chained search test.
+///
+/// FHIR R4 §3.1.4.2.2.1 — Chained searches can have multiple hops:
+/// `?subject.managingOrganization.name=Smith`
+/// Uses `expected_status: 0` since multi-hop chains may not be fully supported.
+pub(crate) fn build_chained_search_multi_hop_test(
+    resource_type: &str,
+    chain_params: &[String],
+    target_param: &str,
+    profile_url: &Option<String>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
+) -> TestCase {
+    let value = resolve_param_value(
+        resource_type,
+        target_param,
+        "string",
+        field_values,
+        created_ids,
+    );
+    let chain = chain_params.join(".");
+    let url = format!("/{resource_type}?{chain}.{target_param}={value}");
+
+    let chain_names: Vec<String> = chain_params.iter().map(|p| p.replace('-', "_")).collect();
+    let target_name = target_param.replace('-', "_");
+
+    TestCase {
+        name: format!(
+            "{}_search_chain_{}_{}",
+            resource_type.to_lowercase(),
+            chain_names.join("_"),
+            target_name,
+        ),
+        kind: TestCaseKind::SearchChainedMultiHop {
+            chain_params: chain_params.to_vec(),
+            target_param: target_param.to_string(),
+        },
+        interaction: Interaction::SearchType,
+        resource_type: resource_type.to_string(),
+        profile_url: profile_url.clone(),
+        request: HttpRequest {
+            method: "GET".to_string(),
+            url,
+            headers: HashMap::new(),
+            body: None,
+        },
+        validation: ValidationSpec {
+            expected_status: 0, // 0 = accept any status
+            profile_url: None,
+            required_elements: Vec::new(),
+            forbidden_elements: Vec::new(),
+            response_assertion: None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
