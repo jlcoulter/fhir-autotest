@@ -192,6 +192,8 @@ impl Orchestrator {
 
         // Bulk data IDs for cleanup (used when data_generation is configured)
         let mut bulk_ids: HashMap<String, Vec<String>> = HashMap::new();
+        // Track the upload order so deletion reverses the same sequence
+        let mut upload_order: Vec<String> = Vec::new();
 
         if has_bulk_data {
             // ── Bulk data path: generate NDJSON, optionally upload, then test ──
@@ -300,7 +302,7 @@ impl Orchestrator {
 
                 // Upload bulk data + supplement resources (all read from NDJSON files on disk).
                 // Extend the creation order with supplement types so they are uploaded too.
-                let mut upload_order = data_creation_order.clone();
+                upload_order = data_creation_order.clone();
                 for rt in supplement_ids.keys() {
                     if !upload_order.contains(rt) {
                         upload_order.push(rt.clone());
@@ -572,14 +574,13 @@ impl Orchestrator {
         // 9. Cleanup
         if has_bulk_data && !self.config.data_generation.generate_only {
             // Bulk delete all uploaded resources, including supplement resources.
-            // Use creation_order (full CapabilityStatement order) so supplement
-            // types not in data_generation.counts are also covered.
+            // Use upload_order (same order as upload) so deletion reverses the
+            // dependency-respected sequence, avoiding 409 referential conflicts.
             println!(
                 "\n── Cleanup: bulk-deleting resources from {} ──",
                 write_url
             );
-            delete_all_resources(&bulk_ids, &ctx.creation_order, &write_endpoint, concurrency)
-                .await?;
+            delete_all_resources(&bulk_ids, &upload_order, &write_endpoint, concurrency).await?;
             println!("  Bulk deletion complete");
         } else {
             // Delete individual setup resources in reverse order
