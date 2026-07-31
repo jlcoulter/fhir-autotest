@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Context;
 
@@ -199,6 +200,20 @@ pub struct ServerConfig {
     /// Optional HTTP headers sent with every request (e.g. auth tokens).
     #[serde(default)]
     pub headers: HashMap<String, String>,
+
+    /// Whether to verify TLS certificates (default: true).
+    ///
+    /// Set to `false` to accept self-signed or otherwise invalid certificates
+    /// (useful for development/testing with internal CAs).
+    #[serde(default = "default_tls_verify")]
+    pub tls_verify: bool,
+
+    /// Optional path to a PEM-encoded CA certificate bundle.
+    ///
+    /// When set, this certificate is added to the root certificate store,
+    /// allowing connections to servers using custom/internal CAs.
+    #[serde(default)]
+    pub tls_ca_cert: Option<PathBuf>,
 }
 
 /// Internal repository configuration for resource creation/deletion.
@@ -260,10 +275,90 @@ pub struct RepositoryConfig {
     /// repositories that can handle higher concurrency.
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
+
+    /// Whether to verify TLS certificates (default: true).
+    ///
+    /// Set to `false` to accept self-signed or otherwise invalid certificates
+    /// (useful for development/testing with internal CAs).
+    #[serde(default = "default_tls_verify")]
+    pub tls_verify: bool,
+
+    /// Optional path to a PEM-encoded CA certificate bundle.
+    ///
+    /// When set, this certificate is added to the root certificate store,
+    /// allowing connections to servers using custom/internal CAs.
+    #[serde(default)]
+    pub tls_ca_cert: Option<PathBuf>,
 }
 
 pub fn default_concurrency() -> usize {
     1
+}
+
+pub fn default_tls_verify() -> bool {
+    true
+}
+
+/// TLS configuration for HTTP clients.
+///
+/// Controls certificate verification and custom CA certificates.
+/// These settings apply to all HTTP clients created by the application.
+#[derive(Debug, Clone)]
+pub struct TlsConfig {
+    /// Whether to verify TLS certificates (default: true).
+    pub verify: bool,
+    /// Optional path to a PEM-encoded CA certificate bundle.
+    pub ca_cert: Option<PathBuf>,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            verify: true,
+            ca_cert: None,
+        }
+    }
+}
+
+impl TlsConfig {
+    /// Extract TLS config from a `ServerConfig`.
+    pub fn from_server(config: &ServerConfig) -> Self {
+        Self {
+            verify: config.tls_verify,
+            ca_cert: config.tls_ca_cert.clone(),
+        }
+    }
+
+    /// Extract TLS config from a `RepositoryConfig`.
+    pub fn from_repository(config: &RepositoryConfig) -> Self {
+        Self {
+            verify: config.tls_verify,
+            ca_cert: config.tls_ca_cert.clone(),
+        }
+    }
+
+    /// Build a `reqwest::Client` with this TLS configuration applied.
+    pub fn build_client(&self) -> anyhow::Result<reqwest::Client> {
+        let mut builder = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .user_agent("fhir-autotest/0.1");
+        if !self.verify {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        if let Some(ca_path) = &self.ca_cert {
+            let cert = std::fs::read(ca_path)
+                .with_context(|| format!("Failed to read CA certificate: {}", ca_path.display()))?;
+            builder = builder.add_root_certificate(
+                reqwest::Certificate::from_pem(&cert).with_context(|| {
+                    format!(
+                        "Failed to parse CA certificate from PEM: {}",
+                        ca_path.display()
+                    )
+                })?,
+            );
+        }
+        Ok(builder.build()?)
+    }
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -421,12 +516,14 @@ impl TestConfig {
                 password: repo.password.clone(),
                 upload_method: repo.upload_method,
                 concurrency: repo.concurrency,
+                tls_config: TlsConfig::from_repository(repo),
             },
             None => WriteEndpoint::Server {
                 base_url: self.server.base_url.clone(),
                 headers: self.server.headers.clone(),
                 upload_method: UploadMethod::default(),
                 concurrency: default_concurrency(),
+                tls_config: TlsConfig::from_server(&self.server),
             },
         }
     }
@@ -446,6 +543,8 @@ pub enum WriteEndpoint {
         upload_method: UploadMethod,
         /// Number of parallel requests for upload and delete.
         concurrency: usize,
+        /// TLS configuration for this endpoint.
+        tls_config: TlsConfig,
     },
     Server {
         base_url: String,
@@ -454,6 +553,8 @@ pub enum WriteEndpoint {
         upload_method: UploadMethod,
         /// Number of parallel requests for upload and delete.
         concurrency: usize,
+        /// TLS configuration for this endpoint.
+        tls_config: TlsConfig,
     },
 }
 

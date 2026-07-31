@@ -717,6 +717,8 @@ mod tests {
                 server: ServerConfig {
                     base_url: mock_url.clone(),
                     headers: HashMap::new(),
+                    tls_verify: true,
+                    tls_ca_cert: None,
                 },
                 repository: None,
                 overrides: OverrideConfig::default(),
