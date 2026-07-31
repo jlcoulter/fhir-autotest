@@ -154,13 +154,14 @@ async fn search_resources(
 
     // Basic parameter filtering: if query params are present, try to match
     // string/token fields on the stored resources. Params starting with _ are
-    // FHIR special params and are skipped for filtering.
+    // FHIR special params and are skipped for filtering, except _id which is
+    // a search parameter that filters by resource id.
     // Supports modifiers (:exact, :contains, :missing, :not) and
     // prefixes (eq, ne, gt, lt, ge, le).
     let filter_keys: Vec<String> = params
         ._rest
         .keys()
-        .filter(|k| !k.starts_with('_'))
+        .filter(|k| !k.starts_with('_') || *k == "_id")
         .cloned()
         .collect();
 
@@ -279,24 +280,43 @@ async fn search_resources(
         let parts: Vec<&str> = include_param.split(':').collect();
         if parts.len() >= 2 {
             let search_param = parts[1];
+            // Map search parameter names to actual JSON field names.
+            // Different resource types use different field names for the same
+            // search parameter (e.g. Location uses managingOrganization for
+            // the "organization" search param).
+            let field_name = match (rtype.as_str(), search_param) {
+                ("Location", "organization") => "managingOrganization",
+                ("PractitionerRole", "service") => "healthcareService",
+                ("HealthcareService", "organization") => "providedBy",
+                _ => search_param,
+            };
             // Collect referenced resource IDs from the matching resources
             let mut included_resources = Vec::new();
             for r in &resources {
-                if let Some(refs) = r.get(search_param).and_then(|v| v.as_array()) {
-                    for reference in refs {
-                        if let Some(ref_str) = reference.get("reference").and_then(|v| v.as_str()) {
-                            // Parse "ResourceType/id" from the reference
-                            if let Some((ref_type, ref_id)) = ref_str.split_once('/')
-                                && let Some(ref_resources) = store.get(ref_type)
-                                && let Some(found) = ref_resources.iter().find(|rr| {
-                                    rr.get("id").and_then(|v| v.as_str()) == Some(ref_id)
-                                })
-                            {
-                                included_resources.push(serde_json::json!({
-                                            "resource": found,
-                                            "fullUrl": format!("http://localhost/fhir/{}/{}", ref_type, ref_id)
-                                        }));
-                            }
+                // References can be single objects or arrays
+                let ref_values: Vec<serde_json::Value> = {
+                    let field_val = r.get(field_name);
+                    if let Some(arr) = field_val.and_then(|v| v.as_array()) {
+                        arr.clone()
+                    } else if let Some(obj) = field_val.and_then(|v| v.as_object()) {
+                        vec![serde_json::Value::Object(obj.clone())]
+                    } else {
+                        Vec::new()
+                    }
+                };
+                for reference in &ref_values {
+                    if let Some(ref_str) = reference.get("reference").and_then(|v| v.as_str()) {
+                        // Parse "ResourceType/id" from the reference
+                        if let Some((ref_type, ref_id)) = ref_str.split_once('/')
+                            && let Some(ref_resources) = store.get(ref_type)
+                            && let Some(found) = ref_resources
+                                .iter()
+                                .find(|rr| rr.get("id").and_then(|v| v.as_str()) == Some(ref_id))
+                        {
+                            included_resources.push(serde_json::json!({
+                                "resource": found,
+                                "fullUrl": format!("http://localhost/fhir/{}/{}", ref_type, ref_id)
+                            }));
                         }
                     }
                 }
@@ -317,20 +337,28 @@ async fn search_resources(
                 for r in &resources {
                     let rid = r.get("id").and_then(|v| v.as_str()).unwrap_or("");
                     for source in source_resources {
-                        if let Some(refs) = source.get(search_param).and_then(|v| v.as_array()) {
-                            for reference in refs {
-                                if let Some(ref_str) =
-                                    reference.get("reference").and_then(|v| v.as_str())
-                                    && ref_str == format!("{}/{}", rtype, rid)
-                                {
-                                    let sid =
-                                        source.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                    rev_included.push(serde_json::json!({
-                                            "resource": source,
-                                            "fullUrl": format!("http://localhost/fhir/{}/{}", source_type, sid)
-                                        }));
-                                    break;
-                                }
+                        // References can be single objects or arrays
+                        let ref_values: Vec<serde_json::Value> = {
+                            let field_val = source.get(search_param);
+                            if let Some(arr) = field_val.and_then(|v| v.as_array()) {
+                                arr.clone()
+                            } else if let Some(obj) = field_val.and_then(|v| v.as_object()) {
+                                vec![serde_json::Value::Object(obj.clone())]
+                            } else {
+                                Vec::new()
+                            }
+                        };
+                        for reference in &ref_values {
+                            if let Some(ref_str) =
+                                reference.get("reference").and_then(|v| v.as_str())
+                                && ref_str == format!("{}/{}", rtype, rid)
+                            {
+                                let sid = source.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                rev_included.push(serde_json::json!({
+                                        "resource": source,
+                                        "fullUrl": format!("http://localhost/fhir/{}/{}", source_type, sid)
+                                    }));
+                                break;
                             }
                         }
                     }
@@ -408,6 +436,14 @@ fn match_field_inner(
     prefix: Option<&str>,
     modifier: Option<&str>,
 ) -> bool {
+    // _id search: match against the resource's id field (exact match)
+    if field == "_id" {
+        if let Some(id_val) = resource.get("id").and_then(|v| v.as_str()) {
+            return id_val == value_lower || id_val.to_lowercase() == value_lower;
+        }
+        return false;
+    }
+
     // Direct top-level match
     if let Some(v) = resource.get(field)
         && json_contains_with_modifier(v, value_lower, prefix, modifier)

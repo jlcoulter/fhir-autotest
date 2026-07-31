@@ -102,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
     };
     if use_mock {
         let addr = fhir_autotest::mock_server::start_mock_server(mock_port).await?;
-        let mock_url = format!("http://{}", addr);
+        let mock_url = format!("http://{}/fhir", addr);
         println!("Mock FHIR server running at {}", mock_url);
         config.server.base_url = mock_url.clone();
         // Clear repository — mock server handles both read and write
