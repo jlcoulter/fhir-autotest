@@ -440,10 +440,22 @@ impl Orchestrator {
                     match executor.create_resource(resource_type, &body).await {
                         Ok((id, _)) => {
                             println!("→ {}/{}", resource_type, id);
+                            tracing::debug!(
+                                "Created setup resource: {} {} → {}/{}",
+                                upload_method,
+                                resource_type,
+                                resource_type,
+                                id
+                            );
                             created_ids.insert(resource_type.clone(), id);
                         }
                         Err(e) => {
                             println!("✗ {}", e);
+                            tracing::warn!(
+                                "Failed to create setup resource {}: {:#}",
+                                resource_type,
+                                e
+                            );
                         }
                     }
                 }
@@ -529,6 +541,16 @@ impl Orchestrator {
                             "  {} {} {} [{}]",
                             status_icon, test.request.method, test.request.url, result.status_code
                         );
+
+                        tracing::debug!(
+                            "Test '{}': {} {} → HTTP {} | passed: {} | validation_errors: {:?}",
+                            test.name,
+                            test.request.method,
+                            test.request.url,
+                            result.status_code,
+                            result.passed,
+                            result.validation_errors
+                        );
                         // Profile validation
                         if let Some(profile_url) = &test.validation.profile_url
                             && let Some(response_body) = &result.response_body
@@ -598,6 +620,13 @@ impl Orchestrator {
                     }
                     Err(e) => {
                         println!("  ✗ {} {} — {}", test.request.method, test.request.url, e);
+                        tracing::debug!(
+                            "Test '{}' request failed: {} {} — {:#}",
+                            test.name,
+                            test.request.method,
+                            test.request.url,
+                            e
+                        );
                         results.push(TestResult {
                             test_name: test.name,
                             passed: false,
@@ -637,8 +666,10 @@ impl Orchestrator {
                     print!("  DELETE {}/{} ... ", resource_type, id);
                     if let Err(e) = executor.delete_resource(resource_type, id).await {
                         println!("✗ {}", e);
+                        tracing::warn!("Cleanup failed for {}/{}: {:#}", resource_type, id, e);
                     } else {
                         println!("→ deleted");
+                        tracing::debug!("Cleanup deleted {}/{}", resource_type, id);
                     }
                 }
             }

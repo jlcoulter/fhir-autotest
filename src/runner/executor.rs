@@ -612,6 +612,13 @@ impl TestExecutor {
             req = req.json(body);
         }
 
+        tracing::debug!(
+            "Sending {} {} with headers: {:?}",
+            test.request.method,
+            url,
+            test.request.headers
+        );
+
         let resp = req
             .send()
             .await
@@ -624,6 +631,17 @@ impl TestExecutor {
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
         let body: Option<serde_json::Value> = resp.json().await.ok();
+
+        tracing::debug!(
+            "Response {} {} → HTTP {} | headers: {:?} | body: {}",
+            test.request.method,
+            url,
+            status,
+            headers,
+            body.as_ref()
+                .map(|b| serde_json::to_string(b).unwrap_or_default())
+                .unwrap_or_else(|| "(empty)".to_string())
+        );
 
         // expected_status == 0 is a sentinel meaning "expect non-2xx"
         // (used by negative conformance tests for undeclared interactions/params)
@@ -708,6 +726,15 @@ impl TestExecutor {
                 .json()
                 .await
                 .context("Failed to parse PUT resource response")?;
+
+            tracing::debug!(
+                "PUT {}/{} → HTTP {} | body: {}",
+                resource_type,
+                id,
+                status.as_u16(),
+                serde_json::to_string(&created).unwrap_or_default()
+            );
+
             if status.as_u16() != 200 && status.as_u16() != 201 {
                 anyhow::bail!(
                     "Expected 200/201 for PUT {}, got {}: {:?}",
@@ -743,6 +770,14 @@ impl TestExecutor {
                 .json()
                 .await
                 .context("Failed to parse created resource response")?;
+
+            tracing::debug!(
+                "POST {} → HTTP {} | body: {}",
+                resource_type,
+                status.as_u16(),
+                serde_json::to_string(&created).unwrap_or_default()
+            );
+
             if status.as_u16() != 201 {
                 anyhow::bail!(
                     "Expected 201 Created for {}, got {}: {:?}",
@@ -778,6 +813,9 @@ impl TestExecutor {
             .with_context(|| format!("Failed to delete {}/{}", resource_type, id))?;
 
         let status = resp.status();
+
+        tracing::debug!("DELETE {}/{} → HTTP {}", resource_type, id, status.as_u16());
+
         if !status.is_success() && status != reqwest::StatusCode::NOT_FOUND {
             anyhow::bail!("DELETE {}/{} returned {}", resource_type, id, status);
         }

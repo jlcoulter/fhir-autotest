@@ -37,9 +37,17 @@ pub(crate) async fn prepare_plan_context(
     package_path: &str,
     config: &TestConfig,
 ) -> Result<PlanContext> {
+    tracing::debug!("Preparing plan context for package: {}", package_path);
     let pkg = parse_package(package_path)?;
     let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
     let cs = select_capability_statement(&pkg, config)?;
+
+    tracing::debug!(
+        "Package parsed: {} CapabilityStatements, {} StructureDefinitions, {} SearchParameters",
+        pkg.capability_statements.len(),
+        pkg.structure_definitions.len(),
+        pkg.search_parameters.len(),
+    );
 
     // Resolve parent profile chains — download missing parent profiles
     // from the FHIR package registry and merge their snapshots so that
@@ -130,7 +138,14 @@ pub(crate) fn select_capability_statement(
 /// Generates one resource per profile, named after the profile (e.g.
 /// `TestPatient.json`), and includes `meta.profile` with the profile URL.
 pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()> {
+    tracing::debug!("Starting generate mode for package: {}", package_path);
     let ctx = prepare_plan_context(package_path, config).await?;
+
+    tracing::debug!(
+        "Plan context ready: {} profiles, creation_order: {:?}",
+        ctx.profiles.len(),
+        ctx.creation_order
+    );
 
     // Generate or load resources for EACH profile (not just one per type).
     // Each gets a unique filename based on the profile name.
@@ -238,6 +253,11 @@ pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()>
 /// Run tests against a FHIR server.
 /// Always writes per-group results and a summary into `{output}/results/`.
 pub async fn run_tests(package_path: &str, config: &TestConfig) -> Result<()> {
+    tracing::debug!(
+        "Starting test run for package: {} against server: {}",
+        package_path,
+        config.server.base_url
+    );
     let orchestrator = runner::Orchestrator::new(config.clone());
     let report = orchestrator.run(package_path).await?;
 

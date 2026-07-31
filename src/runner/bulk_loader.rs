@@ -202,6 +202,12 @@ impl FhirRepositoryClient {
         body: &serde_json::Value,
     ) -> Result<reqwest::Response> {
         let url = format!("{}/{}/{}", self.base_url, resource_type, id);
+        tracing::debug!(
+            "PUT {}/{} | body: {}",
+            resource_type,
+            id,
+            serde_json::to_string(body).unwrap_or_default()
+        );
         let req = self
             .client
             .put(&url)
@@ -219,6 +225,11 @@ impl FhirRepositoryClient {
         body: &serde_json::Value,
     ) -> Result<reqwest::Response> {
         let url = format!("{}/{}", self.base_url, resource_type);
+        tracing::debug!(
+            "POST {} | body: {}",
+            resource_type,
+            serde_json::to_string(body).unwrap_or_default()
+        );
         let req = self
             .client
             .post(&url)
@@ -236,6 +247,7 @@ impl FhirRepositoryClient {
         id: &str,
     ) -> Result<reqwest::Response> {
         let url = format!("{}/{}/{}", self.base_url, resource_type, id);
+        tracing::debug!("DELETE {}/{}", resource_type, id);
         let req = self
             .client
             .delete(&url)
@@ -613,6 +625,17 @@ pub async fn upload_ndjson_files(
                     };
                     let status = resp.status();
                     let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                    tracing::debug!(
+                        "Upload {} {} → HTTP {} | body: {}",
+                        if upload_method == UploadMethod::Put {
+                            "PUT"
+                        } else {
+                            "POST"
+                        },
+                        resource_type,
+                        status.as_u16(),
+                        serde_json::to_string(&body).unwrap_or_default()
+                    );
                     anyhow::Ok((client_id, status.as_u16(), body))
                 });
             }
