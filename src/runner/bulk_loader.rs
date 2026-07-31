@@ -690,7 +690,10 @@ pub async fn delete_all_resources(
             let batch_size = concurrency.max(1);
 
             for chunk in type_ids.chunks(batch_size) {
-                let mut handles: Vec<(tokio::task::JoinHandle<Result<u16, anyhow::Error>>, String)> = Vec::new();
+                let mut handles: Vec<(
+                    tokio::task::JoinHandle<Result<u16, anyhow::Error>>,
+                    String,
+                )> = Vec::new();
 
                 for id in chunk {
                     let repo_client = repo_client.clone();
@@ -700,7 +703,9 @@ pub async fn delete_all_resources(
 
                     handles.push((
                         tokio::spawn(async move {
-                            let resp = repo_client.delete_resource(&resource_type, &id_clone).await?;
+                            let resp = repo_client
+                                .delete_resource(&resource_type, &id_clone)
+                                .await?;
                             Ok::<u16, anyhow::Error>(resp.status().as_u16())
                         }),
                         id,
