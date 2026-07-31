@@ -600,6 +600,11 @@ impl TestExecutor {
             .header("Content-Type", "application/fhir+json")
             .header("Accept", "application/fhir+json");
 
+        // Forward test-specific headers (e.g. If-None-Exist, If-Modified-Since, If-Match)
+        for (key, value) in &test.request.headers {
+            req = req.header(key.as_str(), value.as_str());
+        }
+
         if let Some(body) = &test.request.body {
             req = req.json(body);
         }
@@ -632,8 +637,13 @@ impl TestExecutor {
                 // 2xx with no parseable body — fails
                 false
             }
+        } else if status == test.validation.expected_status {
+            true
+        } else if let Some(ref assertion) = test.validation.response_assertion {
+            // Check accept_statuses from the response assertion
+            assertion.accept_statuses.contains(&status)
         } else {
-            status == test.validation.expected_status
+            false
         };
 
         Ok(TestResult {

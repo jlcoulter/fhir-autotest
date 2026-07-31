@@ -63,6 +63,7 @@ async fn create_resource(
 async fn read_resource(
     State(store): State<MockStore>,
     Path((rtype, id)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let store = store.lock().unwrap();
     if let Some(resources) = store.get(&rtype)
@@ -70,6 +71,11 @@ async fn read_resource(
             .iter()
             .find(|r| r.get("id").and_then(|v| v.as_str()) == Some(&id))
     {
+        // Handle conditional read headers
+        if headers.contains_key("if-none-match") || headers.contains_key("if-modified-since") {
+            // Return 304 Not Modified for conditional read tests
+            return (StatusCode::NOT_MODIFIED, Json(serde_json::json!({})));
+        }
         return (StatusCode::OK, Json(resource.clone()));
     }
     (
@@ -701,6 +707,86 @@ fn operation_response(op: &str) -> (StatusCode, Json<serde_json::Value>) {
     }
 }
 
+async fn history_handler(
+    State(store): State<MockStore>,
+    Path((rtype, id)): Path<(String, String)>,
+    Query(params): Query<SearchParams>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let store = store.lock().unwrap();
+    let resources = store.get(&rtype).cloned().unwrap_or_default();
+
+    // Find the specific resource
+    let resource = resources
+        .iter()
+        .find(|r| r.get("id").and_then(|v| v.as_str()) == Some(&id));
+
+    match resource {
+        Some(r) => {
+            // Build a history Bundle with the resource
+            let mut entries = Vec::new();
+            entries.push(serde_json::json!({
+                "resource": r,
+                "fullUrl": format!("http://localhost/fhir/{}/{}/_history/1", rtype, id),
+            }));
+
+            // Apply _count if present
+            if let Some(count) = params._count {
+                entries.truncate(count as usize);
+            }
+
+            let mut response = serde_json::json!({
+                "resourceType": "Bundle",
+                "type": "history",
+                "entry": entries,
+            });
+            response["total"] = serde_json::json!(entries.len());
+
+            (StatusCode::OK, Json(response))
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "resourceType": "OperationOutcome",
+                "issue": [{"severity": "error", "code": "not-found", "diagnostics": format!("{}/{} not found", rtype, id)}]
+            })),
+        ),
+    }
+}
+
+async fn history_type_handler(
+    State(store): State<MockStore>,
+    Path(rtype): Path<String>,
+    Query(params): Query<SearchParams>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let store = store.lock().unwrap();
+    let resources = store.get(&rtype).cloned().unwrap_or_default();
+
+    let mut entries: Vec<serde_json::Value> = resources
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "resource": r,
+                "fullUrl": format!("http://localhost/fhir/{}/{}/_history/1", rtype, r["id"].as_str().unwrap_or("")),
+            })
+        })
+        .collect();
+
+    // Apply _count if present
+    if let Some(count) = params._count {
+        entries.truncate(count as usize);
+    }
+
+    let total_before = resources.len();
+    let mut response = serde_json::json!({
+        "resourceType": "Bundle",
+        "type": "history",
+        "entry": entries,
+    });
+    response["total"] = serde_json::json!(total_before);
+
+    (StatusCode::OK, Json(response))
+}
+
 /// Build the mock FHIR server axum Router.
 pub fn create_mock_app() -> Router {
     let store: MockStore = Arc::new(Mutex::new(HashMap::new()));
@@ -720,6 +806,8 @@ pub fn create_mock_app() -> Router {
         .route("/fhir/{rtype}/{id}", get(read_resource))
         .route("/fhir/{rtype}/{id}", put(update_resource))
         .route("/fhir/{rtype}/{id}", delete(delete_resource))
+        .route("/fhir/{rtype}/{id}/_history", get(history_handler))
+        .route("/fhir/{rtype}/_history", get(history_type_handler))
         .with_state(store)
 }
 
