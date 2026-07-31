@@ -274,6 +274,22 @@ impl SearchModifier {
             SearchModifier::AboveType => ":above",
         }
     }
+
+    /// Parse a modifier string (without the `:` prefix) into a SearchModifier variant.
+    pub fn parse_modifier(s: &str) -> Option<Self> {
+        match s {
+            "exact" => Some(SearchModifier::Exact),
+            "contains" => Some(SearchModifier::Contains),
+            "missing" => Some(SearchModifier::Missing),
+            "not" => Some(SearchModifier::Not),
+            "above" => Some(SearchModifier::Above),
+            "below" => Some(SearchModifier::Below),
+            "text" => Some(SearchModifier::Text),
+            "in" => Some(SearchModifier::In),
+            "not-in" => Some(SearchModifier::NotIn),
+            _ => None,
+        }
+    }
 }
 
 /// Search comparison prefixes for number/date/quantity params.
@@ -330,6 +346,22 @@ impl SearchPrefix {
             SearchPrefix::Ap => "ap",
         }
     }
+
+    /// Parse a prefix string into a SearchPrefix variant.
+    pub fn parse_prefix(s: &str) -> Option<Self> {
+        match s {
+            "eq" => Some(SearchPrefix::Eq),
+            "ne" => Some(SearchPrefix::Ne),
+            "gt" => Some(SearchPrefix::Gt),
+            "lt" => Some(SearchPrefix::Lt),
+            "ge" => Some(SearchPrefix::Ge),
+            "le" => Some(SearchPrefix::Le),
+            "sa" => Some(SearchPrefix::Sa),
+            "eb" => Some(SearchPrefix::Eb),
+            "ap" => Some(SearchPrefix::Ap),
+            _ => None,
+        }
+    }
 }
 
 /// What kind of test case this is.
@@ -361,6 +393,19 @@ pub enum TestCaseKind {
         chain_param: String,
         target_param: String,
     },
+    /// Chained search with modifier on the target param
+    SearchChainedModifier {
+        chain_param: String,
+        target_param: String,
+        modifier: SearchModifier,
+    },
+    /// Multi-hop chained search: reference → reference → target
+    SearchChainedMultiHop {
+        chain_params: Vec<String>,
+        target_param: String,
+    },
+    /// Composite search param: two values joined by $
+    SearchComposite { param_name: String },
     /// _include / _revinclude test
     Include { param: String, revinclude: bool },
     /// Result parameter test (_summary, _elements, _count, _sort, _has, etc.)

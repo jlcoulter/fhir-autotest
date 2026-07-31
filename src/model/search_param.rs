@@ -15,6 +15,15 @@ pub struct SearchParameter {
     pub param_type: String,
     pub expression: Option<String>,
     pub description: Option<String>,
+    /// Resource types this reference search parameter can target.
+    #[serde(default)]
+    pub target: Vec<String>,
+    /// Declared comparators (eq, ne, gt, lt, ge, le, sa, eb, ap) the server supports.
+    #[serde(default)]
+    pub comparator: Vec<String>,
+    /// Declared modifiers the server supports for this parameter.
+    #[serde(default)]
+    pub modifier: Vec<String>,
 }
 
 #[cfg(test)]

@@ -256,6 +256,46 @@ pub(crate) fn build_search_near_test(
     }
 }
 
+/// Build a composite search param test.
+///
+/// Composite search params combine two values with a `$` separator.
+/// Uses `expected_status: 0` since composite search is complex and
+/// may not be fully supported by all servers.
+pub(crate) fn build_search_composite_test(
+    resource_type: &str,
+    param_name: &str,
+    profile_url: &Option<String>,
+) -> TestCase {
+    let url = format!("/{resource_type}?{param_name}=test-value1$test-value2&_id={{id}}");
+
+    TestCase {
+        name: format!(
+            "{}_search_{}_composite",
+            resource_type.to_lowercase(),
+            param_name.replace('-', "_"),
+        ),
+        kind: TestCaseKind::SearchComposite {
+            param_name: param_name.to_string(),
+        },
+        interaction: Interaction::SearchType,
+        resource_type: resource_type.to_string(),
+        profile_url: profile_url.clone(),
+        request: HttpRequest {
+            method: "GET".to_string(),
+            url,
+            headers: HashMap::new(),
+            body: None,
+        },
+        validation: ValidationSpec {
+            expected_status: 0, // 0 = accept any status (composite is complex)
+            profile_url: None,
+            required_elements: Vec::new(),
+            forbidden_elements: Vec::new(),
+            response_assertion: None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,5 +505,22 @@ mod tests {
         let empty_ids = HashMap::new();
         let value = resolve_param_value("Patient", "name", "string", &field_values, &empty_ids);
         assert_eq!(value, "John");
+    }
+
+    #[test]
+    fn build_search_composite_test_produces_correct_url() {
+        let test = build_search_composite_test("Patient", "name", &None);
+        assert_eq!(test.request.method, "GET");
+        assert!(
+            test.request.url.contains("name=test-value1$test-value2"),
+            "URL should contain composite value, got {}",
+            test.request.url
+        );
+        assert_eq!(test.name, "patient_search_name_composite");
+        assert!(matches!(
+            test.kind,
+            TestCaseKind::SearchComposite { ref param_name } if param_name == "name"
+        ));
+        assert_eq!(test.validation.expected_status, 0);
     }
 }

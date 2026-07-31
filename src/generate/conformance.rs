@@ -28,6 +28,7 @@
 //! 11. **Reference target profile validation** — reference fields should point
 //!     to resources with matching meta.profile
 
+use crate::model::SearchParameter;
 use crate::model::capability::*;
 use crate::model::profile::StructureDefinition;
 
@@ -168,6 +169,19 @@ pub enum ConformanceTestKind {
         field_path: String,
         target_profile: String,
     },
+    /// Verify that a SearchParameter's expression resolves to a valid field path
+    /// in response resources.
+    ExpressionValidation {
+        param_name: String,
+        expression: String,
+        field_path: String,
+    },
+    /// Verify that reference search params only return resources of the
+    /// declared target types.
+    TargetTypeValidation {
+        param_name: String,
+        target_types: Vec<String>,
+    },
 }
 
 /// HTTP request for a conformance test.
@@ -211,6 +225,7 @@ pub struct ConformanceAssertion {
 pub fn generate_conformance_tests(
     cs: &CapabilityStatement,
     profiles: &[StructureDefinition],
+    search_params: &[SearchParameter],
 ) -> Vec<ConformanceTest> {
     let mut tests = Vec::new();
 
@@ -720,6 +735,107 @@ pub fn generate_conformance_tests(
                 }
             }
 
+            // --- Search Parameter Expression Validation ---
+            // For each SearchParameter with an expression, check that the
+            // expression path exists in response resources.
+            if has_search_type {
+                let resource_search_params: Vec<&SearchParameter> = search_params
+                    .iter()
+                    .filter(|sp| sp.base.contains(&resource.resource_type))
+                    .collect();
+
+                for sp in &resource_search_params {
+                    if let Some(ref expression) = sp.expression {
+                        // Parse the FHIRPath expression to extract a field path
+                        if let Some(field_path) =
+                            extract_expression_field_path(expression, &resource.resource_type)
+                        {
+                            tests.push(ConformanceTest {
+                                name: format!(
+                                    "{}_expression_{}",
+                                    resource.resource_type,
+                                    sp.code.replace('-', "_")
+                                ),
+                                description: format!(
+                                    "Verify SearchParameter '{}' expression '{}' resolves to field '{}' in {} responses",
+                                    sp.code, expression, field_path, resource.resource_type
+                                ),
+                                resource_type: resource.resource_type.clone(),
+                                kind: ConformanceTestKind::ExpressionValidation {
+                                    param_name: sp.code.clone(),
+                                    expression: expression.clone(),
+                                    field_path: field_path.clone(),
+                                },
+                                request: ConformanceRequest {
+                                    method: "GET".to_string(),
+                                    url: format!(
+                                        "/{}?_id={}-1&_count=10",
+                                        resource.resource_type,
+                                        resource.resource_type.to_lowercase()
+                                    ),
+                                    headers: std::collections::HashMap::new(),
+                                    body: None,
+                                },
+                                assertion: ConformanceAssertion {
+                                    expected_status: 200,
+                                    must_contain_fields: vec![field_path],
+                                    must_not_contain_fields: vec![],
+                                    min_entries: Some(0),
+                                    bundle_type: Some("searchset".to_string()),
+                                    expect_operation_outcome: false,
+                                },
+                            });
+                        }
+                    }
+                }
+
+                // --- Search Parameter Target Type Validation ---
+                // For reference-type SearchParameters with declared target types,
+                // verify that returned resources match the target types.
+                for sp in &resource_search_params {
+                    if sp.param_type == "reference" && !sp.target.is_empty() {
+                        tests.push(ConformanceTest {
+                            name: format!(
+                                "{}_target_type_{}",
+                                resource.resource_type,
+                                sp.code.replace('-', "_")
+                            ),
+                            description: format!(
+                                "Verify reference SearchParameter '{}' targets [{}] in {} responses",
+                                sp.code,
+                                sp.target.join(", "),
+                                resource.resource_type
+                            ),
+                            resource_type: resource.resource_type.clone(),
+                            kind: ConformanceTestKind::TargetTypeValidation {
+                                param_name: sp.code.clone(),
+                                target_types: sp.target.clone(),
+                            },
+                            request: ConformanceRequest {
+                                method: "GET".to_string(),
+                                url: format!(
+                                    "/{}?{}={}/test-id&_id={}-1&_count=10",
+                                    resource.resource_type,
+                                    sp.code,
+                                    sp.target.first().map(|s| s.as_str()).unwrap_or("Unknown"),
+                                    resource.resource_type.to_lowercase()
+                                ),
+                                headers: std::collections::HashMap::new(),
+                                body: None,
+                            },
+                            assertion: ConformanceAssertion {
+                                expected_status: 200,
+                                must_contain_fields: vec![],
+                                must_not_contain_fields: vec![],
+                                min_entries: Some(0),
+                                bundle_type: Some("searchset".to_string()),
+                                expect_operation_outcome: false,
+                            },
+                        });
+                    }
+                }
+            }
+
             // --- versioning conformance tests ---
             // When versioning is declared as "versioned" or "versioned-update",
             // the server should return meta.versionId on resources.
@@ -792,6 +908,43 @@ pub fn generate_conformance_tests(
         .into_iter()
         .filter(|t| seen.insert(t.name.clone()))
         .collect()
+}
+
+/// Extract a field path from a FHIRPath expression for use in conformance tests.
+///
+/// Handles common patterns:
+/// - `Patient.name` → `name`
+/// - `Patient.name.family` → `name.family`
+/// - `Patient.name | Practitioner.name` → `name` (takes first)
+/// - `Patient.deceasedBoolean | Patient.deceasedDateTime` → `deceasedBoolean`
+fn extract_expression_field_path(expression: &str, resource_type: &str) -> Option<String> {
+    // Take the first alternative (before |)
+    let first_alt = expression.split('|').next()?.trim();
+
+    // Strip the resource type prefix if present
+    let prefix = format!("{}.", resource_type);
+    if let Some(path) = first_alt.strip_prefix(&prefix) {
+        // Take only the first two path components (field.subfield)
+        let parts: Vec<&str> = path.split('.').collect();
+        if parts.len() >= 2 {
+            Some(format!("{}.{}", parts[0], parts[1]))
+        } else if !parts.is_empty() {
+            Some(parts[0].to_string())
+        } else {
+            None
+        }
+    } else if first_alt.contains('.') {
+        // Expression doesn't start with resource type, use as-is
+        let parts: Vec<&str> = first_alt.split('.').collect();
+        if parts.len() >= 2 {
+            Some(format!("{}.{}", parts[0], parts[1]))
+        } else {
+            Some(parts[0].to_string())
+        }
+    } else {
+        // Bare field name
+        Some(first_alt.to_string())
+    }
 }
 
 /// Collect mustSupport fields from a profile's snapshot or differential.
@@ -1201,7 +1354,9 @@ pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::m
         | ConformanceTestKind::SliceValidation { .. }
         | ConformanceTestKind::ExtensionValidation { .. }
         | ConformanceTestKind::TypeConstraintValidation { .. }
-        | ConformanceTestKind::ReferenceTargetValidation { .. } => Interaction::SearchType,
+        | ConformanceTestKind::ReferenceTargetValidation { .. }
+        | ConformanceTestKind::ExpressionValidation { .. }
+        | ConformanceTestKind::TargetTypeValidation { .. } => Interaction::SearchType,
         ConformanceTestKind::UndeclaredInteraction { ref interaction } => {
             // Map back from interaction code
             match interaction.as_str() {
@@ -1287,6 +1442,14 @@ pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::m
             response_assertion.bundle_type = Some("searchset".to_string());
             response_assertion.min_entries = Some(0);
         }
+        ConformanceTestKind::ExpressionValidation { .. } => {
+            response_assertion.bundle_type = Some("searchset".to_string());
+            response_assertion.min_entries = Some(0);
+        }
+        ConformanceTestKind::TargetTypeValidation { .. } => {
+            response_assertion.bundle_type = Some("searchset".to_string());
+            response_assertion.min_entries = Some(0);
+        }
     }
 
     let expected_status = match &ct.kind {
@@ -1368,6 +1531,26 @@ pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::m
             description: format!(
                 "reference target '{}' should conform to '{}'",
                 field_path, target_profile
+            ),
+        },
+        ConformanceTestKind::ExpressionValidation {
+            param_name,
+            expression,
+            field_path,
+        } => TestCaseKind::Conformance {
+            description: format!(
+                "expression '{}' resolves to field '{}' for param '{}'",
+                expression, field_path, param_name
+            ),
+        },
+        ConformanceTestKind::TargetTypeValidation {
+            param_name,
+            target_types,
+        } => TestCaseKind::Conformance {
+            description: format!(
+                "reference param '{}' targets [{}]",
+                param_name,
+                target_types.join(", ")
             ),
         },
     };
@@ -1994,7 +2177,7 @@ mod tests {
     fn generate_must_support_tests() {
         let cs = sample_cs();
         let profile = sample_profile();
-        let tests = generate_conformance_tests(&cs, &[profile]);
+        let tests = generate_conformance_tests(&cs, &[profile], &[]);
 
         let must_support_tests: Vec<_> = tests
             .iter()
@@ -2026,7 +2209,7 @@ mod tests {
     fn generate_cardinality_tests() {
         let cs = sample_cs();
         let profile = sample_profile();
-        let tests = generate_conformance_tests(&cs, &[profile]);
+        let tests = generate_conformance_tests(&cs, &[profile], &[]);
 
         let cardinality_tests: Vec<_> = tests
             .iter()
@@ -2057,7 +2240,7 @@ mod tests {
     fn generate_undeclared_interaction_tests() {
         let cs = sample_cs();
         let profile = sample_profile();
-        let tests = generate_conformance_tests(&cs, &[profile]);
+        let tests = generate_conformance_tests(&cs, &[profile], &[]);
 
         let interaction_tests: Vec<_> = tests
             .iter()
@@ -2086,7 +2269,7 @@ mod tests {
     fn generate_undeclared_search_param_tests() {
         let cs = sample_cs();
         let profile = sample_profile();
-        let tests = generate_conformance_tests(&cs, &[profile]);
+        let tests = generate_conformance_tests(&cs, &[profile], &[]);
 
         let param_tests: Vec<_> = tests
             .iter()
@@ -2104,7 +2287,7 @@ mod tests {
     fn generate_constraint_validation_tests() {
         let cs = sample_cs();
         let profile = sample_rich_profile();
-        let tests = generate_conformance_tests(&cs, &[profile]);
+        let tests = generate_conformance_tests(&cs, &[profile], &[]);
 
         let constraint_tests: Vec<_> = tests
             .iter()
@@ -2132,7 +2315,7 @@ mod tests {
     fn generate_binding_validation_tests() {
         let cs = sample_cs();
         let profile = sample_rich_profile();
-        let tests = generate_conformance_tests(&cs, &[profile]);
+        let tests = generate_conformance_tests(&cs, &[profile], &[]);
 
         let binding_tests: Vec<_> = tests
             .iter()
@@ -2160,7 +2343,7 @@ mod tests {
     fn generate_fixed_value_validation_tests() {
         let cs = sample_cs();
         let profile = sample_rich_profile();
-        let tests = generate_conformance_tests(&cs, &[profile]);
+        let tests = generate_conformance_tests(&cs, &[profile], &[]);
 
         let fixed_tests: Vec<_> = tests
             .iter()
@@ -2188,7 +2371,7 @@ mod tests {
     fn generate_slice_validation_tests() {
         let cs = sample_cs();
         let profile = sample_rich_profile();
-        let tests = generate_conformance_tests(&cs, &[profile]);
+        let tests = generate_conformance_tests(&cs, &[profile], &[]);
 
         let slice_tests: Vec<_> = tests
             .iter()
@@ -2214,7 +2397,7 @@ mod tests {
     fn generate_extension_validation_tests() {
         let cs = sample_cs();
         let profile = sample_rich_profile();
-        let tests = generate_conformance_tests(&cs, &[profile]);
+        let tests = generate_conformance_tests(&cs, &[profile], &[]);
 
         let ext_tests: Vec<_> = tests
             .iter()
@@ -2242,7 +2425,7 @@ mod tests {
     fn generate_type_constraint_validation_tests() {
         let cs = sample_cs();
         let profile = sample_rich_profile();
-        let tests = generate_conformance_tests(&cs, &[profile]);
+        let tests = generate_conformance_tests(&cs, &[profile], &[]);
 
         let type_tests: Vec<_> = tests
             .iter()
@@ -2270,7 +2453,7 @@ mod tests {
     fn generate_reference_target_validation_tests() {
         let cs = sample_cs();
         let profile = sample_rich_profile();
-        let tests = generate_conformance_tests(&cs, &[profile]);
+        let tests = generate_conformance_tests(&cs, &[profile], &[]);
 
         let ref_tests: Vec<_> = tests
             .iter()

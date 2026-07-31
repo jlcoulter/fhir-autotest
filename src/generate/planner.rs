@@ -53,6 +53,27 @@ pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<Re
             ..ResponseAssertion::none()
         }),
 
+        // Chained search with modifier: expect Bundle searchset
+        TestCaseKind::SearchChainedModifier { .. } => Some(ResponseAssertion {
+            bundle_type: Some("searchset".to_string()),
+            min_entries: Some(0),
+            ..ResponseAssertion::none()
+        }),
+
+        // Multi-hop chained search: expect Bundle searchset
+        TestCaseKind::SearchChainedMultiHop { .. } => Some(ResponseAssertion {
+            bundle_type: Some("searchset".to_string()),
+            min_entries: Some(0),
+            ..ResponseAssertion::none()
+        }),
+
+        // Composite search: expect Bundle searchset
+        TestCaseKind::SearchComposite { .. } => Some(ResponseAssertion {
+            bundle_type: Some("searchset".to_string()),
+            min_entries: Some(0),
+            ..ResponseAssertion::none()
+        }),
+
         // Include: expect Bundle searchset with the included resource type present
         TestCaseKind::Include { .. } => Some(ResponseAssertion {
             bundle_type: Some("searchset".to_string()),
@@ -413,6 +434,58 @@ fn build_test_group(
             }
         }
 
+        // --- Composite search param tests ---
+        // For each SearchParameter with type=composite, generate a test
+        // with a composite value (two values joined by $).
+        for sp in &resource_search_params {
+            if sp.param_type == "composite" {
+                tests.push(build_search_composite_test(
+                    &resource.resource_type,
+                    &sp.code,
+                    profile_url,
+                ));
+            }
+        }
+
+        // --- Declared comparator/modifier validation ---
+        // When a SearchParameter declares specific comparators or modifiers,
+        // generate tests only for those. If not declared, test all applicable
+        // (current behavior).
+        for sp in &resource_search_params {
+            // Declared comparator tests
+            if !sp.comparator.is_empty() {
+                for comp_str in &sp.comparator {
+                    if let Some(prefix) = SearchPrefix::parse_prefix(comp_str) {
+                        tests.push(build_search_prefix_test(
+                            &resource.resource_type,
+                            &sp.code,
+                            &sp.param_type,
+                            &prefix,
+                            profile_url,
+                            field_values,
+                            created_ids,
+                        ));
+                    }
+                }
+            }
+            // Declared modifier tests
+            if !sp.modifier.is_empty() {
+                for mod_str in &sp.modifier {
+                    if let Some(modifier) = SearchModifier::parse_modifier(mod_str) {
+                        tests.push(build_search_modifier_test(
+                            &resource.resource_type,
+                            &sp.code,
+                            &sp.param_type,
+                            &modifier,
+                            profile_url,
+                            field_values,
+                            created_ids,
+                        ));
+                    }
+                }
+            }
+        }
+
         // --- Combinatorial search tests (2-combinations) ---
         if inline_params.len() >= 2 {
             for i in 0..inline_params.len() {
@@ -454,6 +527,56 @@ fn build_test_group(
                             field_values,
                             created_ids,
                         ));
+
+                        // Chained search with modifier (:exact, :contains)
+                        for modifier in &[SearchModifier::Exact, SearchModifier::Contains] {
+                            tests.push(build_chained_search_modifier_test(
+                                &resource.resource_type,
+                                &sp.name,
+                                &target_sp.code,
+                                modifier,
+                                profile_url,
+                                field_values,
+                                created_ids,
+                            ));
+                        }
+                    }
+
+                    // Multi-hop chained search: try to find a second hop
+                    // through the target resource's reference params
+                    let second_hop_params: Vec<&SearchParameter> = search_params
+                        .iter()
+                        .filter(|tsp| {
+                            tsp.base.contains(&target_type) && tsp.param_type == "reference"
+                        })
+                        .take(1) // limit to 1 to avoid explosion
+                        .collect();
+
+                    for second_sp in &second_hop_params {
+                        if let Some(second_target) = resolve_reference_target(
+                            &target_type,
+                            &second_sp.code,
+                            Some(search_params),
+                        ) {
+                            let third_params: Vec<&SearchParameter> = search_params
+                                .iter()
+                                .filter(|tsp| {
+                                    tsp.base.contains(&second_target) && tsp.param_type == "string"
+                                })
+                                .take(1)
+                                .collect();
+
+                            for third_sp in &third_params {
+                                tests.push(build_chained_search_multi_hop_test(
+                                    &resource.resource_type,
+                                    &[sp.name.clone(), second_sp.code.clone()],
+                                    &third_sp.code,
+                                    profile_url,
+                                    field_values,
+                                    created_ids,
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -1029,6 +1152,9 @@ mod tests {
             param_type: "date".to_string(),
             expression: Some("Patient.birthDate".to_string()),
             description: None,
+            target: vec![],
+            comparator: vec![],
+            modifier: vec![],
         }]
     }
 
