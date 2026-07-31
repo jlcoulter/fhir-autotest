@@ -698,7 +698,12 @@ pub async fn delete_all_resources(
             let mut errors = 0usize;
             let batch_size = concurrency.max(1);
 
-            for chunk in type_ids.chunks(batch_size) {
+            // Reverse IDs so dependents (uploaded in later waves) are deleted first,
+            // avoiding 409 referential conflicts from same-type references like
+            // Organization.partOf → Organization/{id}.
+            let reversed: Vec<String> = type_ids.iter().rev().cloned().collect();
+
+            for chunk in reversed.chunks(batch_size) {
                 let mut handles: Vec<DeleteHandle> = Vec::new();
 
                 for id in chunk {
@@ -732,7 +737,7 @@ pub async fn delete_all_resources(
                             // Unreachable — loop always returns
                             unreachable!()
                         }),
-                        id,
+                        id.clone(),
                     ));
                 }
 
@@ -1441,14 +1446,15 @@ mod tests {
         .unwrap();
 
         let log = log.lock().unwrap();
-        // Should delete in reverse creation order: Organization first, then Patient
+        // Should delete in reverse creation order: Organization first, then Patient.
+        // Within each type, IDs are reversed so dependents (later upload waves) are deleted first.
         assert_eq!(log.requests.len(), 3);
         assert_eq!(log.requests[0].0, "DELETE");
         assert!(log.requests[0].1.contains("/Organization/org-1"));
         assert_eq!(log.requests[1].0, "DELETE");
-        assert!(log.requests[1].1.contains("/Patient/patient-1"));
+        assert!(log.requests[1].1.contains("/Patient/patient-2"));
         assert_eq!(log.requests[2].0, "DELETE");
-        assert!(log.requests[2].1.contains("/Patient/patient-2"));
+        assert!(log.requests[2].1.contains("/Patient/patient-1"));
     }
 
     #[tokio::test]
