@@ -275,14 +275,14 @@ async fn search_resources(
                         // Parse "ResourceType/id" from the reference
                         if let Some((ref_type, ref_id)) = ref_str.split_once('/')
                             && let Some(ref_resources) = store.get(ref_type)
-                            && let Some(found) = ref_resources.iter().find(|rr| {
-                                rr.get("id").and_then(|v| v.as_str()) == Some(ref_id)
-                            })
+                            && let Some(found) = ref_resources
+                                .iter()
+                                .find(|rr| rr.get("id").and_then(|v| v.as_str()) == Some(ref_id))
                         {
                             included_resources.push(serde_json::json!({
-                                        "resource": found,
-                                        "fullUrl": format!("http://localhost/fhir/{}/{}", ref_type, ref_id)
-                                    }));
+                                "resource": found,
+                                "fullUrl": format!("http://localhost/fhir/{}/{}", ref_type, ref_id)
+                            }));
                         }
                     }
                 }
@@ -319,8 +319,7 @@ async fn search_resources(
                                 reference.get("reference").and_then(|v| v.as_str())
                                 && ref_str == format!("{}/{}", rtype, rid)
                             {
-                                let sid =
-                                    source.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                let sid = source.get("id").and_then(|v| v.as_str()).unwrap_or("");
                                 rev_included.push(serde_json::json!({
                                         "resource": source,
                                         "fullUrl": format!("http://localhost/fhir/{}/{}", source_type, sid)
