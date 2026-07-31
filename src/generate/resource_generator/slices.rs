@@ -1171,4 +1171,499 @@ mod tests {
         );
         assert!(resource.get("extension").is_none());
     }
+
+    // -- generate_slice_value tests ----------------------------------------
+
+    #[test]
+    fn test_generate_slice_value_with_pattern_coding() {
+        let slice = ElementDefinition {
+            id: "Patient.identifier:ABN".into(),
+            path: "Patient.identifier".into(),
+            slice_name: Some("ABN".into()),
+            min: Some(1),
+            type_: vec![ElementDefinitionType {
+                code: "Identifier".into(),
+                profile: vec![],
+                target_profile: vec![],
+                versioning: None,
+            }],
+            pattern_coding: Some(serde_json::json!({
+                "system": "http://hl7.org.au/id/abn",
+                "code": "some-code"
+            })),
+            ..Default::default()
+        };
+        let elements = vec![
+            ElementDefinition {
+                id: "Patient.identifier".into(),
+                path: "Patient.identifier".into(),
+                type_: vec![ElementDefinitionType {
+                    code: "Identifier".into(),
+                    profile: vec![],
+                    target_profile: vec![],
+                    versioning: None,
+                }],
+                ..Default::default()
+            },
+            slice.clone(),
+        ];
+        let result = generate_slice_value(
+            &slice,
+            "Patient",
+            Some("system"),
+            &[],
+            &elements,
+            &HashMap::new(),
+        );
+        assert!(result.is_some());
+        let val = result.unwrap();
+        // Should have a coding field from pattern_coding
+        assert!(
+            val.get("coding").is_some(),
+            "Should have coding from pattern_coding"
+        );
+    }
+
+    #[test]
+    fn test_generate_slice_value_with_pattern_codeable_concept() {
+        let slice = ElementDefinition {
+            id: "Patient.identifier:ABN".into(),
+            path: "Patient.identifier".into(),
+            slice_name: Some("ABN".into()),
+            min: Some(1),
+            type_: vec![ElementDefinitionType {
+                code: "Identifier".into(),
+                profile: vec![],
+                target_profile: vec![],
+                versioning: None,
+            }],
+            pattern_codeable_concept: Some(serde_json::json!({
+                "coding": [{
+                    "system": "http://hl7.org.au/id/abn",
+                    "code": "some-code"
+                }]
+            })),
+            ..Default::default()
+        };
+        let elements = vec![
+            ElementDefinition {
+                id: "Patient.identifier".into(),
+                path: "Patient.identifier".into(),
+                type_: vec![ElementDefinitionType {
+                    code: "Identifier".into(),
+                    profile: vec![],
+                    target_profile: vec![],
+                    versioning: None,
+                }],
+                ..Default::default()
+            },
+            slice.clone(),
+        ];
+        let result = generate_slice_value(
+            &slice,
+            "Patient",
+            Some("system"),
+            &[],
+            &elements,
+            &HashMap::new(),
+        );
+        assert!(result.is_some());
+        let val = result.unwrap();
+        // Should have a coding field from pattern_codeable_concept
+        assert!(
+            val.get("coding").is_some(),
+            "Should have coding from pattern_codeable_concept"
+        );
+    }
+
+    #[test]
+    fn test_generate_slice_value_with_discriminator_type_path() {
+        let slice = ElementDefinition {
+            id: "Patient.identifier:ABN".into(),
+            path: "Patient.identifier".into(),
+            slice_name: Some("ABN".into()),
+            min: Some(1),
+            type_: vec![ElementDefinitionType {
+                code: "Identifier".into(),
+                profile: vec![],
+                target_profile: vec![],
+                versioning: None,
+            }],
+            ..Default::default()
+        };
+        let elements = vec![
+            ElementDefinition {
+                id: "Patient.identifier".into(),
+                path: "Patient.identifier".into(),
+                type_: vec![ElementDefinitionType {
+                    code: "Identifier".into(),
+                    profile: vec![],
+                    target_profile: vec![],
+                    versioning: None,
+                }],
+                ..Default::default()
+            },
+            slice.clone(),
+        ];
+        // discriminator_path starting with "type" should trigger type handling
+        let result = generate_slice_value(
+            &slice,
+            "Patient",
+            Some("type.coding.code"),
+            &[],
+            &elements,
+            &HashMap::new(),
+        );
+        assert!(result.is_some());
+        let val = result.unwrap();
+        // Should have a type field (fallback CodeableConcept with XX code)
+        assert!(
+            val.get("type").is_some(),
+            "Should have type field when discriminator path starts with 'type'"
+        );
+    }
+
+    #[test]
+    fn test_generate_slice_value_with_human_name() {
+        let slice = ElementDefinition {
+            id: "Patient.name:official".into(),
+            path: "Patient.name".into(),
+            slice_name: Some("official".into()),
+            min: Some(1),
+            type_: vec![ElementDefinitionType {
+                code: "HumanName".into(),
+                profile: vec![],
+                target_profile: vec![],
+                versioning: None,
+            }],
+            ..Default::default()
+        };
+        let elements = vec![
+            ElementDefinition {
+                id: "Patient.name".into(),
+                path: "Patient.name".into(),
+                type_: vec![ElementDefinitionType {
+                    code: "HumanName".into(),
+                    profile: vec![],
+                    target_profile: vec![],
+                    versioning: None,
+                }],
+                ..Default::default()
+            },
+            slice.clone(),
+            // The .use element that find_human_name_use looks for
+            ElementDefinition {
+                id: "Patient.name:official.use".into(),
+                path: "Patient.name.use".into(),
+                fixed_code: Some("official".into()),
+                ..Default::default()
+            },
+        ];
+        let result = generate_slice_value(
+            &slice,
+            "Patient",
+            Some("use"),
+            &[],
+            &elements,
+            &HashMap::new(),
+        );
+        assert!(result.is_some());
+        let val = result.unwrap();
+        // HumanName should have a "use" field
+        assert!(val.get("use").is_some(), "HumanName should have use field");
+    }
+
+    #[test]
+    fn test_generate_slice_value_with_pattern_uri() {
+        let slice = ElementDefinition {
+            id: "Patient.identifier:ABN".into(),
+            path: "Patient.identifier".into(),
+            slice_name: Some("ABN".into()),
+            min: Some(1),
+            type_: vec![ElementDefinitionType {
+                code: "Identifier".into(),
+                profile: vec![],
+                target_profile: vec![],
+                versioning: None,
+            }],
+            pattern_uri: Some("http://hl7.org.au/id/abn".into()),
+            ..Default::default()
+        };
+        let elements = vec![
+            ElementDefinition {
+                id: "Patient.identifier".into(),
+                path: "Patient.identifier".into(),
+                type_: vec![ElementDefinitionType {
+                    code: "Identifier".into(),
+                    profile: vec![],
+                    target_profile: vec![],
+                    versioning: None,
+                }],
+                ..Default::default()
+            },
+            slice.clone(),
+        ];
+        let result = generate_slice_value(
+            &slice,
+            "Patient",
+            Some("system"),
+            &[],
+            &elements,
+            &HashMap::new(),
+        );
+        assert!(result.is_some());
+        let val = result.unwrap();
+        // Identifier with pattern_uri should have system set
+        assert_eq!(
+            val.get("system").and_then(|v| v.as_str()),
+            Some("http://hl7.org.au/id/abn")
+        );
+    }
+
+    #[test]
+    fn test_generate_slice_value_with_pattern_string() {
+        let slice = ElementDefinition {
+            id: "Patient.name:official".into(),
+            path: "Patient.name".into(),
+            slice_name: Some("official".into()),
+            min: Some(1),
+            type_: vec![ElementDefinitionType {
+                code: "HumanName".into(),
+                profile: vec![],
+                target_profile: vec![],
+                versioning: None,
+            }],
+            pattern_string: Some("Official Name".into()),
+            ..Default::default()
+        };
+        let elements = vec![
+            ElementDefinition {
+                id: "Patient.name".into(),
+                path: "Patient.name".into(),
+                type_: vec![ElementDefinitionType {
+                    code: "HumanName".into(),
+                    profile: vec![],
+                    target_profile: vec![],
+                    versioning: None,
+                }],
+                ..Default::default()
+            },
+            slice.clone(),
+        ];
+        let result = generate_slice_value(
+            &slice,
+            "Patient",
+            Some("use"),
+            &[],
+            &elements,
+            &HashMap::new(),
+        );
+        assert!(result.is_some());
+        let val = result.unwrap();
+        // Should have value set from pattern_string
+        assert_eq!(
+            val.get("value").and_then(|v| v.as_str()),
+            Some("Official Name")
+        );
+    }
+
+    #[test]
+    fn test_generate_slice_value_with_pattern_code_human_name() {
+        let slice = ElementDefinition {
+            id: "Patient.name:official".into(),
+            path: "Patient.name".into(),
+            slice_name: Some("official".into()),
+            min: Some(1),
+            type_: vec![ElementDefinitionType {
+                code: "HumanName".into(),
+                profile: vec![],
+                target_profile: vec![],
+                versioning: None,
+            }],
+            pattern_code: Some("official".into()),
+            ..Default::default()
+        };
+        let elements = vec![
+            ElementDefinition {
+                id: "Patient.name".into(),
+                path: "Patient.name".into(),
+                type_: vec![ElementDefinitionType {
+                    code: "HumanName".into(),
+                    profile: vec![],
+                    target_profile: vec![],
+                    versioning: None,
+                }],
+                ..Default::default()
+            },
+            slice.clone(),
+        ];
+        let result = generate_slice_value(
+            &slice,
+            "Patient",
+            Some("use"),
+            &[],
+            &elements,
+            &HashMap::new(),
+        );
+        assert!(result.is_some());
+        let val = result.unwrap();
+        // HumanName with pattern_code should have use set
+        assert_eq!(val.get("use").and_then(|v| v.as_str()), Some("official"));
+    }
+
+    #[test]
+    fn test_generate_slice_value_with_pattern_code_address() {
+        let slice = ElementDefinition {
+            id: "Patient.address:home".into(),
+            path: "Patient.address".into(),
+            slice_name: Some("home".into()),
+            min: Some(1),
+            type_: vec![ElementDefinitionType {
+                code: "Address".into(),
+                profile: vec![],
+                target_profile: vec![],
+                versioning: None,
+            }],
+            pattern_code: Some("home".into()),
+            ..Default::default()
+        };
+        let elements = vec![
+            ElementDefinition {
+                id: "Patient.address".into(),
+                path: "Patient.address".into(),
+                type_: vec![ElementDefinitionType {
+                    code: "Address".into(),
+                    profile: vec![],
+                    target_profile: vec![],
+                    versioning: None,
+                }],
+                ..Default::default()
+            },
+            slice.clone(),
+        ];
+        let result = generate_slice_value(
+            &slice,
+            "Patient",
+            Some("type"),
+            &[],
+            &elements,
+            &HashMap::new(),
+        );
+        assert!(result.is_some());
+        let val = result.unwrap();
+        // Address with pattern_code should have type set
+        assert_eq!(val.get("type").and_then(|v| v.as_str()), Some("home"));
+    }
+
+    #[test]
+    fn test_populate_extension_slices_complex_with_sub_extensions() {
+        let mut resource = json!({"resourceType": "Patient"});
+        let elements = vec![ElementDefinition {
+            id: "Patient.extension:complexExt".into(),
+            path: "Patient.extension".into(),
+            slice_name: Some("complexExt".into()),
+            type_: vec![ElementDefinitionType {
+                code: "Extension".into(),
+                profile: vec!["http://example.org/Extension/ComplexExt".into()],
+                target_profile: vec![],
+                versioning: None,
+            }],
+            ..Default::default()
+        }];
+
+        let ext_def = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Extension/ComplexExt".to_string(),
+            name: "ComplexExt".to_string(),
+            base_type: "Extension".to_string(),
+            kind: "complex-type".to_string(),
+            derivation: None,
+            base_definition: None,
+            snapshot: Some(Snapshot {
+                element: vec![
+                    ElementDefinition {
+                        id: "Extension".into(),
+                        path: "Extension".into(),
+                        ..Default::default()
+                    },
+                    ElementDefinition {
+                        id: "Extension.url".into(),
+                        path: "Extension.url".into(),
+                        fixed_uri: Some("http://example.org/ext/complex".into()),
+                        ..Default::default()
+                    },
+                    ElementDefinition {
+                        id: "Extension.value[x]".into(),
+                        path: "Extension.value[x]".into(),
+                        max: Some("0".into()),
+                        ..Default::default()
+                    },
+                    // Required sub-extension
+                    ElementDefinition {
+                        id: "Extension.extension:requiredSub".into(),
+                        path: "Extension.extension".into(),
+                        slice_name: Some("requiredSub".into()),
+                        min: Some(1),
+                        type_: vec![ElementDefinitionType {
+                            code: "Extension".into(),
+                            profile: vec![],
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        ..Default::default()
+                    },
+                    ElementDefinition {
+                        id: "Extension.extension:requiredSub.url".into(),
+                        path: "Extension.extension.url".into(),
+                        fixed_uri: Some("required-value".into()),
+                        ..Default::default()
+                    },
+                    ElementDefinition {
+                        id: "Extension.extension:requiredSub.value[x]".into(),
+                        path: "Extension.extension.value[x]".into(),
+                        type_: vec![ElementDefinitionType {
+                            code: "string".into(),
+                            profile: vec![],
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        ..Default::default()
+                    },
+                    // Optional sub-extension (min=0) -- should be skipped
+                    ElementDefinition {
+                        id: "Extension.extension:optionalSub".into(),
+                        path: "Extension.extension".into(),
+                        slice_name: Some("optionalSub".into()),
+                        min: Some(0),
+                        type_: vec![ElementDefinitionType {
+                            code: "Extension".into(),
+                            profile: vec![],
+                            target_profile: vec![],
+                            versioning: None,
+                        }],
+                        ..Default::default()
+                    },
+                ],
+            }),
+            differential: None,
+        };
+
+        populate_extension_slices(
+            &mut resource,
+            &elements,
+            "Patient",
+            &[ext_def],
+            &HashMap::new(),
+        );
+        assert!(resource.get("extension").is_some());
+        let exts = resource["extension"].as_array().unwrap();
+        assert_eq!(exts.len(), 1);
+        assert_eq!(exts[0]["url"], "http://example.org/ext/complex");
+        // Should have sub-extensions (only the required one)
+        assert!(exts[0].get("extension").is_some());
+        let sub_exts = exts[0]["extension"].as_array().unwrap();
+        assert_eq!(sub_exts.len(), 1);
+        assert_eq!(sub_exts[0]["url"], "required-value");
+        assert!(sub_exts[0].get("valueString").is_some());
+    }
 }
