@@ -4,6 +4,7 @@ use crate::generate::*;
 use crate::runner::bulk_loader::*;
 use crate::runner::executor::*;
 use crate::runner::response_assertions::assert_response;
+use crate::runner::response_assertions::resolve_json_path;
 use crate::runner::validator::*;
 use anyhow::Result;
 use serde::Serialize;
@@ -543,6 +544,46 @@ impl Orchestrator {
                                 &result.response_body,
                             );
                             result.validation_errors.extend(errors);
+                        }
+
+                        // Forbidden elements validation
+                        if !test.validation.forbidden_elements.is_empty()
+                            && let Some(body) = &result.response_body
+                            && let Some(entries) = body.get("entry").and_then(|v| v.as_array())
+                        {
+                            for field in &test.validation.forbidden_elements {
+                                for entry in entries {
+                                    if let Some(resource) = entry.get("resource")
+                                        && resolve_json_path(resource, field).is_some()
+                                    {
+                                        result.validation_errors.push(format!(
+                                            "Resource contains forbidden element '{}'",
+                                            field
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+
+                        // Required elements validation
+                        if !test.validation.required_elements.is_empty()
+                            && let Some(body) = &result.response_body
+                            && let Some(entries) = body.get("entry").and_then(|v| v.as_array())
+                        {
+                            for field in &test.validation.required_elements {
+                                let found = entries.iter().any(|entry| {
+                                    entry
+                                        .get("resource")
+                                        .and_then(|r| resolve_json_path(r, field))
+                                        .is_some()
+                                });
+                                if !found {
+                                    result.validation_errors.push(format!(
+                                        "Required element '{}' not found in any response entry",
+                                        field
+                                    ));
+                                }
+                            }
                         }
 
                         result.passed = result.passed && result.validation_errors.is_empty();

@@ -463,6 +463,14 @@ fn build_test_group(
             &inline_params,
             created_ids,
         ));
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_elements",
+            "id,meta,name",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
 
         // --- _has (reverse chaining) tests ---
         // For each reference param on this resource, find resources that
@@ -913,9 +921,9 @@ mod tests {
         assert_eq!(operations, 1);
         // 2 negative tests per resource
         assert_eq!(negatives, 2);
-        // 3 result params (_summary, _count, _sort) × 2 variants each (real ID + empty) = 6
-        // + 1 _list test + 1 _query test = 8 total
-        assert_eq!(result_params, 8);
+        // 4 result params (_summary, _count, _sort, _elements) × 2 variants each (real ID + empty) = 8
+        // + 1 _list test + 1 _query test = 10 total
+        assert_eq!(result_params, 10);
 
         // Total should be substantially more than the old 4 interaction + 2 search
         assert!(
