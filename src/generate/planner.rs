@@ -425,11 +425,66 @@ fn build_test_group(
                     &param.to_lowercase(),
                     false,
                     None,
-                    expected_include_type,
+                    expected_include_type.clone(),
+                    profile_url,
+                ));
+
+                // _include:recurse variant
+                tests.push(build_include_recurse_test(
+                    &resource.resource_type,
+                    &param.to_lowercase(),
+                    profile_url,
+                ));
+
+                // _include:iterate variant
+                tests.push(build_include_iterate_test(
+                    &resource.resource_type,
+                    &param.to_lowercase(),
+                    profile_url,
+                ));
+
+                // _include:recurse:iterate combined variant
+                tests.push(build_include_recurse_iterate_test(
+                    &resource.resource_type,
+                    &param.to_lowercase(),
+                    profile_url,
+                ));
+
+                // _include with :targetType variant (when we can resolve the target)
+                if let Some(target_type) = &expected_include_type {
+                    tests.push(build_include_target_type_test(
+                        &resource.resource_type,
+                        &param.to_lowercase(),
+                        target_type,
+                        profile_url,
+                    ));
+                }
+            }
+        }
+
+        // _include=* wildcard test
+        if !resource.search_include.is_empty() {
+            tests.push(build_include_wildcard_test(
+                &resource.resource_type,
+                profile_url,
+            ));
+        }
+
+        // Multiple _include params in one request (when 2+ declared)
+        if resource.search_include.len() >= 2 {
+            let params: Vec<String> = resource.search_include[..2]
+                .iter()
+                .filter_map(|s| s.split_once(':').map(|(_, p)| p.to_lowercase()))
+                .collect();
+            if params.len() >= 2 {
+                tests.push(build_include_multiple_test(
+                    &resource.resource_type,
+                    &params,
                     profile_url,
                 ));
             }
         }
+
         for revinclude_spec in &resource.search_revinclude {
             // Format: "ResourceName:paramName" e.g. "Location:organization"
             if let Some((res, param)) = revinclude_spec.split_once(':') {
@@ -446,7 +501,49 @@ fn build_test_group(
                     None,
                     profile_url,
                 ));
+
+                // _revinclude:recurse variant
+                tests.push(build_revinclude_recurse_test(
+                    &resource.resource_type,
+                    res,
+                    &param.to_lowercase(),
+                    profile_url,
+                ));
+
+                // _revinclude:iterate variant
+                tests.push(build_revinclude_iterate_test(
+                    &resource.resource_type,
+                    res,
+                    &param.to_lowercase(),
+                    profile_url,
+                ));
             }
+        }
+
+        // _revinclude=* wildcard test
+        if !resource.search_revinclude.is_empty() {
+            tests.push(build_revinclude_wildcard_test(
+                &resource.resource_type,
+                profile_url,
+            ));
+        }
+
+        // _include + _revinclude combined test (when both declared)
+        if let (Some(first_include), Some(first_revinclude)) = (
+            resource.search_include.first(),
+            resource.search_revinclude.first(),
+        ) && let (Some((_inc_res, inc_param)), Some((rev_res, rev_param))) = (
+                first_include.split_once(':'),
+                first_revinclude.split_once(':'),
+            )
+        {
+            tests.push(build_include_revinclude_combined_test(
+                &resource.resource_type,
+                &inc_param.to_lowercase(),
+                rev_res,
+                &rev_param.to_lowercase(),
+                profile_url,
+            ));
         }
 
         // --- Result parameter tests ---
