@@ -533,10 +533,9 @@ fn build_test_group(
             resource.search_include.first(),
             resource.search_revinclude.first(),
         ) && let (Some((_inc_res, inc_param)), Some((rev_res, rev_param))) = (
-                first_include.split_once(':'),
-                first_revinclude.split_once(':'),
-            )
-        {
+            first_include.split_once(':'),
+            first_revinclude.split_once(':'),
+        ) {
             tests.push(build_include_revinclude_combined_test(
                 &resource.resource_type,
                 &inc_param.to_lowercase(),
