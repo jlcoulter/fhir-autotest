@@ -706,25 +706,40 @@ pub async fn delete_all_resources(
     let mut total_errors = 0usize;
 
     // Multi-pass wave deletion: keep retrying 409'd resources until done or stuck.
+    // A small delay between passes gives the server time to commit referent deletions.
     let mut last_stuck_count = remaining.len() + 1;
+    let mut consecutive_stuck_passes = 0u32;
     loop {
         if remaining.is_empty() {
             break;
         }
 
         // If we made no progress last pass, we're stuck — log and give up.
+        // Require 2 consecutive stuck passes to avoid giving up too early
+        // when the server is still processing deletes from the previous pass.
         if remaining.len() >= last_stuck_count {
-            for (resource_type, id) in &remaining {
-                tracing::warn!(
-                    "Giving up on deleting {}/{} — still referenced after retry pass",
-                    resource_type,
-                    id,
-                );
+            consecutive_stuck_passes += 1;
+            if consecutive_stuck_passes >= 2 {
+                for (resource_type, id) in &remaining {
+                    tracing::warn!(
+                        "Giving up on deleting {}/{} — still referenced after retry pass",
+                        resource_type,
+                        id,
+                    );
+                }
+                total_errors += remaining.len();
+                break;
             }
-            total_errors += remaining.len();
-            break;
+        } else {
+            consecutive_stuck_passes = 0;
         }
         last_stuck_count = remaining.len();
+
+        // Brief delay between passes so the server can commit referent deletions
+        // before we retry the resources that 409'd.
+        if total_deleted > 0 && !remaining.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
 
         let batch_size = concurrency.max(1);
         let mut still_referenced: Vec<(String, String)> = Vec::new();
