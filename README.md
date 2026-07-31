@@ -261,6 +261,37 @@ output/results/
 
 Each per-group file contains the full `TestResult` array with request method, URL, body, response status, response body, and validation errors.
 
+### Debug Logging
+
+When tests fail unexpectedly, enable debug logging to see the full request/response details:
+
+```bash
+# All debug output (verbose — every HTTP request and response)
+RUST_LOG=debug fhir-autotest
+
+# Only fhir-autotest's own debug messages (less noisy)
+RUST_LOG=fhir_autotest=debug fhir-autotest
+
+# Debug for a specific module
+RUST_LOG=fhir_autotest::runner::executor=debug fhir-autotest
+
+# Debug for mock server interactions
+RUST_LOG=fhir_autotest::mock_server=debug fhir-autotest --mock
+```
+
+The default level is `info`, which shows progress and warnings. Debug output (`RUST_LOG=debug`) adds:
+
+| Module | What's Logged at Debug Level |
+|--------|------------------------------|
+| `executor` | Every HTTP request (method, URL, headers) and response (status, headers, body) for test execution, resource creation, and deletion |
+| `orchestrator` | Per-test pass/fail with validation errors, setup resource creation results, cleanup status |
+| `bulk_loader` | Every PUT/POST/DELETE request during bulk upload and deletion, including response status and body |
+| `mock_server` | Every incoming request to the mock server with the response status code |
+| `profile_resolver` | Package download details (URL, bytes, HTTP status), registry and HL7 fallback responses |
+| `lib` | Package parsing stats, profile counts, creation order, target server URL |
+
+This is especially useful when debugging server errors (4xx/5xx) — the response body from the server (typically an `OperationOutcome`) is logged in full, showing exactly why the server rejected the request.
+
 ---
 
 ## Configuration

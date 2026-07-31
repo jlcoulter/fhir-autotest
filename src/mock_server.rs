@@ -57,6 +57,7 @@ async fn create_resource(
     stamp_meta(&mut body);
     let mut store = store.lock().unwrap();
     store.entry(rtype.clone()).or_default().push(body.clone());
+    tracing::debug!("Mock POST /{} → 201 Created (id={})", rtype, id);
     (StatusCode::CREATED, Json(body))
 }
 
@@ -73,11 +74,13 @@ async fn read_resource(
     {
         // Handle conditional read headers
         if headers.contains_key("if-none-match") || headers.contains_key("if-modified-since") {
-            // Return 304 Not Modified for conditional read tests
+            tracing::debug!("Mock GET /{}/{} → 304 Not Modified", rtype, id);
             return (StatusCode::NOT_MODIFIED, Json(serde_json::json!({})));
         }
+        tracing::debug!("Mock GET /{}/{} → 200 OK", rtype, id);
         return (StatusCode::OK, Json(resource.clone()));
     }
+    tracing::debug!("Mock GET /{}/{} → 404 Not Found", rtype, id);
     (
         StatusCode::NOT_FOUND,
         Json(serde_json::json!({
@@ -405,6 +408,13 @@ async fn search_resources(
         response["total"] = serde_json::json!(total_before_count);
     }
 
+    tracing::debug!(
+        "Mock GET /{}? → 200 OK ({} results, total={})",
+        rtype,
+        resources.len(),
+        total_before_count
+    );
+
     (StatusCode::OK, Json(response))
 }
 
@@ -630,10 +640,16 @@ async fn update_resource(
         .position(|r| r.get("id").and_then(|v| v.as_str()) == Some(&id))
     {
         resources[idx] = body.clone();
+        tracing::debug!("Mock PUT /{}/{} → 200 OK (updated)", rtype, id);
         (StatusCode::OK, Json(body))
     } else {
         // Update-as-create: resource doesn't exist yet, create it
         resources.push(body.clone());
+        tracing::debug!(
+            "Mock PUT /{}/{} → 201 Created (update-as-create)",
+            rtype,
+            id
+        );
         (StatusCode::CREATED, Json(body))
     }
 }
@@ -647,6 +663,7 @@ async fn delete_resource(
         let before = resources.len();
         resources.retain(|r| r.get("id").and_then(|v| v.as_str()) != Some(&id));
         if resources.len() < before {
+            tracing::debug!("Mock DELETE /{}/{} → 200 OK (deleted)", rtype, id);
             return (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -656,6 +673,7 @@ async fn delete_resource(
             );
         }
     }
+    tracing::debug!("Mock DELETE /{}/{} → 404 Not Found", rtype, id);
     (
         StatusCode::NOT_FOUND,
         Json(serde_json::json!({

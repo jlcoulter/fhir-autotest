@@ -91,6 +91,14 @@ impl PackageCache {
             );
         }
 
+        tracing::debug!(
+            "Downloaded FHIR package {}@{} ({} bytes, HTTP {})",
+            package_id,
+            version,
+            response.content_length().unwrap_or(0),
+            response.status().as_u16()
+        );
+
         let bytes = response.bytes().await?;
         std::fs::write(&tgz_path, &bytes)?;
 
@@ -446,13 +454,19 @@ async fn download_profile(url: &str, client: &reqwest::Client) -> Result<Structu
 
     match response {
         Ok(resp) => {
+            tracing::debug!(
+                "Registry download response for {}: HTTP {} ({} bytes)",
+                name,
+                resp.status().as_u16(),
+                resp.content_length().unwrap_or(0)
+            );
             let sd: StructureDefinition = resp.json().await?;
             tracing::info!("Downloaded parent profile: {} ({})", sd.name, sd.url);
             cache_profile(&cache_path, &sd);
             return Ok(sd);
         }
         Err(e) => {
-            tracing::debug!("Registry request failed for {}: {}", url, e);
+            tracing::debug!("Registry request failed for {}: {:#}", url, e);
         }
     }
 
