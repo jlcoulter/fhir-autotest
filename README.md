@@ -466,7 +466,6 @@ GitHub Actions runs `fmt`, `clippy`, `cargo test --all`, and `cargo build --rele
 - **Complex extensions** (nested sub-extensions where `value[x]` is prohibited) are not yet handled — simple extensions with concrete `value[x]` types work correctly
 - **Chained search params** are limited to 2-hop chains with string target params
 - **Combinatorial search** is limited to 2-parameter combinations (configurable depth planned)
-- **`_elements`** is not yet tested
 - **Profile validation** checks top-level required fields and fixed values, not nested field constraints or FHIRPath invariants
 
 ---

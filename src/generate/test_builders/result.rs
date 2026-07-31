@@ -16,6 +16,18 @@ pub(crate) fn summary_absent_fields() -> Vec<String> {
     ]
 }
 
+/// Fields that should be absent when `_elements=id,meta,name` is used.
+/// These are common top-level fields that are not in the requested set
+/// and should be filtered out by the server's _elements handling.
+fn elements_forbidden_fields() -> Vec<String> {
+    vec![
+        "text".to_string(),
+        "contained".to_string(),
+        "extension".to_string(),
+        "modifierExtension".to_string(),
+    ]
+}
+
 pub(crate) fn build_result_param_test(
     resource_type: &str,
     param: &str,
@@ -102,6 +114,11 @@ pub(crate) fn build_result_param_test(
                 }),
                 ..ResponseAssertion::none()
             }),
+            "_elements" => Some(ResponseAssertion {
+                bundle_type: Some("searchset".to_string()),
+                min_entries: Some(1),
+                ..ResponseAssertion::none()
+            }),
             _ => None,
         };
 
@@ -123,7 +140,11 @@ pub(crate) fn build_result_param_test(
                 expected_status: 200,
                 profile_url: None,
                 required_elements: Vec::new(),
-                forbidden_elements: Vec::new(),
+                forbidden_elements: if param == "_elements" {
+                    elements_forbidden_fields()
+                } else {
+                    Vec::new()
+                },
                 response_assertion,
             },
         });
@@ -270,5 +291,56 @@ mod tests {
         let assertion = sort_test.validation.response_assertion.as_ref().unwrap();
         assert_eq!(assertion.sort_by.as_ref().unwrap().field, "birthdate");
         assert_eq!(assertion.sort_by.as_ref().unwrap().direction, "asc");
+    }
+
+    #[test]
+    fn build_result_param_test_elements() {
+        let tests = build_result_param_test(
+            "Patient",
+            "_elements",
+            "id,meta,name",
+            &None,
+            &[],
+            &HashMap::new(),
+        );
+        assert_eq!(
+            tests.len(),
+            2,
+            "Should produce both real-ID and empty-ID variants"
+        );
+
+        // Test A: real-ID variant
+        let real_test = tests.iter().find(|t| !t.name.contains("empty")).unwrap();
+        assert_eq!(real_test.request.method, "GET");
+        assert!(
+            real_test.request.url.contains("?_elements=id,meta,name"),
+            "URL: {}",
+            real_test.request.url
+        );
+        assert!(
+            real_test.request.url.contains("&_id={id}"),
+            "Real URL should have {{id}} placeholder: {}",
+            real_test.request.url
+        );
+        assert_eq!(real_test.name, "patient_result_elements");
+        assert!(
+            matches!(real_test.kind, TestCaseKind::ResultParam { ref param } if param == "_elements")
+        );
+        assert!(
+            !real_test.validation.forbidden_elements.is_empty(),
+            "Should have forbidden elements for _elements test"
+        );
+        assert!(
+            real_test
+                .validation
+                .forbidden_elements
+                .contains(&"text".to_string()),
+            "text should be forbidden"
+        );
+
+        // Test B: empty-ID variant
+        let empty_test = tests.iter().find(|t| t.name.contains("empty")).unwrap();
+        assert!(empty_test.request.url.contains("&_id=nonexistent-id-99999"));
+        assert_eq!(empty_test.name, "patient_result_elements_empty");
     }
 }
