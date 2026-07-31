@@ -486,6 +486,7 @@ impl Orchestrator {
                         request_method: test.request.method.clone(),
                         request_body: test.request.body.clone(),
                         test_group: group.resource_type.clone(),
+                        response_headers: HashMap::new(),
                     });
                     continue;
                 }
@@ -512,6 +513,7 @@ impl Orchestrator {
                         request_method: test.request.method.clone(),
                         request_body: test.request.body.clone(),
                         test_group: group.resource_type.clone(),
+                        response_headers: HashMap::new(),
                     });
                     continue;
                 }
@@ -609,6 +611,7 @@ impl Orchestrator {
                             request_method: test.request.method.clone(),
                             request_body: test.request.body.clone(),
                             test_group: group.resource_type.clone(),
+                            response_headers: HashMap::new(),
                         });
                     }
                 }

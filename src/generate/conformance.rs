@@ -1585,6 +1585,129 @@ pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::m
     }
 }
 
+/// Validate security declarations in a CapabilityStatement.
+///
+/// Checks:
+/// - If `security.cors` is true, CORS headers should be present (best-effort)
+/// - If `security.service` includes OAuth, the OAuth endpoint should be reachable
+pub fn validate_security(cs: &CapabilityStatement) -> CapabilityStatementValidation {
+    let errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    for (i, rest) in cs.rest.iter().enumerate() {
+        if rest.mode != "server" {
+            continue;
+        }
+        if let Some(ref security) = rest.security {
+            if security.cors == Some(true) {
+                warnings.push(format!(
+                    "rest[{}].security.cors is true — CORS headers should be present in responses",
+                    i
+                ));
+            }
+
+            for (j, service) in security.service.iter().enumerate() {
+                if let Some(ref coding) = service.coding
+                    && coding.code.as_deref() == Some("OAuth")
+                {
+                    warnings.push(format!(
+                        "rest[{}].security.service[{}] declares OAuth — OAuth endpoint should be reachable",
+                        i, j
+                    ));
+                }
+            }
+        }
+    }
+
+    CapabilityStatementValidation { errors, warnings }
+}
+
+/// Validate software/implementation metadata in a CapabilityStatement.
+///
+/// Checks:
+/// - `software.name` and `software.version` should be present
+/// - `implementation.description` should be present
+pub fn validate_metadata(cs: &CapabilityStatement) -> CapabilityStatementValidation {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    if let Some(ref sw) = cs.software {
+        if sw.name.as_deref().unwrap_or("").is_empty() {
+            errors.push("CapabilityStatement.software.name is missing or empty".to_string());
+        }
+        if sw.version.as_deref().unwrap_or("").is_empty() {
+            warnings.push("CapabilityStatement.software.version is missing or empty".to_string());
+        }
+    }
+
+    if let Some(ref imp) = cs.implementation
+        && imp.description.as_deref().unwrap_or("").is_empty()
+    {
+        errors
+            .push("CapabilityStatement.implementation.description is missing or empty".to_string());
+    }
+
+    CapabilityStatementValidation { errors, warnings }
+}
+
+/// Validate messaging capabilities in a CapabilityStatement.
+///
+/// Checks:
+/// - `messaging.endpoint` should be present
+/// - `messaging.supportedMessage` types should have valid definitions
+pub fn validate_messaging(cs: &CapabilityStatement) -> CapabilityStatementValidation {
+    let errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    for (i, msg) in cs.messaging.iter().enumerate() {
+        if msg.endpoint.as_deref().unwrap_or("").is_empty() {
+            warnings.push(format!("messaging[{}]: endpoint is missing or empty", i));
+        }
+
+        for (j, sm) in msg.supported_message.iter().enumerate() {
+            if sm.definition.as_deref().unwrap_or("").is_empty() {
+                warnings.push(format!(
+                    "messaging[{}].supportedMessage[{}]: definition is missing or empty",
+                    i, j
+                ));
+            }
+        }
+    }
+
+    CapabilityStatementValidation { errors, warnings }
+}
+
+/// Validate document capabilities in a CapabilityStatement.
+///
+/// Checks:
+/// - `document.mode` should be a valid value
+/// - `document.profile` should be a valid URL
+pub fn validate_document(cs: &CapabilityStatement) -> CapabilityStatementValidation {
+    let errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    for (i, doc) in cs.document.iter().enumerate() {
+        match doc.mode.as_deref() {
+            Some("producer") | Some("consumer") => {}
+            Some(other) => {
+                warnings.push(format!(
+                    "document[{}]: unusual mode '{}' (expected 'producer' or 'consumer')",
+                    i, other
+                ));
+            }
+            None => {
+                warnings.push(format!("document[{}]: mode is missing", i));
+            }
+        }
+
+        if doc.profile.as_deref().unwrap_or("").is_empty() {
+            warnings.push(format!("document[{}]: profile is missing or empty", i));
+        }
+    }
+
+    CapabilityStatementValidation { errors, warnings }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1599,6 +1722,10 @@ mod tests {
             url: Some("http://example.org/CapabilityStatement/test".to_string()),
             name: Some("TestCS".to_string()),
             status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
             rest: vec![Rest {
                 mode: "server".to_string(),
                 resource: vec![RestResource {
@@ -1632,6 +1759,7 @@ mod tests {
                 }],
                 interaction: vec![],
                 operation: vec![],
+                security: None,
             }],
         }
     }
@@ -2162,11 +2290,16 @@ mod tests {
             url: None,
             name: None,
             status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
             rest: vec![Rest {
                 mode: "client".to_string(),
                 resource: vec![],
                 interaction: vec![],
                 operation: vec![],
+                security: None,
             }],
         };
         let result = validate_capability_statement(&cs);

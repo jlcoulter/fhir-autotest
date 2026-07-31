@@ -251,6 +251,25 @@ pub fn generate_test_plan(
                 tests: sys_tests,
             });
         }
+
+        // System-level interaction tests (batch, transaction, history-system, search-system)
+        let system_interaction_codes: Vec<String> =
+            rest.interaction.iter().map(|i| i.code.clone()).collect();
+        if !system_interaction_codes.is_empty() {
+            let mut sys_interaction_tests = Vec::new();
+            for code in &system_interaction_codes {
+                sys_interaction_tests.push(build_system_interaction_test(code));
+            }
+            // Also add a system-level search test if search-system is declared
+            if system_interaction_codes.contains(&"search-system".to_string()) {
+                sys_interaction_tests.push(build_system_search_test());
+            }
+            test_groups.push(TestGroup {
+                resource_type: "$$system_interactions".to_string(),
+                profile_url: None,
+                tests: sys_interaction_tests,
+            });
+        }
     }
 
     let name = cs.name.clone().unwrap_or_else(|| "Unnamed IG".to_string());
@@ -930,6 +949,39 @@ fn build_test_group(
             created_ids,
         ));
 
+        // --- _format parameter tests ---
+        if has_search_type {
+            tests.push(build_format_test(
+                &resource.resource_type,
+                "json",
+                profile_url,
+            ));
+            tests.push(build_format_test(
+                &resource.resource_type,
+                "application/fhir+json",
+                profile_url,
+            ));
+            tests.push(build_format_test(
+                &resource.resource_type,
+                "xml",
+                profile_url,
+            ));
+        }
+
+        // --- _pretty parameter tests ---
+        if has_search_type {
+            tests.push(build_pretty_test(
+                &resource.resource_type,
+                true,
+                profile_url,
+            ));
+            tests.push(build_pretty_test(
+                &resource.resource_type,
+                false,
+                profile_url,
+            ));
+        }
+
         // --- _has (reverse chaining) tests ---
         // For each reference param on this resource, find resources that
         // reference this type and chain into their search params.
@@ -1164,6 +1216,10 @@ mod tests {
             url: Some("http://example.org/CapabilityStatement/test".to_string()),
             name: Some("TestCS".to_string()),
             status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
             rest: vec![Rest {
                 mode: "server".to_string(),
                 resource: vec![RestResource {
@@ -1225,6 +1281,7 @@ mod tests {
                         "http://hl7.org/fhir/uv/bulkdata/OperationDefinition/export".to_string(),
                     ),
                 }],
+                security: None,
             }],
         }
     }
@@ -1452,8 +1509,10 @@ mod tests {
         // + _contained: 1 × 2 = 2
         // + _containedType: 1 × 2 = 2
         // + _getpagesoffset: 1 × 2 = 2
-        // Total result param tests = 10 + 6 + 6 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 = 40
-        assert_eq!(result_params, 40);
+        // + _format (json, application/fhir+json, xml): 3 × 1 = 3 (no empty-ID variant)
+        // + _pretty (true, false): 2 × 1 = 2 (no empty-ID variant)
+        // Total result param tests = 10 + 6 + 6 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 3 + 2 = 45
+        assert_eq!(result_params, 45);
 
         // Total should be substantially more than the old 4 interaction + 2 search
         assert!(
@@ -1540,6 +1599,10 @@ mod tests {
             url: Some("http://example.org/CapabilityStatement/test".to_string()),
             name: Some("TestCS".to_string()),
             status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
             rest: vec![Rest {
                 mode: "server".to_string(),
                 resource: vec![RestResource {
@@ -1573,6 +1636,7 @@ mod tests {
                 }],
                 interaction: vec![],
                 operation: vec![],
+                security: None,
             }],
         };
 

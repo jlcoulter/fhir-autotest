@@ -787,6 +787,102 @@ async fn history_type_handler(
     (StatusCode::OK, Json(response))
 }
 
+/// Handle system-level search (`GET /?_type=...`).
+/// Searches across multiple resource types.
+async fn system_search_handler(
+    State(store): State<MockStore>,
+    Query(params): Query<SearchParams>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let store = store.lock().unwrap();
+
+    // Determine which resource types to search
+    let type_param = params._rest.get("_type");
+    let types: Vec<&str> = type_param
+        .map(|t| t.split(',').collect())
+        .unwrap_or_default();
+
+    let mut all_entries = Vec::new();
+    let mut total = 0usize;
+
+    if types.is_empty() {
+        // No _type filter: search all resource types
+        for (rtype, resources) in store.iter() {
+            for r in resources {
+                all_entries.push(serde_json::json!({
+                    "resource": r,
+                    "fullUrl": format!("http://localhost/fhir/{}/{}", rtype, r["id"].as_str().unwrap_or(""))
+                }));
+                total += 1;
+            }
+        }
+    } else {
+        for t in &types {
+            if let Some(resources) = store.get(*t) {
+                for r in resources {
+                    all_entries.push(serde_json::json!({
+                        "resource": r,
+                        "fullUrl": format!("http://localhost/fhir/{}/{}", t, r["id"].as_str().unwrap_or(""))
+                    }));
+                    total += 1;
+                }
+            }
+        }
+    }
+
+    // Apply _count
+    if let Some(count) = params._count {
+        all_entries.truncate(count as usize);
+    }
+
+    let response = serde_json::json!({
+        "resourceType": "Bundle",
+        "type": "searchset",
+        "total": total,
+        "entry": all_entries
+    });
+
+    (StatusCode::OK, Json(response))
+}
+
+/// Handle batch/transaction operations (`POST /`).
+/// Returns a Bundle with type matching the request.
+async fn batch_transaction_handler(
+    State(_store): State<MockStore>,
+    Json(body): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let bundle_type = body.get("type").and_then(|v| v.as_str()).unwrap_or("batch");
+
+    let response_type = match bundle_type {
+        "batch" => "batch-response",
+        "transaction" => "transaction-response",
+        _ => "batch-response",
+    };
+
+    let entries: Vec<serde_json::Value> = body
+        .get("entry")
+        .and_then(|e| e.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|_entry| {
+                    serde_json::json!({
+                        "response": {
+                            "status": "200 OK"
+                        }
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let response = serde_json::json!({
+        "resourceType": "Bundle",
+        "type": response_type,
+        "entry": entries
+    });
+
+    (StatusCode::OK, Json(response))
+}
+
 /// Build the mock FHIR server axum Router.
 pub fn create_mock_app() -> Router {
     let store: MockStore = Arc::new(Mutex::new(HashMap::new()));
@@ -800,6 +896,11 @@ pub fn create_mock_app() -> Router {
         .route(
             "/fhir/{rtype}/${*op}",
             get(operation_handler_with_type).post(operation_handler_with_type),
+        )
+        // System-level search (GET /) and batch/transaction (POST /)
+        .route(
+            "/fhir/",
+            get(system_search_handler).post(batch_transaction_handler),
         )
         .route("/fhir/{rtype}", post(create_resource))
         .route("/fhir/{rtype}", get(search_resources))

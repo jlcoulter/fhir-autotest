@@ -438,6 +438,100 @@ pub(crate) fn build_read_param_test(
     ]
 }
 
+/// Build a system-level interaction test (e.g., system history, batch, transaction).
+/// System-level interactions are declared in `rest.interaction` with codes like
+/// `history-system`, `search-system`, `batch`, `transaction`.
+pub(crate) fn build_system_interaction_test(code: &str) -> TestCase {
+    let (method, url, expected_status, bundle_type) = match code {
+        "history-system" => (
+            "GET",
+            "/_history".to_string(),
+            0u16,
+            Some("history".to_string()),
+        ),
+        "search-system" => (
+            "GET",
+            "/?_type=Patient,Observation&_count=1".to_string(),
+            0u16,
+            Some("searchset".to_string()),
+        ),
+        "batch" => (
+            "POST",
+            "/".to_string(),
+            0u16,
+            Some("batch-response".to_string()),
+        ),
+        "transaction" => (
+            "POST",
+            "/".to_string(),
+            0u16,
+            Some("transaction-response".to_string()),
+        ),
+        _ => {
+            return TestCase {
+                name: format!("system_interaction_{}", code.replace('-', "_")),
+                kind: TestCaseKind::Interaction,
+                interaction: Interaction::Operation(code.to_string()),
+                resource_type: String::new(),
+                profile_url: None,
+                request: HttpRequest {
+                    method: "GET".to_string(),
+                    url: format!("/{}", code),
+                    headers: HashMap::new(),
+                    body: None,
+                },
+                validation: ValidationSpec {
+                    expected_status: 0,
+                    profile_url: None,
+                    required_elements: Vec::new(),
+                    forbidden_elements: Vec::new(),
+                    response_assertion: None,
+                },
+            };
+        }
+    };
+
+    let body = if code == "batch" || code == "transaction" {
+        Some(serde_json::json!({
+            "resourceType": "Bundle",
+            "type": code,
+            "entry": [{
+                "request": {
+                    "method": "GET",
+                    "url": "Patient/test-id"
+                }
+            }]
+        }))
+    } else {
+        None
+    };
+
+    TestCase {
+        name: format!("system_interaction_{}", code.replace('-', "_")),
+        kind: TestCaseKind::Interaction,
+        interaction: Interaction::Operation(code.to_string()),
+        resource_type: String::new(),
+        profile_url: None,
+        request: HttpRequest {
+            method: method.to_string(),
+            url,
+            headers: HashMap::new(),
+            body,
+        },
+        validation: ValidationSpec {
+            expected_status,
+            profile_url: None,
+            required_elements: Vec::new(),
+            forbidden_elements: Vec::new(),
+            response_assertion: bundle_type.map(|bt| ResponseAssertion {
+                bundle_type: Some(bt),
+                min_entries: Some(0),
+                ..ResponseAssertion::none()
+            }),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
