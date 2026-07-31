@@ -691,7 +691,7 @@ pub async fn delete_all_resources(
 
             for chunk in type_ids.chunks(batch_size) {
                 let mut handles: Vec<(
-                    tokio::task::JoinHandle<Result<u16, anyhow::Error>>,
+                    tokio::task::JoinHandle<Result<(u16, Option<String>), anyhow::Error>>,
                     String,
                 )> = Vec::new();
 
@@ -703,10 +703,32 @@ pub async fn delete_all_resources(
 
                     handles.push((
                         tokio::spawn(async move {
-                            let resp = repo_client
-                                .delete_resource(&resource_type, &id_clone)
-                                .await?;
-                            Ok::<u16, anyhow::Error>(resp.status().as_u16())
+                            // Retry up to 3 times on 409 (referential integrity conflict)
+                            let mut last_body = None;
+                            for attempt in 0..3 {
+                                let resp = repo_client
+                                    .delete_resource(&resource_type, &id_clone)
+                                    .await?;
+                                let status = resp.status().as_u16();
+                                if status == 409 {
+                                    last_body = resp.text().await.ok();
+                                    if attempt < 2 {
+                                        tokio::time::sleep(
+                                            std::time::Duration::from_millis(200 * (attempt + 1)),
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                }
+                                let body = if status == 409 {
+                                    last_body
+                                } else {
+                                    None
+                                };
+                                return Ok::<(u16, Option<String>), anyhow::Error>((status, body));
+                            }
+                            // Unreachable — loop always returns
+                            unreachable!()
                         }),
                         id,
                     ));
@@ -714,10 +736,22 @@ pub async fn delete_all_resources(
 
                 for (handle, id_for_log) in handles {
                     match handle.await {
-                        Ok(Ok(200 | 204 | 404 | 410)) => {
+                        Ok(Ok((200 | 204 | 404 | 410, _))) => {
                             deleted += 1;
                         }
-                        Ok(Ok(status)) => {
+                        Ok(Ok((409, body))) => {
+                            errors += 1;
+                            let detail = body
+                                .as_deref()
+                                .unwrap_or("(no body)");
+                            tracing::warn!(
+                                "Conflict (409) when deleting {}/{} — still referenced: {}",
+                                resource_type,
+                                id_for_log,
+                                detail,
+                            );
+                        }
+                        Ok(Ok((status, _))) => {
                             errors += 1;
                             tracing::warn!(
                                 "Unexpected status {} when deleting {}/{}",
