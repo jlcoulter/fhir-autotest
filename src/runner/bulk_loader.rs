@@ -5,6 +5,12 @@ use std::io::BufRead;
 use std::path::Path;
 use std::sync::Arc;
 
+/// A spawned delete task paired with the resource id for logging.
+type DeleteHandle = (
+    tokio::task::JoinHandle<Result<(u16, Option<String>), anyhow::Error>>,
+    String,
+);
+
 /// HL7 R5 extension StructureDefinitions that the HCPD profile references for slicing.
 /// These must be available in the HAPI validator's registry or validation of Practitioner
 /// resources will fail with "Slicing cannot be evaluated" errors.
@@ -690,10 +696,7 @@ pub async fn delete_all_resources(
             let batch_size = concurrency.max(1);
 
             for chunk in type_ids.chunks(batch_size) {
-                let mut handles: Vec<(
-                    tokio::task::JoinHandle<Result<(u16, Option<String>), anyhow::Error>>,
-                    String,
-                )> = Vec::new();
+                let mut handles: Vec<DeleteHandle> = Vec::new();
 
                 for id in chunk {
                     let repo_client = repo_client.clone();
