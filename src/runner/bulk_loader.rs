@@ -713,18 +713,14 @@ pub async fn delete_all_resources(
                                 if status == 409 {
                                     last_body = resp.text().await.ok();
                                     if attempt < 2 {
-                                        tokio::time::sleep(
-                                            std::time::Duration::from_millis(200 * (attempt + 1)),
-                                        )
+                                        tokio::time::sleep(std::time::Duration::from_millis(
+                                            200 * (attempt + 1),
+                                        ))
                                         .await;
                                         continue;
                                     }
                                 }
-                                let body = if status == 409 {
-                                    last_body
-                                } else {
-                                    None
-                                };
+                                let body = if status == 409 { last_body } else { None };
                                 return Ok::<(u16, Option<String>), anyhow::Error>((status, body));
                             }
                             // Unreachable — loop always returns
@@ -741,9 +737,7 @@ pub async fn delete_all_resources(
                         }
                         Ok(Ok((409, body))) => {
                             errors += 1;
-                            let detail = body
-                                .as_deref()
-                                .unwrap_or("(no body)");
+                            let detail = body.as_deref().unwrap_or("(no body)");
                             tracing::warn!(
                                 "Conflict (409) when deleting {}/{} — still referenced: {}",
                                 resource_type,
