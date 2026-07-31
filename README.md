@@ -50,12 +50,18 @@ For every resource type declared in a server-mode CapabilityStatement, `fhir-aut
 | **Search parameters** | One test per declared search param with real values from generated resources | `GET /Patient?name=Smith&_id={id}` |
 | **Search modifiers** | Type-appropriate modifiers on every param | `:exact`, `:contains` on strings; `:missing` on all types; `:not`, `:text` on tokens |
 | **Search prefixes** | All 9 FHIR prefixes on date/number/quantity params | `?birthdate=gt2024-01-01`, `?value-quantity=le5.0` |
+| **Declared comparators/modifiers** | Tests only the comparators and modifiers declared by each SearchParameter | `?birthdate=gt2024-01-01` (only if `comparator` includes `gt`) |
 | **Near searches** | Proximity queries for `special`-type params | `GET /Location?near=-33.86%7C151.21%7C10%7Ckm` |
+| **Composite search** | Composite params with `$`-separated values | `?coordinate=x$y` |
 | **Combinatorial search** | All 2-parameter combinations within a resource type | `?name=Smith&birthdate=2024-01-01` |
 | **Chained search** | Reference params chained into target resource params | `?subject.name=Smith` |
+| **Chained search with modifiers** | Modifiers on the target param of a chained search | `?subject.name:exact=Smith` |
+| **Multi-hop chained search** | 3-hop chains through reference params | `?subject.managingOrganization.name=Smith` |
 | **`_include` / `_revinclude`** | From the CS's `searchInclude` and `searchRevInclude` declarations | `?_include=Patient:organization`, `?_revinclude=Location:organization` |
-| **Result parameters** | `_summary`, `_count`, `_sort` on every searchable resource | `?_summary=true`, `?_count=1`, `?_sort=_lastUpdated` |
+| **`_include`/`_revinclude` variants** | Wildcard, `:recurse`, `:iterate`, `:recurse:iterate`, `:targetType`, multiple includes, combined include+revinclude | `?_include=*`, `?_include:recurse=Patient:organization`, `?_include:iterate=Patient:organization` |
+| **Result parameters** | `_summary` (true/count/text/data), `_count` (N/0), `_sort` (single/multi-field), `_elements`/`_elements:exclude`, `_total` (none/accurate/estimate), `_filter`, `_source`, `_language`, `_contained`/`_containedType`, `_getpagesoffset`, `_list`, `_query`, `_format` (json/xml), `_pretty` | `?_summary=count`, `?_count=0`, `?_total=accurate`, `?_format=xml` |
 | **`$operations`** | Resource-level and system-level operations from the CS | `POST /Patient/$everything`, `POST /$export` |
+| **System-level interactions** | `batch`, `transaction`, `history-system`, `search-system` | `POST /` (batch), `GET /_history`, `GET /?_type=Patient` |
 | **Negative tests** | Read nonexistent ID, search with invalid parameter name | `GET /Patient/nonexistent-id-99999` → 404 |
 
 ### Conformance Tests (Responder Obligations)
@@ -65,23 +71,48 @@ These verify the server actually meets the obligations it declares — driven en
 | Category | What It Checks |
 |----------|---------------|
 | **CS validation** | CapabilityStatement has required fields (`status`, server-mode `rest`, resource `type`, search param `name`/`type`) |
+| **Security validation** | CORS headers when `security.cors=true`; OAuth endpoint reachability when OAuth is declared |
+| **Software/implementation metadata** | `software.name`/`version` and `implementation.description` are present |
+| **Messaging validation** | `messaging.endpoint` and `supportedMessage.definition` are present |
+| **Document validation** | `document.mode` is valid (producer/consumer) and `document.profile` is present |
 | **MustSupport presence** | Fields marked `mustSupport=true` in declared profiles appear in search responses |
 | **Cardinality enforcement** | `min`/`max` constraints from profile ElementDefinitions are respected |
+| **FHIRPath invariant validation** | Constraints with `severity=error` checked via field-existence patterns (best-effort) |
+| **Binding strength validation** | Required-binding fields must use values from the bound ValueSet |
+| **Fixed/pattern value validation** | Fields with `fixed[x]` or `pattern[x]` must match the profile definition |
+| **Slice validation** | Sliced elements must match discriminator patterns |
+| **Extension validation** | Extensions must match profile-defined URLs |
+| **Type constraint validation** | Polymorphic `value[x]` fields must use allowed types |
+| **Reference target validation** | Reference fields should point to resources with matching `meta.profile` |
+| **Search param expression validation** | SearchParameter expressions resolve to valid field paths in responses |
+| **Search param target type validation** | Reference search params only return resources of declared target types |
 | **Undeclared interaction rejection** | Interactions NOT in the CS are rejected by the server |
 | **Undeclared search param handling** | Unknown search parameters are either rejected or silently ignored (both are valid per FHIR spec) |
+| **Versioning conformance** | When `versioning=versioned`/`versioned-update`, resources have `meta.versionId` |
+| **readHistory conformance** | When `readHistory=true`, vread returns resources with `meta.versionId` |
+| **Conditional read** | `If-Modified-Since` and `If-None-Match` headers when `conditionalRead` is declared |
+| **Conditional delete** | `DELETE /{type}?identifier=...` when `conditionalDelete` is declared |
+| **updateCreate** | `PUT` to a new ID creates the resource when `updateCreate=true` |
+| **History parameters** | `_since`, `_count`, `_at` on instance-level and type-level history |
+| **Operation output params** | Response contains declared output parameters |
+| **Operation affectsState** | Operations with `affectsState=false` are safe to call (no side effects) |
+| **Operation idempotency** | Operations with `idempotent=true` return the same result on repeated calls |
+| **Operation error handling** | Operations with required input params reject requests that omit them |
+| **Operation scope validation** | Operations reject requests at undeclared scopes (system/type/instance) |
 
 ### Response Assertions
 
 Every test validates responses beyond HTTP status codes:
 
 - **Bundle structure**: `type` must be `"searchset"` for search responses
-- **Entry counts**: `_count` tests verify entries ≤ requested count
+- **Entry counts**: `_count` tests verify entries ≤ requested count; `_count=0` verifies Bundle with total but no entries
 - **Resource types**: `_include`/`_revinclude` results contain expected target types
 - **Field values**: Response fields match values from generated resources
 - **MustSupport presence**: Required fields exist in responses regardless of value
-- **Sort order**: `_sort` results are ordered by the specified field and direction
-- **Summary mode**: `_summary=true` strips narrative `text` and preserves `id`/`meta`
+- **Sort order**: `_sort` results are ordered by the specified field and direction (including multi-field sort)
+- **Summary mode**: `_summary=true` strips narrative `text` and preserves `id`/`meta`; `_summary=count` returns Bundle with total only
 - **Operation outcomes**: Error responses carry the expected severity
+- **Include distinctness**: `_include=*` results are distinct from the primary search results
 
 ---
 
@@ -385,7 +416,7 @@ Total: 339 | Passed: 287 | Failed: 52
 | **IG coverage** | One test kit per IG | Any FHIR R4 IG package |
 | **Profile awareness** | Manual assertions | Auto-generated from StructureDefinitions |
 | **Search param coverage** | Manual per-param tests | Exhaustive: every param × every modifier × every prefix |
-| **Conformance tests** | Manual | Auto-generated: MustSupport, cardinality, undeclared interactions |
+| **Conformance tests** | Manual | Auto-generated: MustSupport, cardinality, undeclared interactions, FHIRPath invariants, binding strength, fixed/pattern values, slices, extensions, type constraints, reference targets, expression validation, target types, versioning, readHistory, conditional operations, updateCreate, history params, operation output/affectsState/idempotent/error/scope validation, security, metadata, messaging, document |
 | **Bulk data** | Manual setup | Auto-generated NDJSON with cross-references |
 | **Setup/teardown** | Manual | Automatic resource creation and cleanup |
 | **Scope** | Full certification testing | Automatable conformance testing |
