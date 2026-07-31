@@ -250,6 +250,56 @@ fn build_test_group(
             profile_url,
         ));
     }
+    // If the server declares conditionalRead (not "not-supported"), generate tests
+    // with If-Modified-Since and If-None-Match headers.
+    if let Some(ref cr) = resource.conditional_read
+        && cr != "not-supported"
+    {
+        tests.extend(build_conditional_read_test(
+            &resource.resource_type,
+            profile_url,
+        ));
+    }
+    // If the server declares conditionalDelete (single or multiple), generate a
+    // conditional delete test.
+    if let Some(ref cd) = resource.conditional_delete
+        && cd != "not-supported"
+    {
+        tests.push(build_conditional_delete_test(
+            &resource.resource_type,
+            profile_url,
+        ));
+    }
+    // If the server declares updateCreate, generate an update-as-create test.
+    if resource.update_create == Some(true) {
+        tests.push(build_update_create_test(
+            &resource.resource_type,
+            profile_url,
+        ));
+    }
+
+    // --- History parameter tests ---
+    // Generate history param tests when history-instance or history-type is declared.
+    let has_history_instance = resource
+        .interaction
+        .iter()
+        .any(|i| i.code == "history-instance");
+    let has_history_type = resource
+        .interaction
+        .iter()
+        .any(|i| i.code == "history-type");
+    if has_history_instance || has_history_type {
+        tests.extend(build_history_param_test(
+            &resource.resource_type,
+            profile_url,
+        ));
+    }
+
+    // --- Read parameter tests ---
+    // Generate read param tests (_elements, _summary) when read is declared.
+    if has_read {
+        tests.extend(build_read_param_test(&resource.resource_type, profile_url));
+    }
 
     if has_search_type {
         // --- Search param tests ---
@@ -950,6 +1000,7 @@ mod tests {
                     }],
                     read_history: None,
                     update_create: None,
+                    versioning: None,
                     conditional_create: None,
                     conditional_read: None,
                     conditional_update: None,
@@ -1150,7 +1201,8 @@ mod tests {
             .count();
 
         // Patient: read, create, update = 3 interactions (search-type handled separately)
-        assert_eq!(interactions, 3);
+        // + 2 read param tests (_elements, _summary) = 5 total
+        assert_eq!(interactions, 5);
         // 2 inline search params → 2 single tests
         assert_eq!(single_search, 2);
         // name is string → :exact, :contains (2); birthdate is date → :missing (1)
@@ -1296,6 +1348,7 @@ mod tests {
                     operation: vec![],
                     read_history: None,
                     update_create: None,
+                    versioning: None,
                     conditional_create: None,
                     conditional_read: None,
                     conditional_update: None,

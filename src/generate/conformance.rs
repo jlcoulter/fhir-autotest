@@ -171,6 +171,7 @@ pub fn generate_conformance_tests(
             }
 
             let has_search_type = resource.interaction.iter().any(|i| i.code == "search-type");
+            let has_read = resource.interaction.iter().any(|i| i.code == "read");
 
             // --- MustSupport field presence tests ---
             // Find a matching profile: prefer one referenced by the CS,
@@ -377,6 +378,71 @@ pub fn generate_conformance_tests(
                         expect_operation_outcome: true,
                     },
                 });
+            }
+
+            // --- versioning conformance tests ---
+            // When versioning is declared as "versioned" or "versioned-update",
+            // the server should return meta.versionId on resources.
+            if let Some(ref versioning) = resource.versioning
+                && (versioning == "versioned" || versioning == "versioned-update")
+                && has_read
+            {
+                tests.push(ConformanceTest {
+                    name: format!("{}_versioning", resource.resource_type),
+                    description: format!(
+                        "Verify that versioning '{}' is respected: resources should have meta.versionId",
+                        versioning
+                    ),
+                    resource_type: resource.resource_type.clone(),
+                    kind: ConformanceTestKind::MustSupportPresence {
+                        field_path: "meta.versionId".to_string(),
+                    },
+                    request: ConformanceRequest {
+                        method: "GET".to_string(),
+                        url: format!("/{}/{{id}}", resource.resource_type),
+                        headers: std::collections::HashMap::new(),
+                        body: None,
+                    },
+                    assertion: ConformanceAssertion {
+                        expected_status: 200,
+                        must_contain_fields: vec!["meta.versionId".to_string()],
+                        must_not_contain_fields: vec![],
+                        min_entries: None,
+                        bundle_type: None,
+                        expect_operation_outcome: false,
+                    },
+                });
+            }
+
+            // --- readHistory conformance tests ---
+            // When readHistory is true, the server should support vread
+            // (version-aware reads).
+            if resource.read_history == Some(true) {
+                let has_vread = resource.interaction.iter().any(|i| i.code == "vread");
+                if has_vread {
+                    tests.push(ConformanceTest {
+                        name: format!("{}_read_history", resource.resource_type),
+                        description: "Verify that readHistory is respected: vread should return a resource with meta.versionId".to_string(),
+                        resource_type: resource.resource_type.clone(),
+                        kind: ConformanceTestKind::MustSupportPresence {
+                            field_path: "meta.versionId".to_string(),
+                        },
+                        request: ConformanceRequest {
+                            method: "GET".to_string(),
+                            url: format!("/{}/{{id}}/_history/1", resource.resource_type),
+                            headers: std::collections::HashMap::new(),
+                            body: None,
+                        },
+                        assertion: ConformanceAssertion {
+                            expected_status: 200,
+                            must_contain_fields: vec!["meta.versionId".to_string()],
+                            must_not_contain_fields: vec![],
+                            min_entries: None,
+                            bundle_type: None,
+                            expect_operation_outcome: false,
+                        },
+                    });
+                }
             }
         }
     }
@@ -591,6 +657,7 @@ mod tests {
                     operation: vec![],
                     read_history: None,
                     update_create: None,
+                    versioning: None,
                     conditional_create: None,
                     conditional_read: None,
                     conditional_update: None,

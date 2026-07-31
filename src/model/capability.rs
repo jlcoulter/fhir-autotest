@@ -40,6 +40,8 @@ pub struct RestResource {
     pub read_history: Option<bool>,
     #[serde(rename = "updateCreate", default)]
     pub update_create: Option<bool>,
+    #[serde(default)]
+    pub versioning: Option<String>,
     #[serde(rename = "conditionalCreate", default)]
     pub conditional_create: Option<bool>,
     #[serde(rename = "conditionalRead", default)]

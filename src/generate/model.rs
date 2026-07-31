@@ -84,6 +84,13 @@ pub struct ResponseAssertion {
     /// - None: no summary mode assertion
     #[serde(default)]
     pub summary_mode: Option<String>,
+
+    /// Alternative acceptable HTTP status codes beyond `expected_status`.
+    /// Used for features where multiple status codes are valid (e.g. conditional
+    /// read may return 200 or 304). When non-empty, the test passes if the
+    /// actual status matches any of these codes OR the `expected_status`.
+    #[serde(default)]
+    pub accept_statuses: Vec<u16>,
 }
 
 /// Sort direction assertion for _sort tests.
@@ -116,6 +123,7 @@ impl ResponseAssertion {
             response_resource_types: Vec::new(),
             bundle_total_present: None,
             summary_mode: None,
+            accept_statuses: Vec::new(),
         }
     }
 }
