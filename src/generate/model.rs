@@ -69,6 +69,21 @@ pub struct ResponseAssertion {
     /// resource types (e.g. Parameters, Bundle, OperationOutcome).
     #[serde(default)]
     pub response_resource_types: Vec<String>,
+
+    /// For _total: whether the Bundle MUST have a `total` field.
+    /// - Some(true): Bundle MUST have `total` present
+    /// - Some(false): Bundle MUST NOT have `total` present
+    /// - None: no assertion about `total`
+    #[serde(default)]
+    pub bundle_total_present: Option<bool>,
+
+    /// For _summary variants: what summary mode was requested.
+    /// - "count": Bundle must have `total` but no `entry` (or empty `entry`)
+    /// - "text": Resources must have `text` field
+    /// - "data": Resources must NOT have `text` field
+    /// - None: no summary mode assertion
+    #[serde(default)]
+    pub summary_mode: Option<String>,
 }
 
 /// Sort direction assertion for _sort tests.
@@ -76,6 +91,10 @@ pub struct ResponseAssertion {
 pub struct SortAssertion {
     pub field: String,
     pub direction: String, // "asc" or "desc"
+    /// Additional sort fields for multi-field _sort (e.g. _sort=field1,field2).
+    /// The primary `field` is the first sort field; these are the subsequent ones.
+    #[serde(default)]
+    pub additional_fields: Vec<String>,
 }
 
 impl ResponseAssertion {
@@ -95,6 +114,8 @@ impl ResponseAssertion {
             required_fields: HashMap::new(),
             response_contains_key: None,
             response_resource_types: Vec::new(),
+            bundle_total_present: None,
+            summary_mode: None,
         }
     }
 }

@@ -82,6 +82,17 @@ pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<Re
                 max_entries: Some(1), // we request _count=1
                 ..ResponseAssertion::none()
             }),
+            "_total" => Some(ResponseAssertion {
+                bundle_type: Some("searchset".to_string()),
+                min_entries: Some(0),
+                ..ResponseAssertion::none()
+            }),
+            "_filter" | "_source" | "_language" | "_contained" | "_containedType"
+            | "_getpagesoffset" => Some(ResponseAssertion {
+                bundle_type: Some("searchset".to_string()),
+                min_entries: Some(0),
+                ..ResponseAssertion::none()
+            }),
             _ => Some(ResponseAssertion {
                 bundle_type: Some("searchset".to_string()),
                 min_entries: Some(0),
@@ -467,6 +478,150 @@ fn build_test_group(
             &resource.resource_type,
             "_elements",
             "id,meta,name",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+
+        // --- _summary variants ---
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_summary",
+            "count",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_summary",
+            "text",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_summary",
+            "data",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+
+        // --- _total variants ---
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_total",
+            "none",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_total",
+            "accurate",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_total",
+            "estimate",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+
+        // --- _count=0 (count-only search) ---
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_count",
+            "0",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+
+        // --- _elements:exclude ---
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_elements:exclude",
+            "text,contained",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+
+        // --- Multi-field _sort ---
+        // Use two declared params if available, otherwise skip
+        if inline_params.len() >= 2 {
+            let sort_value = format!("{},{}", inline_params[0].name, inline_params[1].name);
+            tests.extend(build_result_param_test(
+                &resource.resource_type,
+                "_sort",
+                &sort_value,
+                profile_url,
+                &inline_params,
+                created_ids,
+            ));
+        }
+
+        // --- _filter (advanced filtering DSL) ---
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_filter",
+            "name+eq+Smith",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+
+        // --- _source ---
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_source",
+            "urn:source:test",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+
+        // --- _language ---
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_language",
+            "en",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+
+        // --- _contained / _containedType ---
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_contained",
+            "true",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_containedType",
+            "container",
+            profile_url,
+            &inline_params,
+            created_ids,
+        ));
+
+        // --- _getpagesoffset ---
+        tests.extend(build_result_param_test(
+            &resource.resource_type,
+            "_getpagesoffset",
+            "0",
             profile_url,
             &inline_params,
             created_ids,
@@ -923,7 +1078,19 @@ mod tests {
         assert_eq!(negatives, 2);
         // 4 result params (_summary, _count, _sort, _elements) × 2 variants each (real ID + empty) = 8
         // + 1 _list test + 1 _query test = 10 total
-        assert_eq!(result_params, 10);
+        // + _summary count/text/data variants: 3 × 2 = 6
+        // + _total none/accurate/estimate: 3 × 2 = 6
+        // + _count=0: 1 × 2 = 2
+        // + _elements:exclude: 1 × 2 = 2
+        // + multi-field _sort: 1 × 2 = 2
+        // + _filter: 1 × 2 = 2
+        // + _source: 1 × 2 = 2
+        // + _language: 1 × 2 = 2
+        // + _contained: 1 × 2 = 2
+        // + _containedType: 1 × 2 = 2
+        // + _getpagesoffset: 1 × 2 = 2
+        // Total result param tests = 10 + 6 + 6 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 = 40
+        assert_eq!(result_params, 40);
 
         // Total should be substantially more than the old 4 interaction + 2 search
         assert!(

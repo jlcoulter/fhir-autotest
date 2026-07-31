@@ -84,41 +84,107 @@ pub(crate) fn build_result_param_test(
 
     let mut tests = Vec::new();
 
+    // Determine expected status: 0 (accept any) for params servers may not support
+    let expected_status: u16 = match param {
+        "_filter" | "_source" | "_language" | "_contained" | "_containedType"
+        | "_getpagesoffset" => 0,
+        _ => 200,
+    };
+
     // Test A: with real resource ID (uses {id} placeholder resolved at runtime)
-    // This exercises the result param behaviour on actual data.
-    // The {id} placeholder is resolved at runtime by the orchestrator; if no
-    // resource was created for this type, the test is skipped gracefully.
     {
         let url = format!("/{resource_type}?{actual_param}={actual_value}&_id={{id}}");
 
         let response_assertion = match param {
-            "_count" => Some(ResponseAssertion {
-                bundle_type: Some("searchset".to_string()),
-                min_entries: Some(1),
-                max_entries: Some(1),
-                ..ResponseAssertion::none()
-            }),
-            "_summary" => Some(ResponseAssertion {
-                bundle_type: Some("searchset".to_string()),
-                min_entries: Some(1),
-                absent_fields: summary_absent_fields(),
-                ..ResponseAssertion::none()
-            }),
-            "_sort" => Some(ResponseAssertion {
-                bundle_type: Some("searchset".to_string()),
-                sort_by: Some(SortAssertion {
-                    field: sort_field
-                        .clone()
-                        .unwrap_or_else(|| "_lastUpdated".to_string()),
-                    direction: "asc".to_string(),
-                }),
-                ..ResponseAssertion::none()
-            }),
+            "_count" => {
+                if value == "0" {
+                    // _count=0: Bundle with total but no entries
+                    Some(ResponseAssertion {
+                        bundle_type: Some("searchset".to_string()),
+                        bundle_total_present: Some(true),
+                        max_entries: Some(0),
+                        ..ResponseAssertion::none()
+                    })
+                } else {
+                    Some(ResponseAssertion {
+                        bundle_type: Some("searchset".to_string()),
+                        min_entries: Some(1),
+                        max_entries: Some(1),
+                        ..ResponseAssertion::none()
+                    })
+                }
+            }
+            "_summary" => {
+                if value == "count" {
+                    Some(ResponseAssertion {
+                        bundle_type: Some("searchset".to_string()),
+                        bundle_total_present: Some(true),
+                        max_entries: Some(0),
+                        summary_mode: Some("count".to_string()),
+                        ..ResponseAssertion::none()
+                    })
+                } else if value == "text" {
+                    // _summary=text: servers may or may not add a Narrative
+                    // to resources that lack one. Accept any status.
+                    Some(ResponseAssertion {
+                        bundle_type: Some("searchset".to_string()),
+                        min_entries: Some(0),
+                        ..ResponseAssertion::none()
+                    })
+                } else if value == "data" {
+                    // _summary=data: servers may or may not strip text.
+                    // Accept any status.
+                    Some(ResponseAssertion {
+                        bundle_type: Some("searchset".to_string()),
+                        min_entries: Some(0),
+                        ..ResponseAssertion::none()
+                    })
+                } else {
+                    // _summary=true (original behaviour)
+                    Some(ResponseAssertion {
+                        bundle_type: Some("searchset".to_string()),
+                        min_entries: Some(1),
+                        absent_fields: summary_absent_fields(),
+                        ..ResponseAssertion::none()
+                    })
+                }
+            }
+            "_sort" => {
+                // For multi-field sort, check if value contains commas
+                let fields: Vec<&str> = value.split(',').collect();
+                let primary = fields.first().unwrap_or(&"_lastUpdated").to_string();
+                let additional: Vec<String> =
+                    fields.iter().skip(1).map(|s| s.to_string()).collect();
+                Some(ResponseAssertion {
+                    bundle_type: Some("searchset".to_string()),
+                    sort_by: Some(SortAssertion {
+                        field: sort_field.clone().unwrap_or(primary),
+                        direction: "asc".to_string(),
+                        additional_fields: additional,
+                    }),
+                    ..ResponseAssertion::none()
+                })
+            }
             "_elements" => Some(ResponseAssertion {
                 bundle_type: Some("searchset".to_string()),
                 min_entries: Some(1),
                 ..ResponseAssertion::none()
             }),
+            "_total" => {
+                if value == "none" {
+                    Some(ResponseAssertion {
+                        bundle_type: Some("searchset".to_string()),
+                        bundle_total_present: Some(false),
+                        ..ResponseAssertion::none()
+                    })
+                } else {
+                    Some(ResponseAssertion {
+                        bundle_type: Some("searchset".to_string()),
+                        bundle_total_present: Some(true),
+                        ..ResponseAssertion::none()
+                    })
+                }
+            }
             _ => None,
         };
 
@@ -137,11 +203,13 @@ pub(crate) fn build_result_param_test(
                 body: None,
             },
             validation: ValidationSpec {
-                expected_status: 200,
+                expected_status,
                 profile_url: None,
                 required_elements: Vec::new(),
                 forbidden_elements: if param == "_elements" {
                     elements_forbidden_fields()
+                } else if param == "_elements:exclude" {
+                    vec!["text".to_string(), "contained".to_string()]
                 } else {
                     Vec::new()
                 },
@@ -151,16 +219,19 @@ pub(crate) fn build_result_param_test(
     }
 
     // Test B: with nonexistent ID — always returns empty Bundle
-    // Verifies Bundle structure on empty results.
     let url_empty =
         format!("/{resource_type}?{actual_param}={actual_value}&_id=nonexistent-id-99999");
 
     let response_assertion_empty = if param == "_sort" {
+        let fields: Vec<&str> = value.split(',').collect();
+        let primary = fields.first().unwrap_or(&"_lastUpdated").to_string();
+        let additional: Vec<String> = fields.iter().skip(1).map(|s| s.to_string()).collect();
         Some(ResponseAssertion {
             bundle_type: Some("searchset".to_string()),
             sort_by: Some(SortAssertion {
-                field: sort_field.unwrap_or_else(|| "_lastUpdated".to_string()),
+                field: sort_field.unwrap_or(primary),
                 direction: "asc".to_string(),
+                additional_fields: additional,
             }),
             ..ResponseAssertion::none()
         })
@@ -183,7 +254,7 @@ pub(crate) fn build_result_param_test(
             body: None,
         },
         validation: ValidationSpec {
-            expected_status: 200,
+            expected_status,
             profile_url: None,
             required_elements: Vec::new(),
             forbidden_elements: Vec::new(),

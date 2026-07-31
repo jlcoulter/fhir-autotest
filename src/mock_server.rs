@@ -95,6 +95,20 @@ struct SearchParams {
     _revinclude: Option<String>,
     #[serde(default)]
     _elements: Option<String>,
+    #[serde(default)]
+    _total: Option<String>,
+    #[serde(default)]
+    _filter: Option<String>,
+    #[serde(default)]
+    _source: Option<String>,
+    #[serde(default)]
+    _language: Option<String>,
+    #[serde(default)]
+    _contained: Option<String>,
+    #[serde(default, rename = "_containedType")]
+    _contained_type: Option<String>,
+    #[serde(default)]
+    _getpagesoffset: Option<u32>,
     // Accept any other params without erroring
     #[serde(flatten)]
     _rest: HashMap<String, String>,
@@ -184,20 +198,40 @@ async fn search_resources(
     }
 
     // Apply _summary
-    if params._summary.as_deref() == Some("true") {
-        resources = resources
-            .into_iter()
-            .map(|r| {
-                let summary = serde_json::json!({
-                    "resourceType": r["resourceType"],
-                    "id": r["id"],
-                    "meta": r["meta"],
-                });
-                // Preserve any fields explicitly marked as summary elements
-                // For now, keep id, meta, resourceType as per FHIR _summary=true
-                summary
-            })
-            .collect();
+    match params._summary.as_deref() {
+        Some("true") => {
+            resources = resources
+                .into_iter()
+                .map(|r| {
+                    let summary = serde_json::json!({
+                        "resourceType": r["resourceType"],
+                        "id": r["id"],
+                        "meta": r["meta"],
+                    });
+                    summary
+                })
+                .collect();
+        }
+        Some("count") => {
+            // _summary=count: return total but no entries
+            // Resources are cleared; total is preserved
+            resources.clear();
+        }
+        Some("text") => {
+            // _summary=text: ensure text field is present
+            // (no-op in mock — resources already have their fields)
+        }
+        Some("data") => {
+            // _summary=data: remove text field from resources
+            resources = resources
+                .into_iter()
+                .map(|mut r| {
+                    r.as_object_mut().map(|obj| obj.remove("text"));
+                    r
+                })
+                .collect();
+        }
+        _ => {}
     }
 
     // Apply _elements
@@ -306,15 +340,20 @@ async fn search_resources(
         }
     }
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "resourceType": "Bundle",
-            "type": "searchset",
-            "total": total_before_count,
-            "entry": entries
-        })),
-    )
+    // Handle _total: control whether total field is present
+    let include_total = !matches!(params._total.as_deref(), Some("none"));
+
+    // Build response
+    let mut response = serde_json::json!({
+        "resourceType": "Bundle",
+        "type": "searchset",
+        "entry": entries
+    });
+    if include_total {
+        response["total"] = serde_json::json!(total_before_count);
+    }
+
+    (StatusCode::OK, Json(response))
 }
 
 /// Try to match a search parameter against a resource field, supporting
