@@ -1,4 +1,5 @@
-use crate::config::models::{UploadMethod, WriteEndpoint};
+#[allow(unused_imports)]
+use crate::config::models::{TlsConfig, UploadMethod, WriteEndpoint};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -160,9 +161,11 @@ pub struct FhirRepositoryClient {
 impl FhirRepositoryClient {
     /// Create a new client from a `WriteEndpoint`.
     pub fn new(write_endpoint: &WriteEndpoint) -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
+        let tls_config = match write_endpoint {
+            WriteEndpoint::Repository { tls_config, .. }
+            | WriteEndpoint::Server { tls_config, .. } => tls_config.clone(),
+        };
+        let client = tls_config.build_client()?;
         let base_url = match write_endpoint {
             WriteEndpoint::Repository { base_url, .. } => base_url.clone(),
             WriteEndpoint::Server { base_url, .. } => base_url.clone(),
@@ -996,6 +999,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let ids = upload_ndjson_files(&data_dir, &["Patient".to_string()], &endpoint, 1)
@@ -1049,6 +1053,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let ids = upload_ndjson_files(
@@ -1096,6 +1101,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Post,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let ids = upload_ndjson_files(&data_dir, &["Patient".to_string()], &endpoint, 1)
@@ -1130,6 +1136,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         // Should not crash — should return empty map
@@ -1170,6 +1177,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         // Should not crash — should log the error and continue
@@ -1222,6 +1230,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let ids = upload_supplement_resources(
@@ -1267,6 +1276,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let ids = upload_supplement_resources(
@@ -1312,6 +1322,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let ids = upload_supplement_resources(
@@ -1353,6 +1364,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         delete_all_resources(
@@ -1387,6 +1399,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         // Should not crash — 404 is logged and processing continues
@@ -1409,6 +1422,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         ensure_r5_extension_profiles(&endpoint).await.unwrap();
@@ -1437,6 +1451,7 @@ mod tests {
             password: "s3cret".to_string(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let client = reqwest::Client::new();
@@ -1461,6 +1476,7 @@ mod tests {
             headers,
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let client = reqwest::Client::new();
@@ -1511,6 +1527,7 @@ mod tests {
             password: "s3cret".to_string(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let client = reqwest::Client::new();
@@ -1572,6 +1589,7 @@ mod tests {
             headers,
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let client = reqwest::Client::new();
@@ -1636,6 +1654,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         // Step 1: Upload
@@ -1730,6 +1749,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 4,
+            tls_config: TlsConfig::default(),
         };
 
         // Upload with concurrency = 4
@@ -1776,6 +1796,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         // Should not crash — should skip the empty file
@@ -1807,6 +1828,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         // Should not crash — should skip the empty file

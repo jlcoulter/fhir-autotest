@@ -447,6 +447,8 @@ async fn run_against_mock_fhir_server() {
         server: fhir_autotest::config::models::ServerConfig {
             base_url: format!("{}/fhir", mock_url),
             headers: HashMap::new(),
+            tls_verify: true,
+            tls_ca_cert: None,
         },
         repository: None,
         overrides: fhir_autotest::config::models::OverrideConfig::default(),
@@ -614,6 +616,8 @@ async fn bulk_data_generates_ndjson_files() {
         server: ServerConfig {
             base_url: format!("{}/fhir", mock_url),
             headers: HashMap::new(),
+            tls_verify: true,
+            tls_ca_cert: None,
         },
         repository: None,
         overrides: OverrideConfig::default(),

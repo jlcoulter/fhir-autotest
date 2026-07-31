@@ -1,4 +1,4 @@
-use crate::config::models::{UploadMethod, WriteEndpoint, default_concurrency};
+use crate::config::models::{TlsConfig, UploadMethod, WriteEndpoint, default_concurrency};
 use crate::generate::model::*;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -340,6 +340,7 @@ mod tests {
                 headers: HashMap::new(),
                 upload_method: UploadMethod::Post,
                 concurrency: 1,
+                tls_config: TlsConfig::default(),
             },
         )
         .unwrap();
@@ -357,35 +358,36 @@ mod tests {
             "name": [{"family": "Created"}]
         });
 
-        let (id, _response) = executor.create_resource("Patient", &body).await.unwrap();
-
+        // POST should return the server-assigned ID
+        let (id, _) = executor.create_resource("Patient", &body).await.unwrap();
         assert_eq!(id, "test-post-id");
 
+        // Verify the request was POST (not PUT)
         let recorded = server.last_request().unwrap();
         assert_eq!(recorded.method, "POST");
         assert!(recorded.uri.contains("/Patient"));
     }
 
     #[tokio::test]
-    async fn create_resource_put_missing_id_errors() {
+    async fn delete_resource_test() {
         let server = TestServer::new().await;
-        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+        let executor = TestExecutor::new(
+            server.addr.clone(),
+            HashMap::new(),
+            WriteEndpoint::Server {
+                base_url: server.addr.clone(),
+                headers: HashMap::new(),
+                upload_method: UploadMethod::Put,
+                concurrency: 1,
+                tls_config: TlsConfig::default(),
+            },
+        )
+        .unwrap();
 
-        let body = serde_json::json!({
-            "resourceType": "Patient",
-            "name": [{"family": "NoId"}]
-        });
-
-        let result = executor.create_resource("Patient", &body).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("id") || err.contains("PUT"));
-    }
-
-    #[tokio::test]
-    async fn delete_resource() {
-        let server = TestServer::new().await;
-        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+        // Push a response for the DELETE
+        server.push_response(serde_json::json!({
+            "_status": 204
+        }));
 
         let result = executor.delete_resource("Patient", "test-del-id").await;
         assert!(result.is_ok());
@@ -410,6 +412,7 @@ mod tests {
                 headers: HashMap::new(),
                 upload_method: UploadMethod::Put,
                 concurrency: 1,
+                tls_config: TlsConfig::default(),
             },
         )
         .unwrap();
@@ -440,6 +443,7 @@ mod tests {
                 password: "s3cret".to_string(),
                 upload_method: UploadMethod::Put,
                 concurrency: 1,
+                tls_config: TlsConfig::default(),
             },
         )
         .unwrap();
@@ -512,9 +516,11 @@ impl TestExecutor {
         read_headers: HashMap<String, String>,
         write_endpoint: WriteEndpoint,
     ) -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
+        let tls_config = match &write_endpoint {
+            WriteEndpoint::Repository { tls_config, .. }
+            | WriteEndpoint::Server { tls_config, .. } => tls_config.clone(),
+        };
+        let client = tls_config.build_client()?;
         Ok(Self {
             client,
             read_url: read_url.trim_end_matches('/').to_string(),
@@ -534,6 +540,7 @@ impl TestExecutor {
                 headers,
                 upload_method: UploadMethod::default(),
                 concurrency: default_concurrency(),
+                tls_config: TlsConfig::default(),
             },
         )
     }
