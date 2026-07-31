@@ -440,3 +440,295 @@ pub async fn run_validate(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::models::{OverrideConfig, ServerConfig, TestConfig};
+    use crate::test_helpers::create_test_ig_package;
+    use std::collections::HashMap;
+
+    #[test]
+    fn select_capability_statement_server_mode_with_resources() {
+        let tgz_data = create_test_ig_package();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tgz_path = temp_dir.path().join("test_ig.tgz");
+        std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+        let pkg = parse::package::parse_package(tgz_path.to_str().unwrap()).unwrap();
+        let config = TestConfig {
+            package: Some(tgz_path.to_str().unwrap().to_string()),
+            output: temp_dir.path().join("output").to_str().unwrap().to_string(),
+            server: ServerConfig {
+                base_url: "http://localhost:8080/fhir".to_string(),
+                headers: HashMap::new(),
+                tls_verify: true,
+                tls_ca_cert: None,
+            },
+            repository: None,
+            overrides: OverrideConfig::default(),
+            data_generation: Default::default(),
+            mock: false,
+            mock_port: 0,
+            dry_run: false,
+        };
+
+        let cs = select_capability_statement(&pkg, &config).unwrap();
+        assert_eq!(cs.name.as_deref(), Some("TestIG"));
+    }
+
+    #[test]
+    fn select_capability_statement_no_server_mode_fallback() {
+        let cs_json = serde_json::json!({
+            "resourceType": "CapabilityStatement",
+            "name": "ClientCS",
+            "status": "active",
+            "rest": [{
+                "mode": "client",
+                "resource": [{"type": "Patient"}]
+            }]
+        });
+
+        let pkg = IgPackage {
+            raw_resources: HashMap::new(),
+            capability_statements: vec![serde_json::from_value(cs_json).unwrap()],
+            structure_definitions: vec![],
+            search_parameters: vec![],
+            operation_definitions: vec![],
+        };
+
+        let config = TestConfig {
+            package: None,
+            output: "/tmp/output".to_string(),
+            server: ServerConfig {
+                base_url: "http://localhost:8080/fhir".to_string(),
+                headers: HashMap::new(),
+                tls_verify: true,
+                tls_ca_cert: None,
+            },
+            repository: None,
+            overrides: OverrideConfig::default(),
+            data_generation: Default::default(),
+            mock: false,
+            mock_port: 0,
+            dry_run: false,
+        };
+
+        let cs = select_capability_statement(&pkg, &config).unwrap();
+        assert_eq!(cs.name.as_deref(), Some("ClientCS"));
+    }
+
+    #[test]
+    fn select_capability_statement_empty_rest_fallback() {
+        let cs_json = serde_json::json!({
+            "resourceType": "CapabilityStatement",
+            "name": "EmptyCS",
+            "status": "active",
+            "rest": []
+        });
+
+        let pkg = IgPackage {
+            raw_resources: HashMap::new(),
+            capability_statements: vec![serde_json::from_value(cs_json).unwrap()],
+            structure_definitions: vec![],
+            search_parameters: vec![],
+            operation_definitions: vec![],
+        };
+
+        let config = TestConfig {
+            package: None,
+            output: "/tmp/output".to_string(),
+            server: ServerConfig {
+                base_url: "http://localhost:8080/fhir".to_string(),
+                headers: HashMap::new(),
+                tls_verify: true,
+                tls_ca_cert: None,
+            },
+            repository: None,
+            overrides: OverrideConfig::default(),
+            data_generation: Default::default(),
+            mock: false,
+            mock_port: 0,
+            dry_run: false,
+        };
+
+        let cs = select_capability_statement(&pkg, &config).unwrap();
+        assert_eq!(cs.name.as_deref(), Some("EmptyCS"));
+    }
+
+    #[test]
+    fn select_capability_statement_no_cs_returns_error() {
+        let pkg = IgPackage {
+            raw_resources: HashMap::new(),
+            capability_statements: vec![],
+            structure_definitions: vec![],
+            search_parameters: vec![],
+            operation_definitions: vec![],
+        };
+
+        let config = TestConfig {
+            package: None,
+            output: "/tmp/output".to_string(),
+            server: ServerConfig {
+                base_url: "http://localhost:8080/fhir".to_string(),
+                headers: HashMap::new(),
+                tls_verify: true,
+                tls_ca_cert: None,
+            },
+            repository: None,
+            overrides: OverrideConfig::default(),
+            data_generation: Default::default(),
+            mock: false,
+            mock_port: 0,
+            dry_run: false,
+        };
+
+        let result = select_capability_statement(&pkg, &config);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No CapabilityStatement")
+        );
+    }
+
+    #[test]
+    fn select_capability_statement_with_override_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cs_override_path = temp_dir.path().join("cs_override.json");
+
+        let cs_override = serde_json::json!({
+            "resourceType": "CapabilityStatement",
+            "name": "OverrideCS",
+            "status": "active",
+            "rest": [{
+                "mode": "server",
+                "resource": [{"type": "Patient"}]
+            }]
+        });
+        std::fs::write(
+            &cs_override_path,
+            serde_json::to_string_pretty(&cs_override).unwrap(),
+        )
+        .unwrap();
+
+        let pkg = IgPackage {
+            raw_resources: HashMap::new(),
+            capability_statements: vec![],
+            structure_definitions: vec![],
+            search_parameters: vec![],
+            operation_definitions: vec![],
+        };
+
+        let config = TestConfig {
+            package: None,
+            output: "/tmp/output".to_string(),
+            server: ServerConfig {
+                base_url: "http://localhost:8080/fhir".to_string(),
+                headers: HashMap::new(),
+                tls_verify: true,
+                tls_ca_cert: None,
+            },
+            repository: None,
+            overrides: OverrideConfig {
+                capability_statement_file: Some(cs_override_path),
+                ..Default::default()
+            },
+            data_generation: Default::default(),
+            mock: false,
+            mock_port: 0,
+            dry_run: false,
+        };
+
+        let cs = select_capability_statement(&pkg, &config).unwrap();
+        assert_eq!(cs.name.as_deref(), Some("OverrideCS"));
+    }
+
+    #[test]
+    fn select_capability_statement_override_file_not_found() {
+        let pkg = IgPackage {
+            raw_resources: HashMap::new(),
+            capability_statements: vec![],
+            structure_definitions: vec![],
+            search_parameters: vec![],
+            operation_definitions: vec![],
+        };
+
+        let config = TestConfig {
+            package: None,
+            output: "/tmp/output".to_string(),
+            server: ServerConfig {
+                base_url: "http://localhost:8080/fhir".to_string(),
+                headers: HashMap::new(),
+                tls_verify: true,
+                tls_ca_cert: None,
+            },
+            repository: None,
+            overrides: OverrideConfig {
+                capability_statement_file: Some(std::path::PathBuf::from("/nonexistent/path.json")),
+                ..Default::default()
+            },
+            data_generation: Default::default(),
+            mock: false,
+            mock_port: 0,
+            dry_run: false,
+        };
+
+        let result = select_capability_statement(&pkg, &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn select_capability_statement_override_file_wrong_resource_type() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cs_override_path = temp_dir.path().join("wrong_type.json");
+
+        let wrong_json = serde_json::json!({
+            "resourceType": "Patient",
+            "id": "test"
+        });
+        std::fs::write(
+            &cs_override_path,
+            serde_json::to_string_pretty(&wrong_json).unwrap(),
+        )
+        .unwrap();
+
+        let pkg = IgPackage {
+            raw_resources: HashMap::new(),
+            capability_statements: vec![],
+            structure_definitions: vec![],
+            search_parameters: vec![],
+            operation_definitions: vec![],
+        };
+
+        let config = TestConfig {
+            package: None,
+            output: "/tmp/output".to_string(),
+            server: ServerConfig {
+                base_url: "http://localhost:8080/fhir".to_string(),
+                headers: HashMap::new(),
+                tls_verify: true,
+                tls_ca_cert: None,
+            },
+            repository: None,
+            overrides: OverrideConfig {
+                capability_statement_file: Some(cs_override_path),
+                ..Default::default()
+            },
+            data_generation: Default::default(),
+            mock: false,
+            mock_port: 0,
+            dry_run: false,
+        };
+
+        let result = select_capability_statement(&pkg, &config);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must have resourceType='CapabilityStatement'")
+        );
+    }
+}

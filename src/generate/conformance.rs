@@ -3163,4 +3163,1078 @@ mod tests {
             extract_field_path_from_expression("Patient.exists()", "Patient.name", "Patient");
         assert_eq!(result, Some("name".to_string()));
     }
+
+    // ── Additional conformance_test_to_test_case tests ─────────────────
+
+    #[test]
+    fn conformance_test_to_test_case_cardinality() {
+        let ct = ConformanceTest {
+            name: "test_cardinality".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::Cardinality {
+                field_path: "name".to_string(),
+                min: 1,
+                max: "*".to_string(),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient?_id=patient-1&_count=10".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 200,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: Some(0),
+                bundle_type: Some("searchset".to_string()),
+                expect_operation_outcome: false,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.interaction, Interaction::SearchType);
+        assert!(matches!(tc.kind, TestCaseKind::Conformance { .. }));
+        let assertion = tc.validation.response_assertion.unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_binding_validation() {
+        let ct = ConformanceTest {
+            name: "test_binding".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::BindingValidation {
+                field_path: "gender".to_string(),
+                value_set_url: "http://hl7.org/fhir/ValueSet/administrative-gender".to_string(),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient?_id=patient-1&_count=10".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 200,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: Some(0),
+                bundle_type: Some("searchset".to_string()),
+                expect_operation_outcome: false,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.interaction, Interaction::SearchType);
+        let assertion = tc.validation.response_assertion.unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_slice_validation() {
+        let ct = ConformanceTest {
+            name: "test_slice".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::SliceValidation {
+                field_path: "identifier".to_string(),
+                slice_name: "ABN".to_string(),
+                discriminator_path: "system".to_string(),
+                discriminator_type: "value".to_string(),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient?_id=patient-1&_count=10".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 200,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: Some(0),
+                bundle_type: Some("searchset".to_string()),
+                expect_operation_outcome: false,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.interaction, Interaction::SearchType);
+        assert!(matches!(tc.kind, TestCaseKind::Conformance { .. }));
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_extension_validation() {
+        let ct = ConformanceTest {
+            name: "test_extension".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::ExtensionValidation {
+                extension_url: "http://example.org/StructureDefinition/test-extension".to_string(),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient?_id=patient-1&_count=10".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 200,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: Some(0),
+                bundle_type: Some("searchset".to_string()),
+                expect_operation_outcome: false,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.interaction, Interaction::SearchType);
+        assert!(matches!(tc.kind, TestCaseKind::Conformance { .. }));
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_type_constraint_validation() {
+        let ct = ConformanceTest {
+            name: "test_type_constraint".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::TypeConstraintValidation {
+                field_path: "value[x]".to_string(),
+                allowed_types: vec!["string".to_string(), "CodeableConcept".to_string()],
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient?_id=patient-1&_count=10".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 200,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: Some(0),
+                bundle_type: Some("searchset".to_string()),
+                expect_operation_outcome: false,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.interaction, Interaction::SearchType);
+        assert!(matches!(tc.kind, TestCaseKind::Conformance { .. }));
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_reference_target_validation() {
+        let ct = ConformanceTest {
+            name: "test_reference_target".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::ReferenceTargetValidation {
+                field_path: "managingOrganization".to_string(),
+                target_profile: "http://example.org/StructureDefinition/TestOrganization"
+                    .to_string(),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient?_id=patient-1&_count=10".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 200,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: Some(0),
+                bundle_type: Some("searchset".to_string()),
+                expect_operation_outcome: false,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.interaction, Interaction::SearchType);
+        assert!(matches!(tc.kind, TestCaseKind::Conformance { .. }));
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_undeclared_search_param() {
+        let ct = ConformanceTest {
+            name: "test_undeclared_param".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::UndeclaredSearchParam {
+                param_name: "__invalid__".to_string(),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient?__invalid__=value".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 0,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: None,
+                bundle_type: None,
+                expect_operation_outcome: true,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.interaction, Interaction::SearchType);
+        assert_eq!(tc.validation.expected_status, 0);
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_constraint_validation() {
+        let ct = ConformanceTest {
+            name: "test_constraint".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::ConstraintValidation {
+                constraint_key: "pat-1".to_string(),
+                constraint_human: "Patient.name SHALL be present".to_string(),
+                expression: "name.exists()".to_string(),
+                field_path: "name".to_string(),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient?_id=patient-1&_count=10".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 200,
+                must_contain_fields: vec!["name".to_string()],
+                must_not_contain_fields: vec![],
+                min_entries: Some(0),
+                bundle_type: Some("searchset".to_string()),
+                expect_operation_outcome: false,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.interaction, Interaction::SearchType);
+        assert!(matches!(tc.kind, TestCaseKind::Conformance { .. }));
+        let assertion = tc.validation.response_assertion.unwrap();
+        assert!(assertion.required_fields.contains_key("Patient"));
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_undeclared_interaction_vread() {
+        let ct = ConformanceTest {
+            name: "test_undeclared_vread".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::UndeclaredInteraction {
+                interaction: "vread".to_string(),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient/{id}/_history/1".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 0,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: None,
+                bundle_type: None,
+                expect_operation_outcome: true,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.interaction, Interaction::Vread);
+        assert_eq!(tc.validation.expected_status, 0);
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_undeclared_interaction_history() {
+        let ct = ConformanceTest {
+            name: "test_undeclared_history".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::UndeclaredInteraction {
+                interaction: "history-instance".to_string(),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient/{id}/_history".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 0,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: None,
+                bundle_type: None,
+                expect_operation_outcome: true,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.interaction, Interaction::HistoryInstance);
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_undeclared_interaction_unknown() {
+        let ct = ConformanceTest {
+            name: "test_undeclared_unknown".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::UndeclaredInteraction {
+                interaction: "unknown-interaction".to_string(),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient/{id}".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 0,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: None,
+                bundle_type: None,
+                expect_operation_outcome: true,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        // Unknown interaction code falls back to SearchType
+        assert_eq!(tc.interaction, Interaction::SearchType);
+    }
+
+    // ── generate_conformance_tests edge cases ──────────────────────────
+
+    #[test]
+    fn generate_conformance_tests_non_server_mode_skipped() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: None,
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "client".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: None,
+                    supported_profile: vec![],
+                    interaction: vec![],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let tests = generate_conformance_tests(&cs, &[], &[]);
+        assert!(
+            tests.is_empty(),
+            "No tests should be generated for client mode"
+        );
+    }
+
+    #[test]
+    fn generate_conformance_tests_non_resource_type_skipped() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: None,
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Parameters".to_string(),
+                    profile: None,
+                    supported_profile: vec![],
+                    interaction: vec![],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let tests = generate_conformance_tests(&cs, &[], &[]);
+        assert!(
+            tests.is_empty(),
+            "Parameters should be skipped as non-resource type"
+        );
+    }
+
+    #[test]
+    fn generate_conformance_tests_with_versioning() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: None,
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: None,
+                    supported_profile: vec![],
+                    interaction: vec![
+                        RestInteraction {
+                            code: "read".to_string(),
+                        },
+                        RestInteraction {
+                            code: "search-type".to_string(),
+                        },
+                    ],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: Some("versioned".to_string()),
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let tests = generate_conformance_tests(&cs, &[], &[]);
+        // Should have versioning test (meta.versionId mustSupport)
+        let versioning_tests: Vec<_> = tests
+            .iter()
+            .filter(|t| t.name.contains("versioning"))
+            .collect();
+        assert!(!versioning_tests.is_empty(), "Expected versioning test");
+    }
+
+    #[test]
+    fn generate_conformance_tests_with_read_history() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: None,
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: None,
+                    supported_profile: vec![],
+                    interaction: vec![
+                        RestInteraction {
+                            code: "read".to_string(),
+                        },
+                        RestInteraction {
+                            code: "vread".to_string(),
+                        },
+                        RestInteraction {
+                            code: "search-type".to_string(),
+                        },
+                    ],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: Some(true),
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let tests = generate_conformance_tests(&cs, &[], &[]);
+        let read_history_tests: Vec<_> = tests
+            .iter()
+            .filter(|t| t.name.contains("read_history"))
+            .collect();
+        assert!(!read_history_tests.is_empty(), "Expected read_history test");
+    }
+
+    #[test]
+    fn generate_conformance_tests_with_search_params() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: None,
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: None,
+                    supported_profile: vec![],
+                    interaction: vec![
+                        RestInteraction {
+                            code: "read".to_string(),
+                        },
+                        RestInteraction {
+                            code: "search-type".to_string(),
+                        },
+                    ],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let search_params = vec![SearchParameter {
+            resource_type: "SearchParameter".to_string(),
+            url: "http://hl7.org/fhir/SearchParameter/Patient-name".to_string(),
+            name: "name".to_string(),
+            code: "name".to_string(),
+            base: vec!["Patient".to_string()],
+            param_type: "string".to_string(),
+            expression: Some("Patient.name".to_string()),
+            description: None,
+            target: vec![],
+            comparator: vec![],
+            modifier: vec![],
+        }];
+        let tests = generate_conformance_tests(&cs, &[], &search_params);
+        // Should have expression validation tests
+        let expr_tests: Vec<_> = tests
+            .iter()
+            .filter(|t| matches!(t.kind, ConformanceTestKind::ExpressionValidation { .. }))
+            .collect();
+        assert!(
+            !expr_tests.is_empty(),
+            "Expected expression validation tests"
+        );
+    }
+
+    #[test]
+    fn generate_conformance_tests_with_reference_search_param() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: None,
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: None,
+                    supported_profile: vec![],
+                    interaction: vec![
+                        RestInteraction {
+                            code: "read".to_string(),
+                        },
+                        RestInteraction {
+                            code: "search-type".to_string(),
+                        },
+                    ],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let search_params = vec![SearchParameter {
+            resource_type: "SearchParameter".to_string(),
+            url: "http://hl7.org/fhir/SearchParameter/Patient-organization".to_string(),
+            name: "organization".to_string(),
+            code: "organization".to_string(),
+            base: vec!["Patient".to_string()],
+            param_type: "reference".to_string(),
+            expression: Some("Patient.managingOrganization".to_string()),
+            description: None,
+            target: vec!["Organization".to_string()],
+            comparator: vec![],
+            modifier: vec![],
+        }];
+        let tests = generate_conformance_tests(&cs, &[], &search_params);
+        // Should have target type validation tests
+        let target_tests: Vec<_> = tests
+            .iter()
+            .filter(|t| matches!(t.kind, ConformanceTestKind::TargetTypeValidation { .. }))
+            .collect();
+        assert!(
+            !target_tests.is_empty(),
+            "Expected target type validation tests"
+        );
+    }
+
+    // ── validate_security additional tests ─────────────────────────────
+
+    #[test]
+    fn validate_security_non_server_rest_skipped() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: None,
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "client".to_string(),
+                resource: vec![],
+                interaction: vec![],
+                operation: vec![],
+                security: Some(Security {
+                    cors: Some(true),
+                    service: vec![],
+                    description: None,
+                }),
+            }],
+        };
+        let result = validate_security(&cs);
+        // Client mode should be skipped, so no warnings
+        assert!(result.warnings.is_empty());
+    }
+
+    // ── validate_metadata additional tests ────────────────────────────
+
+    #[test]
+    fn validate_metadata_missing_software_version() {
+        let mut cs = sample_cs();
+        cs.software = Some(Software {
+            name: Some("TestServer".to_string()),
+            version: Some("".to_string()),
+            release_date: None,
+        });
+        let result = validate_metadata(&cs);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("software.version"))
+        );
+    }
+
+    // ── validate_messaging additional tests ───────────────────────────
+
+    #[test]
+    fn validate_messaging_missing_supported_message_definition() {
+        let mut cs = sample_cs();
+        cs.messaging = vec![Messaging {
+            endpoint: Some("http://example.org/messaging".to_string()),
+            supported_message: vec![MessagingSupportedMessage {
+                definition: Some("".to_string()),
+                mode: None,
+            }],
+            reliable_cache: None,
+            documentation: None,
+        }];
+        let result = validate_messaging(&cs);
+        assert!(result.warnings.iter().any(|w| w.contains("definition")));
+    }
+
+    // ── validate_capability_statement additional tests ────────────────
+
+    #[test]
+    fn validate_cs_unusual_status() {
+        let mut cs = sample_cs();
+        cs.status = Some("unknown-status".to_string());
+        let result = validate_capability_statement(&cs);
+        assert!(result.warnings.iter().any(|w| w.contains("unusual status")));
+    }
+
+    #[test]
+    fn validate_cs_missing_search_param_name() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: None,
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: None,
+                    supported_profile: vec![],
+                    interaction: vec![],
+                    search_param: vec![RestSearchParam {
+                        name: "".to_string(),
+                        param_type: "string".to_string(),
+                        definition: None,
+                        documentation: None,
+                    }],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let result = validate_capability_statement(&cs);
+        assert!(result.errors.iter().any(|e| e.contains("missing 'name'")));
+    }
+
+    #[test]
+    fn validate_cs_missing_search_param_type() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: None,
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: None,
+                    supported_profile: vec![],
+                    interaction: vec![],
+                    search_param: vec![RestSearchParam {
+                        name: "test".to_string(),
+                        param_type: "".to_string(),
+                        definition: None,
+                        documentation: None,
+                    }],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let result = validate_capability_statement(&cs);
+        assert!(result.errors.iter().any(|e| e.contains("missing 'type'")));
+    }
+
+    #[test]
+    fn validate_cs_missing_resource_type() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: None,
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "".to_string(),
+                    profile: None,
+                    supported_profile: vec![],
+                    interaction: vec![],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let result = validate_capability_statement(&cs);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("missing required 'type'"))
+        );
+    }
+
+    // ── collect_*_fields edge cases ───────────────────────────────────
+
+    #[test]
+    fn collect_must_support_fields_no_snapshot_or_differential() {
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Test".to_string(),
+            name: "Test".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: None,
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        };
+        let fields = collect_must_support_fields(&profile);
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn collect_cardinality_fields_no_snapshot_or_differential() {
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Test".to_string(),
+            name: "Test".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: None,
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        };
+        let fields = collect_cardinality_fields(&profile);
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn collect_constraint_fields_no_snapshot_or_differential() {
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Test".to_string(),
+            name: "Test".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: None,
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        };
+        let fields = collect_constraint_fields(&profile);
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn collect_binding_fields_no_snapshot_or_differential() {
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Test".to_string(),
+            name: "Test".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: None,
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        };
+        let fields = collect_binding_fields(&profile);
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn collect_fixed_value_fields_no_snapshot_or_differential() {
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Test".to_string(),
+            name: "Test".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: None,
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        };
+        let fields = collect_fixed_value_fields(&profile);
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn collect_slice_fields_no_snapshot_or_differential() {
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Test".to_string(),
+            name: "Test".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: None,
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        };
+        let fields = collect_slice_fields(&profile);
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn collect_extension_urls_no_snapshot_or_differential() {
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Test".to_string(),
+            name: "Test".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: None,
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        };
+        let fields = collect_extension_urls(&profile);
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn collect_type_constraint_fields_no_snapshot_or_differential() {
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Test".to_string(),
+            name: "Test".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: None,
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        };
+        let fields = collect_type_constraint_fields(&profile);
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn collect_reference_target_fields_no_snapshot_or_differential() {
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Test".to_string(),
+            name: "Test".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: None,
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        };
+        let fields = collect_reference_target_fields(&profile);
+        assert!(fields.is_empty());
+    }
+
+    // ── extract_expression_field_path additional tests ────────────────
+
+    #[test]
+    fn extract_expression_field_path_with_alternatives_subfield() {
+        let result = extract_expression_field_path(
+            "Patient.deceasedBoolean | Patient.deceasedDateTime",
+            "Patient",
+        );
+        assert_eq!(result, Some("deceasedBoolean".to_string()));
+    }
+
+    #[test]
+    fn extract_expression_field_path_no_resource_prefix_with_dot() {
+        let result = extract_expression_field_path("name.family.given", "Patient");
+        assert_eq!(result, Some("name.family".to_string()));
+    }
+
+    // ── extract_field_path_from_expression additional tests ───────────
+
+    #[test]
+    fn extract_field_path_from_expression_with_all_function() {
+        let result = extract_field_path_from_expression(
+            "name.all($this.exists())",
+            "Patient.name",
+            "Patient",
+        );
+        assert_eq!(result, Some("name".to_string()));
+    }
+
+    #[test]
+    fn extract_field_path_from_expression_with_where_function() {
+        let result = extract_field_path_from_expression(
+            "name.where(use='official')",
+            "Patient.name",
+            "Patient",
+        );
+        assert_eq!(result, Some("name".to_string()));
+    }
+
+    #[test]
+    fn extract_field_path_from_expression_with_base_type_prefix_and_function() {
+        let result = extract_field_path_from_expression(
+            "Patient.name.all($this.exists())",
+            "Patient.name",
+            "Patient",
+        );
+        assert_eq!(result, Some("name".to_string()));
+    }
 }
