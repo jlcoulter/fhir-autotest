@@ -690,26 +690,59 @@ pub async fn delete_all_resources(
             let batch_size = concurrency.max(1);
 
             for chunk in type_ids.chunks(batch_size) {
-                let mut handles = Vec::new();
+                let mut handles: Vec<(
+                    tokio::task::JoinHandle<Result<u16, anyhow::Error>>,
+                    String,
+                )> = Vec::new();
 
                 for id in chunk {
                     let repo_client = repo_client.clone();
                     let resource_type = resource_type.clone();
+                    let id_clone = id.clone();
                     let id = id.clone();
 
-                    handles.push(tokio::spawn(async move {
-                        let resp = repo_client.delete_resource(&resource_type, &id).await?;
-                        Ok::<u16, anyhow::Error>(resp.status().as_u16())
-                    }));
+                    handles.push((
+                        tokio::spawn(async move {
+                            let resp = repo_client
+                                .delete_resource(&resource_type, &id_clone)
+                                .await?;
+                            Ok::<u16, anyhow::Error>(resp.status().as_u16())
+                        }),
+                        id,
+                    ));
                 }
 
-                for handle in handles {
+                for (handle, id_for_log) in handles {
                     match handle.await {
                         Ok(Ok(200 | 204 | 404 | 410)) => {
                             deleted += 1;
                         }
-                        _ => {
+                        Ok(Ok(status)) => {
                             errors += 1;
+                            tracing::warn!(
+                                "Unexpected status {} when deleting {}/{}",
+                                status,
+                                resource_type,
+                                id_for_log,
+                            );
+                        }
+                        Ok(Err(e)) => {
+                            errors += 1;
+                            tracing::warn!(
+                                "Request error when deleting {}/{}: {:#}",
+                                resource_type,
+                                id_for_log,
+                                e,
+                            );
+                        }
+                        Err(e) => {
+                            errors += 1;
+                            tracing::warn!(
+                                "Task join error when deleting {}/{}: {}",
+                                resource_type,
+                                id_for_log,
+                                e,
+                            );
                         }
                     }
                 }
