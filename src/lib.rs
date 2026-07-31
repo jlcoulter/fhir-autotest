@@ -731,4 +731,153 @@ mod tests {
                 .contains("must have resourceType='CapabilityStatement'")
         );
     }
+
+    #[test]
+    fn select_capability_statement_override_file_invalid_json() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cs_override_path = temp_dir.path().join("invalid.json");
+
+        std::fs::write(&cs_override_path, "not valid json content").unwrap();
+
+        let pkg = IgPackage {
+            raw_resources: HashMap::new(),
+            capability_statements: vec![],
+            structure_definitions: vec![],
+            search_parameters: vec![],
+            operation_definitions: vec![],
+        };
+
+        let config = TestConfig {
+            package: None,
+            output: "/tmp/output".to_string(),
+            server: ServerConfig {
+                base_url: "http://localhost:8080/fhir".to_string(),
+                headers: HashMap::new(),
+                tls_verify: true,
+                tls_ca_cert: None,
+            },
+            repository: None,
+            overrides: OverrideConfig {
+                capability_statement_file: Some(cs_override_path),
+                ..Default::default()
+            },
+            data_generation: Default::default(),
+            mock: false,
+            mock_port: 0,
+            dry_run: false,
+        };
+
+        let result = select_capability_statement(&pkg, &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not valid JSON"));
+    }
+
+    #[test]
+    fn select_capability_statement_override_file_missing_resource_type() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cs_override_path = temp_dir.path().join("no_rt.json");
+
+        let no_rt = serde_json::json!({
+            "name": "NoResourceType"
+        });
+        std::fs::write(
+            &cs_override_path,
+            serde_json::to_string_pretty(&no_rt).unwrap(),
+        )
+        .unwrap();
+
+        let pkg = IgPackage {
+            raw_resources: HashMap::new(),
+            capability_statements: vec![],
+            structure_definitions: vec![],
+            search_parameters: vec![],
+            operation_definitions: vec![],
+        };
+
+        let config = TestConfig {
+            package: None,
+            output: "/tmp/output".to_string(),
+            server: ServerConfig {
+                base_url: "http://localhost:8080/fhir".to_string(),
+                headers: HashMap::new(),
+                tls_verify: true,
+                tls_ca_cert: None,
+            },
+            repository: None,
+            overrides: OverrideConfig {
+                capability_statement_file: Some(cs_override_path),
+                ..Default::default()
+            },
+            data_generation: Default::default(),
+            mock: false,
+            mock_port: 0,
+            dry_run: false,
+        };
+
+        let result = select_capability_statement(&pkg, &config);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("missing 'resourceType'")
+        );
+    }
+
+    #[test]
+    fn select_capability_statement_override_file_invalid_cs_json() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cs_override_path = temp_dir.path().join("bad_cs.json");
+
+        // Valid JSON with resourceType=CapabilityStatement but with a field
+        // that has the wrong type (rest should be an array, not a string)
+        let bad_cs = serde_json::json!({
+            "resourceType": "CapabilityStatement",
+            "name": "BadCS",
+            "status": "active",
+            "rest": "not_an_array"
+        });
+        std::fs::write(
+            &cs_override_path,
+            serde_json::to_string_pretty(&bad_cs).unwrap(),
+        )
+        .unwrap();
+
+        let pkg = IgPackage {
+            raw_resources: HashMap::new(),
+            capability_statements: vec![],
+            structure_definitions: vec![],
+            search_parameters: vec![],
+            operation_definitions: vec![],
+        };
+
+        let config = TestConfig {
+            package: None,
+            output: "/tmp/output".to_string(),
+            server: ServerConfig {
+                base_url: "http://localhost:8080/fhir".to_string(),
+                headers: HashMap::new(),
+                tls_verify: true,
+                tls_ca_cert: None,
+            },
+            repository: None,
+            overrides: OverrideConfig {
+                capability_statement_file: Some(cs_override_path),
+                ..Default::default()
+            },
+            data_generation: Default::default(),
+            mock: false,
+            mock_port: 0,
+            dry_run: false,
+        };
+
+        let result = select_capability_statement(&pkg, &config);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to deserialize")
+        );
+    }
 }
