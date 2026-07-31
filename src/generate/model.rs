@@ -184,14 +184,16 @@ impl SearchModifier {
         let mut modifiers = vec![SearchModifier::Missing]; // valid for all types
         match param_type {
             "string" => modifiers.extend([SearchModifier::Exact, SearchModifier::Contains]),
-            "token" => modifiers.extend([
-                SearchModifier::Not,
-                SearchModifier::Text,
-                SearchModifier::Above,
-                SearchModifier::Below,
-            ]),
-            "reference" => modifiers.extend([SearchModifier::Above, SearchModifier::Below]),
-            "uri" => modifiers.extend([SearchModifier::Above, SearchModifier::Below]),
+            "token" => modifiers.extend([SearchModifier::Not, SearchModifier::Text]),
+            "reference" => {
+                // :above/:below are only valid for hierarchical references
+                // (containment hierarchy). Most servers reject them on
+                // arbitrary reference params, so we omit them by default.
+            }
+            "uri" => {
+                // :above/:below are only valid for hierarchical URI schemes.
+                // Most servers reject them on arbitrary URI params.
+            }
             _ => {}
         }
         modifiers

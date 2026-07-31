@@ -97,17 +97,20 @@ pub fn generate_typed_value(
             if let Some(system) = bound_system {
                 serde_json::json!({
                     "system": system,
-                    "code": "unknown"
+                    "code": "unknown",
+                    "display": "Unknown"
                 })
             } else if element.path.ends_with("Endpoint.connectionType") {
                 serde_json::json!({
                     "system": "http://terminology.hl7.org/CodeSystem/endpoint-connection-type",
-                    "code": "hl7-fhir-rest"
+                    "code": "hl7-fhir-rest",
+                    "display": "HL7 FHIR REST"
                 })
             } else {
                 serde_json::json!({
                     "system": "http://terminology.hl7.org/CodeSystem/v3-NullFlavor",
-                    "code": "UNK"
+                    "code": "UNK",
+                    "display": "unknown"
                 })
             }
         }
