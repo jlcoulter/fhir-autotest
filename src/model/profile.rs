@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// FHIR R4 StructureDefinition resource.
 /// Defines constraints on FHIR resources (profiles) and data types.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StructureDefinition {
     #[serde(rename = "resourceType")]
     pub resource_type: String,

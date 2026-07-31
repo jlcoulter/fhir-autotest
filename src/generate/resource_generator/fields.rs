@@ -622,3 +622,314 @@ pub fn populate_nested_required_fields(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_element(
+        id: &str,
+        path: &str,
+        min: u32,
+        max: &str,
+        type_code: &str,
+        must_support: bool,
+    ) -> ElementDefinition {
+        ElementDefinition {
+            id: id.into(),
+            path: path.into(),
+            min: Some(min),
+            max: Some(max.into()),
+            type_: if type_code.is_empty() {
+                vec![]
+            } else {
+                vec![ElementDefinitionType {
+                    code: type_code.into(),
+                    profile: vec![],
+                    target_profile: vec![],
+                    versioning: None,
+                }]
+            },
+            must_support,
+            ..Default::default()
+        }
+    }
+
+    // ── populate_required_fields ────────────────────────────────────────
+
+    #[test]
+    fn test_populate_required_fields_simple() {
+        let mut resource = json!({"resourceType": "Patient"});
+        let elements = vec![
+            make_element("Patient", "Patient", 0, "*", "", false),
+            make_element("Patient.name", "Patient.name", 1, "*", "HumanName", false),
+            make_element(
+                "Patient.birthDate",
+                "Patient.birthDate",
+                1,
+                "1",
+                "date",
+                false,
+            ),
+        ];
+        let result =
+            populate_required_fields(&mut resource, &elements, "Patient", &[], &HashMap::new());
+        assert!(result.is_ok());
+        assert!(resource.get("name").is_some());
+        assert!(resource.get("birthDate").is_some());
+    }
+
+    #[test]
+    fn test_populate_required_fields_skips_optional() {
+        let mut resource = json!({"resourceType": "Patient"});
+        let elements = vec![
+            make_element("Patient", "Patient", 0, "*", "", false),
+            make_element("Patient.name", "Patient.name", 0, "*", "HumanName", false),
+        ];
+        populate_required_fields(&mut resource, &elements, "Patient", &[], &HashMap::new())
+            .unwrap();
+        assert!(resource.get("name").is_none());
+    }
+
+    #[test]
+    fn test_populate_required_fields_skips_extension() {
+        let mut resource = json!({"resourceType": "Patient"});
+        let elements = vec![
+            make_element("Patient", "Patient", 0, "*", "", false),
+            make_element(
+                "Patient.extension",
+                "Patient.extension",
+                1,
+                "*",
+                "Extension",
+                false,
+            ),
+        ];
+        populate_required_fields(&mut resource, &elements, "Patient", &[], &HashMap::new())
+            .unwrap();
+        assert!(resource.get("extension").is_none());
+    }
+
+    #[test]
+    fn test_populate_required_fields_with_fixed_value() {
+        let mut resource = json!({"resourceType": "Patient"});
+        let elements = vec![
+            make_element("Patient", "Patient", 0, "*", "", false),
+            ElementDefinition {
+                id: "Patient.active".into(),
+                path: "Patient.active".into(),
+                min: Some(1),
+                max: Some("1".into()),
+                fixed_boolean: Some(true),
+                ..Default::default()
+            },
+        ];
+        populate_required_fields(&mut resource, &elements, "Patient", &[], &HashMap::new())
+            .unwrap();
+        assert_eq!(resource["active"], json!(true));
+    }
+
+    #[test]
+    fn test_populate_required_fields_array_for_repeatable() {
+        let mut resource = json!({"resourceType": "Patient"});
+        let elements = vec![
+            make_element("Patient", "Patient", 0, "*", "", false),
+            make_element(
+                "Patient.identifier",
+                "Patient.identifier",
+                1,
+                "1",
+                "Identifier",
+                false,
+            ),
+        ];
+        populate_required_fields(&mut resource, &elements, "Patient", &[], &HashMap::new())
+            .unwrap();
+        // identifier is base-spec repeatable, so should be an array
+        assert!(resource["identifier"].is_array());
+    }
+
+    // ── populate_must_support_optional_fields ──────────────────────────
+
+    #[test]
+    fn test_populate_must_support_optional_fields() {
+        let mut resource = json!({"resourceType": "Patient"});
+        let elements = vec![
+            make_element("Patient", "Patient", 0, "*", "", false),
+            make_element("Patient.gender", "Patient.gender", 0, "1", "code", true),
+        ];
+        populate_must_support_optional_fields(
+            &mut resource,
+            &elements,
+            "Patient",
+            &[],
+            &HashMap::new(),
+        );
+        assert!(resource.get("gender").is_some());
+    }
+
+    #[test]
+    fn test_populate_must_support_optional_fields_skips_non_must_support() {
+        let mut resource = json!({"resourceType": "Patient"});
+        let elements = vec![
+            make_element("Patient", "Patient", 0, "*", "", false),
+            make_element("Patient.gender", "Patient.gender", 0, "1", "code", false),
+        ];
+        populate_must_support_optional_fields(
+            &mut resource,
+            &elements,
+            "Patient",
+            &[],
+            &HashMap::new(),
+        );
+        assert!(resource.get("gender").is_none());
+    }
+
+    #[test]
+    fn test_populate_must_support_optional_fields_skips_backbone() {
+        let mut resource = json!({"resourceType": "Patient"});
+        let elements = vec![
+            make_element("Patient", "Patient", 0, "*", "", false),
+            make_element(
+                "Patient.contact",
+                "Patient.contact",
+                0,
+                "*",
+                "BackboneElement",
+                true,
+            ),
+        ];
+        populate_must_support_optional_fields(
+            &mut resource,
+            &elements,
+            "Patient",
+            &[],
+            &HashMap::new(),
+        );
+        assert!(resource.get("contact").is_none());
+    }
+
+    // ── populate_must_support_backbones ────────────────────────────────
+
+    #[test]
+    fn test_populate_must_support_backbones_with_required_child() {
+        let mut resource = json!({"resourceType": "Patient"});
+        let elements = vec![
+            make_element("Patient", "Patient", 0, "*", "", false),
+            make_element(
+                "Patient.contact",
+                "Patient.contact",
+                0,
+                "*",
+                "BackboneElement",
+                true,
+            ),
+            make_element(
+                "Patient.contact.relationship",
+                "Patient.contact.relationship",
+                1,
+                "1",
+                "CodeableConcept",
+                false,
+            ),
+        ];
+        populate_must_support_backbones(&mut resource, &elements, "Patient", &[], &HashMap::new());
+        assert!(resource.get("contact").is_some());
+    }
+
+    #[test]
+    fn test_populate_must_support_backbones_skips_no_relevant_child() {
+        let mut resource = json!({"resourceType": "Patient"});
+        let elements = vec![
+            make_element("Patient", "Patient", 0, "*", "", false),
+            make_element(
+                "Patient.contact",
+                "Patient.contact",
+                0,
+                "*",
+                "BackboneElement",
+                true,
+            ),
+            make_element(
+                "Patient.contact.relationship",
+                "Patient.contact.relationship",
+                0,
+                "1",
+                "CodeableConcept",
+                false,
+            ),
+        ];
+        populate_must_support_backbones(&mut resource, &elements, "Patient", &[], &HashMap::new());
+        assert!(resource.get("contact").is_none());
+    }
+
+    // ── populate_backbone_fields ───────────────────────────────────────
+
+    #[test]
+    fn test_populate_backbone_fields_required_children() {
+        let mut backbone = serde_json::Map::new();
+        let elements = vec![
+            make_element("Patient", "Patient", 0, "*", "", false),
+            make_element(
+                "Patient.contact",
+                "Patient.contact",
+                0,
+                "*",
+                "BackboneElement",
+                false,
+            ),
+            make_element(
+                "Patient.contact.relationship",
+                "Patient.contact.relationship",
+                1,
+                "1",
+                "CodeableConcept",
+                false,
+            ),
+        ];
+        populate_backbone_fields(
+            &mut backbone,
+            "Patient.contact",
+            &elements,
+            "Patient",
+            &[],
+            &HashMap::new(),
+        );
+        assert!(backbone.contains_key("relationship"));
+    }
+
+    // ── populate_nested_required_fields ────────────────────────────────
+
+    #[test]
+    fn test_populate_nested_required_fields() {
+        let mut value = json!({"coding": [{"code": "test"}]});
+        let elements = vec![
+            make_element("Observation", "Observation", 0, "*", "", false),
+            make_element(
+                "Observation.code",
+                "Observation.code",
+                1,
+                "1",
+                "CodeableConcept",
+                false,
+            ),
+            make_element(
+                "Observation.code.text",
+                "Observation.code.text",
+                1,
+                "1",
+                "string",
+                false,
+            ),
+        ];
+        populate_nested_required_fields(
+            &mut value,
+            "Observation.code",
+            &elements,
+            &[],
+            &HashMap::new(),
+        );
+        assert!(value.get("text").is_some());
+    }
+}

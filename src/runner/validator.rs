@@ -232,6 +232,11 @@ fn get_field_path(path: &str, resource_type: &str) -> Option<String> {
 
     let field_part = remainder.strip_prefix('.')?;
 
+    // Empty field part (e.g., "Patient.") → None
+    if field_part.is_empty() {
+        return None;
+    }
+
     // Strip slice notation (e.g., "identifier:type" → "identifier")
     // For nested paths, only strip the first segment's slice notation
     let field_name = if let Some((first, rest)) = field_part.split_once('.') {
@@ -1130,6 +1135,590 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("photo.url") && e.contains("pattern uri")),
             "Expected error about photo.url uri mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    // ── Tests for get_field_path ──────────────────────────────────────
+
+    #[test]
+    fn get_field_path_root() {
+        assert_eq!(
+            get_field_path("Patient", "Patient"),
+            Some("Patient".to_string())
+        );
+    }
+
+    #[test]
+    fn get_field_path_simple() {
+        assert_eq!(
+            get_field_path("Patient.name", "Patient"),
+            Some("name".to_string())
+        );
+    }
+
+    #[test]
+    fn get_field_path_nested() {
+        assert_eq!(
+            get_field_path("Patient.name.family", "Patient"),
+            Some("name.family".to_string())
+        );
+    }
+
+    #[test]
+    fn get_field_path_with_slice() {
+        assert_eq!(
+            get_field_path("Patient.identifier:type", "Patient"),
+            Some("identifier".to_string())
+        );
+    }
+
+    #[test]
+    fn get_field_path_nested_with_slice() {
+        assert_eq!(
+            get_field_path("Patient.identifier:type.value", "Patient"),
+            Some("identifier.value".to_string())
+        );
+    }
+
+    #[test]
+    fn get_field_path_wrong_prefix() {
+        assert_eq!(get_field_path("Observation.subject", "Patient"), None);
+    }
+
+    #[test]
+    fn get_field_path_no_dot_after_prefix() {
+        // Path like "PatientExtra" — starts with "Patient" but no dot after
+        assert_eq!(get_field_path("PatientExtra", "Patient"), None);
+    }
+
+    #[test]
+    fn get_field_path_empty_after_dot() {
+        assert_eq!(get_field_path("Patient.", "Patient"), None);
+    }
+
+    #[test]
+    fn validate_against_profile_with_differential() {
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/TestPatient".to_string(),
+            base_type: "Patient".to_string(),
+            name: "TestPatient".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: None,
+            snapshot: None,
+            differential: Some(Differential {
+                element: vec![
+                    ElementDefinition {
+                        id: "Patient".to_string(),
+                        path: "Patient".to_string(),
+                        min: Some(0),
+                        max: Some("*".to_string()),
+                        type_: vec![],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                        slice_name: None,
+                        slicing: None,
+                    },
+                    ElementDefinition {
+                        id: "Patient.name".to_string(),
+                        path: "Patient.name".to_string(),
+                        min: Some(1),
+                        max: Some("*".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "HumanName".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: true,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                        slice_name: None,
+                        slicing: None,
+                    },
+                ],
+            }),
+        };
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}]
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn validate_against_profile_no_snapshot_no_differential() {
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Empty".to_string(),
+            base_type: "Patient".to_string(),
+            name: "Empty".to_string(),
+            kind: "resource".to_string(),
+            derivation: None,
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        };
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}]
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        // No snapshot or differential — should return early with no errors
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn validate_fixed_string_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.name.family".to_string(),
+                path: "Patient.name.family".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "string".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_string: Some("ExpectedName".to_string()),
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "ActualName"}]
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("name.family") && e.contains("expected 'ExpectedName'")),
+            "Expected error about name.family fixed string mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_fixed_uri_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.photo.url".to_string(),
+                path: "Patient.photo.url".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "uri".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_string: None,
+                fixed_uri: Some("http://expected.uri".to_string()),
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "photo": [{"url": "http://actual.uri"}]
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("photo.url") && e.contains("expected uri")),
+            "Expected error about photo.url uri mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_fixed_integer_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.extension.value".to_string(),
+                path: "Patient.extension.value".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "integer".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: Some(42),
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "extension": [{"value": 100}]
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors.iter().any(|e| e.contains("expected 42")),
+            "Expected error about integer mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_pattern_string_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.name.family".to_string(),
+                path: "Patient.name.family".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "string".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: Some("ExpectedPattern".to_string()),
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "ActualName"}]
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors.iter().any(|e| e.contains("pattern expected")),
+            "Expected error about pattern string mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_pattern_code_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.gender".to_string(),
+                path: "Patient.gender".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "code".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: Some("male".to_string()),
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "gender": "female"
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors.iter().any(|e| e.contains("pattern code expected")),
+            "Expected error about pattern code mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_pattern_quantity_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.weight".to_string(),
+                path: "Patient.weight".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "Quantity".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: Some(serde_json::json!({
+                    "value": 70.0,
+                    "unit": "kg"
+                })),
+                fixed_coding: None,
+                pattern_coding: None,
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "weight": {"value": 80.0, "unit": "kg"}
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors.iter().any(|e| e.contains("pattern quantity")),
+            "Expected error about pattern quantity mismatch, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validate_pattern_coding_mismatch() {
+        let mut profile = test_patient_profile();
+        if let Some(ref mut snapshot) = profile.snapshot {
+            snapshot.element.push(ElementDefinition {
+                id: "Patient.gender".to_string(),
+                path: "Patient.gender".to_string(),
+                min: Some(1),
+                max: Some("1".to_string()),
+                type_: vec![ElementDefinitionType {
+                    code: "Coding".to_string(),
+                    target_profile: vec![],
+                    profile: vec![],
+                    versioning: None,
+                }],
+                fixed_string: None,
+                fixed_uri: None,
+                fixed_code: None,
+                fixed_boolean: None,
+                fixed_integer: None,
+                fixed_decimal: None,
+                pattern_string: None,
+                pattern_uri: None,
+                pattern_code: None,
+                pattern_boolean: None,
+                must_support: true,
+                short: None,
+                definition: None,
+                binding: None,
+                content_reference: None,
+                fixed_quantity: None,
+                pattern_quantity: None,
+                fixed_coding: None,
+                pattern_coding: Some(serde_json::json!({
+                    "system": "http://example.org",
+                    "code": "male"
+                })),
+                fixed_codeable_concept: None,
+                pattern_codeable_concept: None,
+                constraint: vec![],
+                is_modifier: false,
+                is_summary: false,
+                slice_name: None,
+                slicing: None,
+            });
+        }
+
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Test"}],
+            "gender": {"system": "http://other.org", "code": "female"}
+        });
+        let errors = validate_against_profile(&resource, &profile);
+        assert!(
+            errors.iter().any(|e| e.contains("pattern coding")),
+            "Expected error about pattern coding mismatch, got: {:?}",
             errors
         );
     }

@@ -1685,7 +1685,7 @@ mod tests {
     }
 
     #[test]
-    fn assertion_for_kind_include() {
+    fn assertion_for_kind_include_variant() {
         let kind = TestCaseKind::Include {
             param: "organization".to_string(),
             revinclude: false,
@@ -1705,5 +1705,165 @@ mod tests {
             assertion.is_none(),
             "Negative should have no response assertion"
         );
+    }
+
+    // ── Additional assertion_for_kind tests ────────────────────────────
+
+    #[test]
+    fn assertion_for_kind_search_modifier() {
+        let kind = TestCaseKind::SearchModifier {
+            param_name: "name".to_string(),
+            modifier: SearchModifier::Exact,
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+        assert_eq!(assertion.min_entries, Some(0));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_prefix() {
+        let kind = TestCaseKind::SearchPrefix {
+            param_name: "birthdate".to_string(),
+            prefix: SearchPrefix::Gt,
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_near() {
+        let kind = TestCaseKind::SearchNear {
+            param_name: "near".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Location").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_combo() {
+        let kind = TestCaseKind::SearchCombo {
+            params: vec!["name".to_string(), "birthdate".to_string()],
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_chained() {
+        let kind = TestCaseKind::SearchChained {
+            chain_param: "organization".to_string(),
+            target_param: "name".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_chained_modifier() {
+        let kind = TestCaseKind::SearchChainedModifier {
+            chain_param: "organization".to_string(),
+            target_param: "name".to_string(),
+            modifier: SearchModifier::Exact,
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_chained_multi_hop() {
+        let kind = TestCaseKind::SearchChainedMultiHop {
+            chain_params: vec!["subject".to_string(), "managingOrganization".to_string()],
+            target_param: "name".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Observation").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_composite() {
+        let kind = TestCaseKind::SearchComposite {
+            param_name: "custom-composite".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_include() {
+        let kind = TestCaseKind::Include {
+            param: "organization".to_string(),
+            revinclude: false,
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_result_param_summary() {
+        let kind = TestCaseKind::ResultParam {
+            param: "_summary".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+        assert!(!assertion.absent_fields.is_empty());
+        assert!(assertion.required_fields.contains_key("Patient"));
+    }
+
+    #[test]
+    fn assertion_for_kind_result_param_count() {
+        let kind = TestCaseKind::ResultParam {
+            param: "_count".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+        assert_eq!(assertion.max_entries, Some(1));
+    }
+
+    #[test]
+    fn assertion_for_kind_result_param_total() {
+        let kind = TestCaseKind::ResultParam {
+            param: "_total".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_result_param_filter() {
+        let kind = TestCaseKind::ResultParam {
+            param: "_filter".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_result_param_unknown() {
+        let kind = TestCaseKind::ResultParam {
+            param: "_unknown".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_operation() {
+        let kind = TestCaseKind::Operation {
+            code: "everything".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(
+            assertion.response_contains_key,
+            Some("resourceType".to_string())
+        );
+    }
+
+    #[test]
+    fn assertion_for_kind_conformance() {
+        let kind = TestCaseKind::Conformance {
+            description: "test".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient");
+        assert!(assertion.is_none());
     }
 }

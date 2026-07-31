@@ -1711,6 +1711,7 @@ pub fn validate_document(cs: &CapabilityStatement) -> CapabilityStatementValidat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generate::model::{Interaction, TestCaseKind};
     use crate::model::profile::{
         ElementBinding, ElementConstraint, ElementDefinition, ElementDefinitionType,
         ElementSlicing, SlicingDiscriminator, Snapshot,
@@ -2731,5 +2732,435 @@ mod tests {
         if let Some((_, tp)) = org_target {
             assert!(tp.contains("TestOrganization"));
         }
+    }
+
+    // ── extract_expression_field_path tests ────────────────────────────
+
+    #[test]
+    fn extract_expression_field_path_with_resource_prefix() {
+        let result = extract_expression_field_path("Patient.name", "Patient");
+        assert_eq!(result, Some("name".to_string()));
+    }
+
+    #[test]
+    fn extract_expression_field_path_with_subfield() {
+        let result = extract_expression_field_path("Patient.name.family", "Patient");
+        assert_eq!(result, Some("name.family".to_string()));
+    }
+
+    #[test]
+    fn extract_expression_field_path_with_alternatives() {
+        let result = extract_expression_field_path("Patient.name | Practitioner.name", "Patient");
+        assert_eq!(result, Some("name".to_string()));
+    }
+
+    #[test]
+    fn extract_expression_field_path_without_resource_prefix() {
+        let result = extract_expression_field_path("name.family", "Patient");
+        assert_eq!(result, Some("name.family".to_string()));
+    }
+
+    #[test]
+    fn extract_expression_field_path_bare_field() {
+        let result = extract_expression_field_path("name", "Patient");
+        assert_eq!(result, Some("name".to_string()));
+    }
+
+    #[test]
+    fn extract_expression_field_path_empty() {
+        let result = extract_expression_field_path("", "Patient");
+        assert_eq!(result, Some("".to_string()));
+    }
+
+    // ── validate_security tests ────────────────────────────────────────
+
+    #[test]
+    fn validate_security_no_security() {
+        let cs = sample_cs();
+        let result = validate_security(&cs);
+        assert!(result.errors.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_security_with_cors() {
+        let mut cs = sample_cs();
+        cs.rest[0].security = Some(Security {
+            cors: Some(true),
+            service: vec![],
+            description: None,
+        });
+        let result = validate_security(&cs);
+        assert!(result.errors.is_empty());
+        assert!(result.warnings.iter().any(|w| w.contains("CORS")));
+    }
+
+    #[test]
+    fn validate_security_with_oauth() {
+        let mut cs = sample_cs();
+        cs.rest[0].security = Some(Security {
+            cors: None,
+            service: vec![SecurityService {
+                coding: vec![SecurityServiceCoding {
+                    code: Some("OAuth".to_string()),
+                    system: None,
+                    display: None,
+                }],
+                text: None,
+            }],
+            description: None,
+        });
+        let result = validate_security(&cs);
+        assert!(result.errors.is_empty());
+        assert!(result.warnings.iter().any(|w| w.contains("OAuth")));
+    }
+
+    // ── validate_metadata tests ────────────────────────────────────────
+
+    #[test]
+    fn validate_metadata_no_software_or_implementation() {
+        let cs = sample_cs();
+        let result = validate_metadata(&cs);
+        assert!(result.errors.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_metadata_with_software() {
+        let mut cs = sample_cs();
+        cs.software = Some(Software {
+            name: Some("TestServer".to_string()),
+            version: Some("1.0".to_string()),
+            release_date: None,
+        });
+        let result = validate_metadata(&cs);
+        assert!(result.errors.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_metadata_missing_software_name() {
+        let mut cs = sample_cs();
+        cs.software = Some(Software {
+            name: Some("".to_string()),
+            version: Some("1.0".to_string()),
+            release_date: None,
+        });
+        let result = validate_metadata(&cs);
+        assert!(result.errors.iter().any(|e| e.contains("software.name")));
+    }
+
+    #[test]
+    fn validate_metadata_missing_implementation_description() {
+        let mut cs = sample_cs();
+        cs.implementation = Some(Implementation {
+            description: Some("".to_string()),
+            url: None,
+            custodian: None,
+        });
+        let result = validate_metadata(&cs);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("implementation.description"))
+        );
+    }
+
+    // ── validate_messaging tests ────────────────────────────────────────
+
+    #[test]
+    fn validate_messaging_no_messaging() {
+        let cs = sample_cs();
+        let result = validate_messaging(&cs);
+        assert!(result.errors.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_messaging_with_endpoint() {
+        let mut cs = sample_cs();
+        cs.messaging = vec![Messaging {
+            endpoint: Some("http://example.org/messaging".to_string()),
+            supported_message: vec![],
+            reliable_cache: None,
+            documentation: None,
+        }];
+        let result = validate_messaging(&cs);
+        assert!(result.errors.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_messaging_missing_endpoint() {
+        let mut cs = sample_cs();
+        cs.messaging = vec![Messaging {
+            endpoint: Some("".to_string()),
+            supported_message: vec![],
+            reliable_cache: None,
+            documentation: None,
+        }];
+        let result = validate_messaging(&cs);
+        assert!(result.warnings.iter().any(|w| w.contains("endpoint")));
+    }
+
+    // ── validate_document tests ────────────────────────────────────────
+
+    #[test]
+    fn validate_document_no_documents() {
+        let cs = sample_cs();
+        let result = validate_document(&cs);
+        assert!(result.errors.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_document_valid_mode() {
+        let mut cs = sample_cs();
+        cs.document = vec![Document {
+            mode: Some("producer".to_string()),
+            profile: Some("http://example.org/Profile".to_string()),
+            documentation: None,
+        }];
+        let result = validate_document(&cs);
+        assert!(result.errors.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_document_unusual_mode() {
+        let mut cs = sample_cs();
+        cs.document = vec![Document {
+            mode: Some("invalid-mode".to_string()),
+            profile: Some("http://example.org/Profile".to_string()),
+            documentation: None,
+        }];
+        let result = validate_document(&cs);
+        assert!(result.warnings.iter().any(|w| w.contains("unusual mode")));
+    }
+
+    #[test]
+    fn validate_document_missing_mode() {
+        let mut cs = sample_cs();
+        cs.document = vec![Document {
+            mode: None,
+            profile: Some("http://example.org/Profile".to_string()),
+            documentation: None,
+        }];
+        let result = validate_document(&cs);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("mode is missing"))
+        );
+    }
+
+    #[test]
+    fn validate_document_missing_profile() {
+        let mut cs = sample_cs();
+        cs.document = vec![Document {
+            mode: Some("producer".to_string()),
+            profile: Some("".to_string()),
+            documentation: None,
+        }];
+        let result = validate_document(&cs);
+        assert!(result.warnings.iter().any(|w| w.contains("profile")));
+    }
+
+    // ── conformance_test_to_test_case tests ────────────────────────────
+
+    #[test]
+    fn conformance_test_to_test_case_must_support() {
+        let ct = ConformanceTest {
+            name: "test_must_support".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::MustSupportPresence {
+                field_path: "name".to_string(),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient?_id=patient-1&_count=10".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 200,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: Some(0),
+                bundle_type: Some("searchset".to_string()),
+                expect_operation_outcome: false,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.name, "test_must_support");
+        assert_eq!(tc.request.method, "GET");
+        assert!(matches!(tc.kind, TestCaseKind::Conformance { .. }));
+        assert_eq!(tc.validation.expected_status, 200);
+        let assertion = tc.validation.response_assertion.unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+        assert!(assertion.required_fields.contains_key("Patient"));
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_undeclared_interaction() {
+        let ct = ConformanceTest {
+            name: "test_undeclared".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::UndeclaredInteraction {
+                interaction: "create".to_string(),
+            },
+            request: ConformanceRequest {
+                method: "POST".to_string(),
+                url: "/Patient".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 0,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: None,
+                bundle_type: None,
+                expect_operation_outcome: true,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.validation.expected_status, 0);
+        assert_eq!(tc.interaction, Interaction::Create);
+        let assertion = tc.validation.response_assertion.unwrap();
+        assert_eq!(assertion.outcome_severity, Some("error".to_string()));
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_fixed_value() {
+        let ct = ConformanceTest {
+            name: "test_fixed".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::FixedValueValidation {
+                field_path: "active".to_string(),
+                expected_value: serde_json::json!(true),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient?_id=patient-1&_count=10".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 200,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: Some(0),
+                bundle_type: Some("searchset".to_string()),
+                expect_operation_outcome: false,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        let assertion = tc.validation.response_assertion.unwrap();
+        assert!(assertion.field_values.contains_key("Patient"));
+        assert_eq!(
+            assertion.field_values["Patient"].get("active"),
+            Some(&serde_json::json!(true))
+        );
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_expression_validation() {
+        let ct = ConformanceTest {
+            name: "test_expression".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::ExpressionValidation {
+                param_name: "name".to_string(),
+                expression: "Patient.name".to_string(),
+                field_path: "name".to_string(),
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient?_id=patient-1&_count=10".to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 200,
+                must_contain_fields: vec!["name".to_string()],
+                must_not_contain_fields: vec![],
+                min_entries: Some(0),
+                bundle_type: Some("searchset".to_string()),
+                expect_operation_outcome: false,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.interaction, Interaction::SearchType);
+        assert_eq!(tc.validation.required_elements, vec!["name"]);
+    }
+
+    #[test]
+    fn conformance_test_to_test_case_target_type_validation() {
+        let ct = ConformanceTest {
+            name: "test_target_type".to_string(),
+            description: "test".to_string(),
+            resource_type: "Patient".to_string(),
+            kind: ConformanceTestKind::TargetTypeValidation {
+                param_name: "organization".to_string(),
+                target_types: vec!["Organization".to_string()],
+            },
+            request: ConformanceRequest {
+                method: "GET".to_string(),
+                url: "/Patient?organization=Organization/test-id&_id=patient-1&_count=10"
+                    .to_string(),
+                headers: std::collections::HashMap::new(),
+                body: None,
+            },
+            assertion: ConformanceAssertion {
+                expected_status: 200,
+                must_contain_fields: vec![],
+                must_not_contain_fields: vec![],
+                min_entries: Some(0),
+                bundle_type: Some("searchset".to_string()),
+                expect_operation_outcome: false,
+            },
+        };
+        let tc = conformance_test_to_test_case(&ct);
+        assert_eq!(tc.interaction, Interaction::SearchType);
+    }
+
+    // ── extract_field_path_from_expression tests ───────────────────────
+
+    #[test]
+    fn extract_field_path_from_expression_simple_exists() {
+        let result = extract_field_path_from_expression("name.exists()", "Patient.name", "Patient");
+        assert_eq!(result, Some("name".to_string()));
+    }
+
+    #[test]
+    fn extract_field_path_from_expression_starts_with_function() {
+        let result = extract_field_path_from_expression("exists()", "Patient.name", "Patient");
+        assert_eq!(result, Some("name".to_string()));
+    }
+
+    #[test]
+    fn extract_field_path_from_expression_bare_field() {
+        let result = extract_field_path_from_expression("name", "Patient.name", "Patient");
+        assert_eq!(result, Some("name".to_string()));
+    }
+
+    #[test]
+    fn extract_field_path_from_expression_with_base_type_prefix() {
+        let result =
+            extract_field_path_from_expression("Patient.name.exists()", "Patient.name", "Patient");
+        assert_eq!(result, Some("name".to_string()));
+    }
+
+    #[test]
+    fn extract_field_path_from_expression_falls_back_to_element_path() {
+        let result =
+            extract_field_path_from_expression("Patient.exists()", "Patient.name", "Patient");
+        assert_eq!(result, Some("name".to_string()));
     }
 }

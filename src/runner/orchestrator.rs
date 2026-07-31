@@ -1079,4 +1079,408 @@ mod tests {
             "At least some tests should fail when server is unreachable"
         );
     }
+
+    // ── Tests for resolve_references ──────────────────────────────────
+
+    #[test]
+    fn resolve_references_placeholder_pattern() {
+        let mut body = serde_json::json!({
+            "resourceType": "Patient",
+            "managingOrganization": {
+                "reference": "placeholder:Organization"
+            }
+        });
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Organization".to_string(), "org-123".to_string());
+
+        resolve_references(&mut body, "Patient", &created_ids);
+
+        assert_eq!(
+            body["managingOrganization"]["reference"],
+            "Organization/org-123"
+        );
+    }
+
+    #[test]
+    fn resolve_references_slash_pattern() {
+        let mut body = serde_json::json!({
+            "resourceType": "Patient",
+            "generalPractitioner": [{
+                "reference": "Practitioner/old-id"
+            }]
+        });
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Practitioner".to_string(), "prac-456".to_string());
+
+        resolve_references(&mut body, "Patient", &created_ids);
+
+        assert_eq!(
+            body["generalPractitioner"][0]["reference"],
+            "Practitioner/prac-456"
+        );
+    }
+
+    #[test]
+    fn resolve_references_urn_pattern() {
+        // URN references without a slash don't match any pattern
+        // and remain unchanged
+        let mut body = serde_json::json!({
+            "resourceType": "Observation",
+            "subject": {
+                "reference": "urn:uuid:some-uuid"
+            }
+        });
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Patient".to_string(), "patient-789".to_string());
+
+        resolve_references(&mut body, "Patient", &created_ids);
+
+        // URN without slash is not resolved
+        assert_eq!(body["subject"]["reference"], "urn:uuid:some-uuid");
+    }
+
+    #[test]
+    fn resolve_references_http_pattern() {
+        let mut body = serde_json::json!({
+            "resourceType": "Observation",
+            "subject": {
+                "reference": "http://example.org/Patient/some-id"
+            }
+        });
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Patient".to_string(), "patient-999".to_string());
+
+        resolve_references(&mut body, "Patient", &created_ids);
+
+        assert_eq!(body["subject"]["reference"], "Patient/patient-999");
+    }
+
+    #[test]
+    fn resolve_references_bare_type_pattern() {
+        let mut body = serde_json::json!({
+            "resourceType": "Provenance",
+            "target": [{
+                "reference": "Organization"
+            }]
+        });
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Organization".to_string(), "org-111".to_string());
+
+        resolve_references(&mut body, "Provenance", &created_ids);
+
+        assert_eq!(body["target"][0]["reference"], "Organization/org-111");
+    }
+
+    #[test]
+    fn resolve_references_unknown_type_unchanged() {
+        let mut body = serde_json::json!({
+            "resourceType": "Patient",
+            "managingOrganization": {
+                "reference": "UnknownType/some-id"
+            }
+        });
+        let created_ids = HashMap::new(); // empty — no IDs to resolve
+
+        resolve_references(&mut body, "Patient", &created_ids);
+
+        // Should remain unchanged since UnknownType is not in created_ids
+        assert_eq!(
+            body["managingOrganization"]["reference"],
+            "UnknownType/some-id"
+        );
+    }
+
+    #[test]
+    fn resolve_references_nested_objects() {
+        let mut body = serde_json::json!({
+            "resourceType": "Patient",
+            "contact": [{
+                "organization": {
+                    "reference": "placeholder:Organization"
+                }
+            }]
+        });
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Organization".to_string(), "org-222".to_string());
+
+        resolve_references(&mut body, "Patient", &created_ids);
+
+        assert_eq!(
+            body["contact"][0]["organization"]["reference"],
+            "Organization/org-222"
+        );
+    }
+
+    #[test]
+    fn resolve_references_non_reference_keys_unchanged() {
+        let mut body = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Smith", "given": ["John"]}],
+            "gender": "male"
+        });
+        let created_ids = HashMap::new();
+
+        resolve_references(&mut body, "Patient", &created_ids);
+
+        // Non-reference fields should be unchanged
+        assert_eq!(body["name"][0]["family"], "Smith");
+        assert_eq!(body["gender"], "male");
+    }
+
+    #[test]
+    fn resolve_reference_value_placeholder() {
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Organization".to_string(), "org-333".to_string());
+
+        let result = resolve_reference_value("placeholder:Organization", "Patient", &created_ids);
+        assert_eq!(result, Some("Organization/org-333".to_string()));
+    }
+
+    #[test]
+    fn resolve_reference_value_placeholder_unknown() {
+        let created_ids = HashMap::new();
+
+        let result = resolve_reference_value("placeholder:UnknownType", "Patient", &created_ids);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_reference_value_slash_known() {
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Practitioner".to_string(), "prac-444".to_string());
+
+        let result = resolve_reference_value("Practitioner/old-id", "Patient", &created_ids);
+        assert_eq!(result, Some("Practitioner/prac-444".to_string()));
+    }
+
+    #[test]
+    fn resolve_reference_value_urn_fallback() {
+        // URN without a slash doesn't match the slash pattern
+        // and falls through to bare type lookup, which won't find it
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Patient".to_string(), "patient-555".to_string());
+
+        let result = resolve_reference_value("urn:uuid:abc-123", "Patient", &created_ids);
+        // urn:uuid:abc-123 has no slash, so it's treated as a bare type name
+        // "urn:uuid:abc-123" is not in created_ids, so returns None
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_reference_value_http_fallback() {
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Patient".to_string(), "patient-666".to_string());
+
+        let result =
+            resolve_reference_value("http://example.org/Patient/old", "Patient", &created_ids);
+        assert_eq!(result, Some("Patient/patient-666".to_string()));
+    }
+
+    #[test]
+    fn resolve_reference_value_bare_type() {
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Organization".to_string(), "org-777".to_string());
+
+        let result = resolve_reference_value("Organization", "Patient", &created_ids);
+        assert_eq!(result, Some("Organization/org-777".to_string()));
+    }
+
+    #[test]
+    fn resolve_reference_value_unknown_slash() {
+        let created_ids = HashMap::new();
+
+        let result = resolve_reference_value("UnknownType/some-id", "Patient", &created_ids);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_reference_value_unknown_bare() {
+        let created_ids = HashMap::new();
+
+        let result = resolve_reference_value("UnknownType", "Patient", &created_ids);
+        assert_eq!(result, None);
+    }
+
+    // ── Tests for RunReport ────────────────────────────────────────────
+
+    #[test]
+    fn run_report_display_passed() {
+        let report = RunReport {
+            total: 1,
+            passed: 1,
+            failed: 0,
+            results: vec![TestResult {
+                test_name: "test-1".to_string(),
+                passed: true,
+                status_code: 200,
+                response_body: None,
+                validation_errors: vec![],
+                request_url: "http://example.com/Patient/1".to_string(),
+                request_method: "GET".to_string(),
+                request_body: None,
+                test_group: "Patient".to_string(),
+                response_headers: HashMap::new(),
+            }],
+        };
+        let display = format!("{}", report);
+        assert!(display.contains("[PASS]"));
+        assert!(display.contains("test-1"));
+        assert!(display.contains("Total: 1"));
+        assert!(display.contains("Passed: 1"));
+        assert!(display.contains("Failed: 0"));
+    }
+
+    #[test]
+    fn run_report_display_failed_with_body() {
+        let report = RunReport {
+            total: 1,
+            passed: 0,
+            failed: 1,
+            results: vec![TestResult {
+                test_name: "test-fail".to_string(),
+                passed: false,
+                status_code: 500,
+                response_body: Some(serde_json::json!({
+                    "resourceType": "OperationOutcome",
+                    "issue": [{"severity": "error", "code": "exception"}]
+                })),
+                validation_errors: vec!["Something went wrong".to_string()],
+                request_url: "http://example.com/Patient/1".to_string(),
+                request_method: "GET".to_string(),
+                request_body: Some(serde_json::json!({"resourceType": "Patient"})),
+                test_group: "Patient".to_string(),
+                response_headers: HashMap::new(),
+            }],
+        };
+        let display = format!("{}", report);
+        assert!(display.contains("[FAIL]"));
+        assert!(display.contains("test-fail"));
+        assert!(display.contains("Something went wrong"));
+        assert!(display.contains("Request body"));
+        assert!(display.contains("Response"));
+    }
+
+    #[test]
+    fn run_report_display_truncates_long_body() {
+        let long_body = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "X".repeat(1000)}]
+        });
+        let report = RunReport {
+            total: 1,
+            passed: 0,
+            failed: 1,
+            results: vec![TestResult {
+                test_name: "test-truncate".to_string(),
+                passed: false,
+                status_code: 500,
+                response_body: Some(long_body.clone()),
+                validation_errors: vec!["Error".to_string()],
+                request_url: "http://example.com/Patient/1".to_string(),
+                request_method: "POST".to_string(),
+                request_body: Some(long_body),
+                test_group: "Patient".to_string(),
+                response_headers: HashMap::new(),
+            }],
+        };
+        let display = format!("{}", report);
+        assert!(display.contains("truncated"));
+    }
+
+    #[test]
+    fn run_report_write_results_creates_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = RunReport {
+            total: 2,
+            passed: 1,
+            failed: 1,
+            results: vec![
+                TestResult {
+                    test_name: "pass-1".to_string(),
+                    passed: true,
+                    status_code: 200,
+                    response_body: None,
+                    validation_errors: vec![],
+                    request_url: "http://example.com/Patient/1".to_string(),
+                    request_method: "GET".to_string(),
+                    request_body: None,
+                    test_group: "Patient".to_string(),
+                    response_headers: HashMap::new(),
+                },
+                TestResult {
+                    test_name: "fail-1".to_string(),
+                    passed: false,
+                    status_code: 404,
+                    response_body: None,
+                    validation_errors: vec!["Not found".to_string()],
+                    request_url: "http://example.com/Patient/2".to_string(),
+                    request_method: "GET".to_string(),
+                    request_body: None,
+                    test_group: "Observation".to_string(),
+                    response_headers: HashMap::new(),
+                },
+            ],
+        };
+
+        report.write_results(dir.path()).unwrap();
+
+        assert!(dir.path().join("results/summary.json").exists());
+        assert!(dir.path().join("results/failed.json").exists());
+        assert!(dir.path().join("results/Patient.json").exists());
+        assert!(dir.path().join("results/Observation.json").exists());
+
+        // Verify summary content
+        let summary: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("results/summary.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(summary["total"], 2);
+        assert_eq!(summary["passed"], 1);
+        assert_eq!(summary["failed"], 1);
+    }
+
+    #[test]
+    fn run_report_write_results_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = RunReport {
+            total: 0,
+            passed: 0,
+            failed: 0,
+            results: vec![],
+        };
+
+        report.write_results(dir.path()).unwrap();
+
+        let summary: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("results/summary.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(summary["total"], 0);
+        assert_eq!(summary["passed"], 0);
+        assert_eq!(summary["failed"], 0);
+        assert!(summary["groups"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn orchestrator_new_creates_instance() {
+        let config = TestConfig {
+            package: None,
+            output: "/tmp".to_string(),
+            server: crate::config::models::ServerConfig {
+                base_url: "http://example.com/fhir".to_string(),
+                headers: HashMap::new(),
+                tls_verify: true,
+                tls_ca_cert: None,
+            },
+            repository: None,
+            overrides: crate::config::models::OverrideConfig::default(),
+            data_generation: crate::config::models::DataGenerationConfig::default(),
+            mock: false,
+            mock_port: 0,
+            dry_run: false,
+        };
+        let orchestrator = Orchestrator::new(config);
+        // Just verify it doesn't panic
+        let _ = orchestrator;
+    }
 }

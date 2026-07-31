@@ -252,6 +252,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // ── extract_field_values ───────────────────────────────────────────
+
     #[test]
     fn test_extract_field_values_from_patient() {
         let patient = json!({
@@ -279,6 +281,219 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_field_values_skips_empty_strings_and_uuids() {
+        let resource = json!({
+            "resourceType": "Observation",
+            "status": "",
+            "code": {
+                "coding": [{"code": "abc"}]
+            },
+            "id": "urn:uuid:12345"
+        });
+        let values = extract_field_values("Observation", &resource);
+        // Empty string should be skipped
+        assert!(!values.contains_key("Observation.status"));
+        // urn:uuid: should be skipped
+        assert!(!values.contains_key("Observation.id"));
+        // Non-empty values should still be present
+        assert!(values.contains_key("Observation.code.coding[0].code"));
+    }
+
+    #[test]
+    fn test_extract_field_values_with_numbers_and_bools() {
+        let resource = json!({
+            "resourceType": "Patient",
+            "active": true,
+            "age": 42,
+            "score": 3.5
+        });
+        let values = extract_field_values("Patient", &resource);
+        assert_eq!(values.get("Patient.active"), Some(&"true".to_string()));
+        assert_eq!(values.get("Patient.age"), Some(&"42".to_string()));
+        assert_eq!(values.get("Patient.score"), Some(&"3.5".to_string()));
+    }
+
+    #[test]
+    fn test_extract_field_values_nested_objects() {
+        let resource = json!({
+            "resourceType": "Patient",
+            "name": [{
+                "family": "Smith",
+                "given": ["John"]
+            }]
+        });
+        let values = extract_field_values("Patient", &resource);
+        assert_eq!(
+            values.get("Patient.name[0].family"),
+            Some(&"Smith".to_string())
+        );
+        assert_eq!(
+            values.get("Patient.name[0].given[0]"),
+            Some(&"John".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_field_values_empty_resource() {
+        let resource = json!({"resourceType": "Patient"});
+        let values = extract_field_values("Patient", &resource);
+        // resourceType is a string value, so it gets extracted
+        assert_eq!(values.len(), 1);
+        assert_eq!(
+            values.get("Patient.resourceType"),
+            Some(&"Patient".to_string())
+        );
+    }
+
+    // ── search_param_to_field_paths ────────────────────────────────────
+
+    #[test]
+    fn test_search_param_to_field_paths_common() {
+        let paths = search_param_to_field_paths("Patient", "name", "string");
+        assert!(paths.contains(&"Patient.name".to_string()));
+        assert!(paths.contains(&"Patient.name[0].family".to_string()));
+        assert!(paths.contains(&"Patient.name[0].given[0]".to_string()));
+
+        let paths = search_param_to_field_paths("Patient", "family", "string");
+        assert_eq!(paths, vec!["Patient.name[0].family"]);
+
+        let paths = search_param_to_field_paths("Patient", "given", "string");
+        assert_eq!(paths, vec!["Patient.name[0].given[0]"]);
+
+        let paths = search_param_to_field_paths("Patient", "identifier", "token");
+        assert_eq!(paths, vec!["Patient.identifier[0].value"]);
+
+        let paths = search_param_to_field_paths("Patient", "birthdate", "date");
+        assert_eq!(paths, vec!["Patient.birthDate"]);
+
+        let paths = search_param_to_field_paths("Patient", "gender", "token");
+        assert_eq!(paths, vec!["Patient.gender"]);
+
+        let paths = search_param_to_field_paths("Patient", "active", "token");
+        assert_eq!(paths, vec!["Patient.active"]);
+
+        let paths = search_param_to_field_paths("Patient", "status", "token");
+        assert_eq!(paths, vec!["Patient.status"]);
+    }
+
+    #[test]
+    fn test_search_param_to_field_paths_telecom() {
+        let paths = search_param_to_field_paths("Patient", "telecom", "token");
+        assert_eq!(paths, vec!["Patient.telecom[0].value"]);
+        let paths = search_param_to_field_paths("Patient", "phone", "token");
+        assert_eq!(paths, vec!["Patient.telecom[0].value"]);
+        let paths = search_param_to_field_paths("Patient", "email", "token");
+        assert_eq!(paths, vec!["Patient.telecom[0].value"]);
+    }
+
+    #[test]
+    fn test_search_param_to_field_paths_address() {
+        let paths = search_param_to_field_paths("Patient", "address", "string");
+        assert!(paths.contains(&"Patient.address[0].line[0]".to_string()));
+        assert!(paths.contains(&"Patient.address[0].city".to_string()));
+        assert!(paths.contains(&"Patient.address[0].postalCode".to_string()));
+
+        let paths = search_param_to_field_paths("Patient", "city", "string");
+        assert_eq!(paths, vec!["Patient.address[0].city"]);
+
+        let paths = search_param_to_field_paths("Patient", "state", "string");
+        assert_eq!(paths, vec!["Patient.address[0].state"]);
+
+        let paths = search_param_to_field_paths("Patient", "postalCode", "string");
+        assert_eq!(paths, vec!["Patient.address[0].postalCode"]);
+
+        let paths = search_param_to_field_paths("Patient", "country", "string");
+        assert_eq!(paths, vec!["Patient.address[0].country"]);
+    }
+
+    #[test]
+    fn test_search_param_to_field_paths_reference() {
+        let paths = search_param_to_field_paths("Observation", "subject", "reference");
+        assert_eq!(paths, vec!["Observation.subject.reference"]);
+
+        let paths = search_param_to_field_paths("Observation", "target", "reference");
+        assert_eq!(paths, vec!["Observation.target[0].reference"]);
+
+        let paths = search_param_to_field_paths("Organization", "partOf", "reference");
+        assert_eq!(paths, vec!["Organization.partOf.reference"]);
+
+        let paths = search_param_to_field_paths("Patient", "organization", "reference");
+        assert_eq!(paths, vec!["Patient.organization.reference"]);
+
+        let paths = search_param_to_field_paths("Patient", "managingOrganization", "reference");
+        assert_eq!(paths, vec!["Patient.managingOrganization.reference"]);
+    }
+
+    #[test]
+    fn test_search_param_to_field_paths_type_and_code() {
+        let paths = search_param_to_field_paths("Patient", "type", "token");
+        assert_eq!(paths, vec!["Patient.type[0].coding[0].code"]);
+
+        let paths = search_param_to_field_paths("Observation", "code", "token");
+        assert_eq!(paths, vec!["Observation.code.coding[0].code"]);
+
+        let paths = search_param_to_field_paths("Observation", "category", "token");
+        assert_eq!(paths, vec!["Observation.category.coding[0].code"]);
+    }
+
+    #[test]
+    fn test_search_param_to_field_paths_id() {
+        let paths = search_param_to_field_paths("Patient", "_id", "token");
+        assert_eq!(paths, vec!["Patient.id"]);
+    }
+
+    #[test]
+    fn test_search_param_to_field_paths_fallback_string() {
+        let paths = search_param_to_field_paths("Patient", "customString", "string");
+        assert_eq!(paths, vec!["Patient.customString"]);
+    }
+
+    #[test]
+    fn test_search_param_to_field_paths_fallback_token() {
+        let paths = search_param_to_field_paths("Patient", "customToken", "token");
+        assert_eq!(
+            paths,
+            vec![
+                "Patient.customToken.coding[0].code",
+                "Patient.customToken.code",
+                "Patient.customToken",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_search_param_to_field_paths_fallback_reference() {
+        let paths = search_param_to_field_paths("Patient", "customRef", "reference");
+        assert_eq!(paths, vec!["Patient.customRef.reference"]);
+    }
+
+    #[test]
+    fn test_search_param_to_field_paths_fallback_date() {
+        let paths = search_param_to_field_paths("Patient", "customDate", "date");
+        assert_eq!(paths, vec!["Patient.customDate"]);
+    }
+
+    #[test]
+    fn test_search_param_to_field_paths_fallback_number() {
+        let paths = search_param_to_field_paths("Patient", "customNumber", "number");
+        assert_eq!(paths, vec!["Patient.customNumber"]);
+    }
+
+    #[test]
+    fn test_search_param_to_field_paths_fallback_quantity() {
+        let paths = search_param_to_field_paths("Patient", "customQuantity", "quantity");
+        assert_eq!(paths, vec!["Patient.customQuantity.value"]);
+    }
+
+    #[test]
+    fn test_search_param_to_field_paths_fallback_unknown() {
+        let paths = search_param_to_field_paths("Patient", "customUnknown", "special");
+        assert_eq!(paths, vec!["Patient.customUnknown"]);
+    }
+
+    // ── resolve_search_value ───────────────────────────────────────────
+
+    #[test]
     fn test_resolve_search_value_for_id() {
         let mut created_ids = HashMap::new();
         created_ids.insert("Patient".to_string(), "patient-123".to_string());
@@ -304,9 +519,234 @@ mod tests {
     }
 
     #[test]
-    fn test_search_param_to_field_paths() {
-        let paths = search_param_to_field_paths("Patient", "name", "string");
-        assert!(paths.contains(&"Patient.name".to_string()));
-        assert!(paths.contains(&"Patient.name[0].family".to_string()));
+    fn test_resolve_search_value_reference_fallback_to_lowercase_match() {
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Organization".to_string(), "org-789".to_string());
+
+        // "organization" param with no search_params should fall back to lowercase match
+        let result = resolve_search_value(
+            "Patient",
+            "organization",
+            "reference",
+            &HashMap::new(),
+            &created_ids,
+        );
+        assert_eq!(result, Some("Organization/org-789".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_search_value_reference_no_match() {
+        let result = resolve_search_value(
+            "Observation",
+            "subject",
+            "reference",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_search_value_from_field_values() {
+        let mut field_values = HashMap::new();
+        field_values.insert("Patient.name[0].family".to_string(), "Smith".to_string());
+
+        let result =
+            resolve_search_value("Patient", "name", "string", &field_values, &HashMap::new());
+        assert_eq!(result, Some("Smith".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_search_value_not_found() {
+        let result = resolve_search_value(
+            "Patient",
+            "nonexistent",
+            "string",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(result, None);
+    }
+
+    // ── resolve_reference_target ────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_reference_target_hardcoded() {
+        assert_eq!(
+            resolve_reference_target("Observation", "subject", None),
+            Some("Patient".to_string())
+        );
+        assert_eq!(
+            resolve_reference_target("Patient", "organization", None),
+            Some("Organization".to_string())
+        );
+        assert_eq!(
+            resolve_reference_target("Patient", "managingOrganization", None),
+            Some("Organization".to_string())
+        );
+        assert_eq!(
+            resolve_reference_target("Location", "organization", None),
+            Some("Organization".to_string())
+        );
+        assert_eq!(
+            resolve_reference_target("Patient", "practitioner", None),
+            Some("Practitioner".to_string())
+        );
+        assert_eq!(
+            resolve_reference_target("Patient", "practitionerRole", None),
+            Some("PractitionerRole".to_string())
+        );
+        assert_eq!(
+            resolve_reference_target("Provenance", "target", None),
+            Some("Provenance".to_string())
+        );
+        assert_eq!(
+            resolve_reference_target("Organization", "partOf", None),
+            Some("Organization".to_string())
+        );
+        assert_eq!(
+            resolve_reference_target("Encounter", "service", None),
+            Some("HealthcareService".to_string())
+        );
+        assert_eq!(
+            resolve_reference_target("Patient", "device", None),
+            Some("Device".to_string())
+        );
+        assert_eq!(
+            resolve_reference_target("Patient", "group", None),
+            Some("Group".to_string())
+        );
+        assert_eq!(
+            resolve_reference_target("Patient", "specimen", None),
+            Some("Specimen".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_reference_target_capitalize_fallback() {
+        assert_eq!(
+            resolve_reference_target("Patient", "unknownref", None),
+            Some("Unknownref".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_reference_target_empty_string() {
+        assert_eq!(
+            resolve_reference_target("Patient", "", None),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn test_resolve_reference_target_with_search_params() {
+        let params = vec![SearchParameter {
+            resource_type: "SearchParameter".to_string(),
+            url: "http://example.org/sp".to_string(),
+            name: "subject".to_string(),
+            code: "subject".to_string(),
+            base: vec!["Observation".to_string()],
+            param_type: "reference".to_string(),
+            expression: Some("Observation.subject".to_string()),
+            description: None,
+            target: vec!["Patient".to_string()],
+            comparator: vec![],
+            modifier: vec![],
+        }];
+        // The expression "Observation.subject" contains "Observation" which starts
+        // with uppercase, so infer_from_search_params returns "Observation"
+        assert_eq!(
+            resolve_reference_target("Observation", "subject", Some(&params)),
+            Some("Observation".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_reference_target_infer_from_expression() {
+        let params = vec![SearchParameter {
+            resource_type: "SearchParameter".to_string(),
+            url: "http://example.org/sp".to_string(),
+            name: "performer".to_string(),
+            code: "performer".to_string(),
+            base: vec!["Observation".to_string()],
+            param_type: "reference".to_string(),
+            expression: Some("Observation.performer | Practitioner.role".to_string()),
+            description: None,
+            target: vec!["Practitioner".to_string()],
+            comparator: vec![],
+            modifier: vec![],
+        }];
+        // The expression "Observation.performer | Practitioner.role" contains
+        // "Observation" as the first uppercase type, so infer_from_search_params
+        // returns "Observation" (the first type in the expression, not the target)
+        let result = resolve_reference_target("Observation", "performer", Some(&params));
+        assert_eq!(result, Some("Observation".to_string()));
+    }
+
+    // ── infer_from_search_params ───────────────────────────────────────
+
+    #[test]
+    fn test_infer_from_search_params_found() {
+        let params = vec![SearchParameter {
+            resource_type: "SearchParameter".to_string(),
+            url: "http://example.org/sp".to_string(),
+            name: "subject".to_string(),
+            code: "subject".to_string(),
+            base: vec!["Observation".to_string()],
+            param_type: "reference".to_string(),
+            expression: Some("Patient.subject | Group.subject".to_string()),
+            description: None,
+            target: vec![],
+            comparator: vec![],
+            modifier: vec![],
+        }];
+        let result = infer_from_search_params("subject", &params);
+        assert_eq!(result, Some("Patient".to_string()));
+    }
+
+    #[test]
+    fn test_infer_from_search_params_not_found() {
+        let params = vec![];
+        let result = infer_from_search_params("subject", &params);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_infer_from_search_params_no_expression() {
+        let params = vec![SearchParameter {
+            resource_type: "SearchParameter".to_string(),
+            url: "http://example.org/sp".to_string(),
+            name: "subject".to_string(),
+            code: "subject".to_string(),
+            base: vec!["Observation".to_string()],
+            param_type: "reference".to_string(),
+            expression: None,
+            description: None,
+            target: vec![],
+            comparator: vec![],
+            modifier: vec![],
+        }];
+        let result = infer_from_search_params("subject", &params);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_infer_from_search_params_no_uppercase_types() {
+        let params = vec![SearchParameter {
+            resource_type: "SearchParameter".to_string(),
+            url: "http://example.org/sp".to_string(),
+            name: "subject".to_string(),
+            code: "subject".to_string(),
+            base: vec!["Observation".to_string()],
+            param_type: "reference".to_string(),
+            expression: Some("observation.subject".to_string()),
+            description: None,
+            target: vec![],
+            comparator: vec![],
+            modifier: vec![],
+        }];
+        // "observation" starts with lowercase, so it's filtered out
+        let result = infer_from_search_params("subject", &params);
+        assert_eq!(result, None);
     }
 }

@@ -196,6 +196,41 @@ mod tests {
         gz_data
     }
 
+    /// Helper: write a tgz archive from a list of (path, content) entries.
+    fn create_custom_tgz(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut tar_data = Vec::new();
+        {
+            let mut tar = tar::Builder::new(&mut tar_data);
+            for (path, content) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_path(path).unwrap();
+                header.set_size(content.len() as u64);
+                header.set_cksum();
+                tar.append_data(&mut header, path, content.as_bytes())
+                    .unwrap();
+            }
+            tar.finish().unwrap();
+        }
+        let mut gz_data = Vec::new();
+        {
+            let mut gz =
+                flate2::write::GzEncoder::new(&mut gz_data, flate2::Compression::default());
+            gz.write_all(&tar_data).unwrap();
+            gz.finish().unwrap();
+        }
+        gz_data
+    }
+
+    /// Helper: write tgz bytes to a temp file and parse it.
+    fn parse_tgz_bytes(tgz_data: &[u8]) -> Result<IgPackage> {
+        let temp_dir = std::env::temp_dir();
+        let tgz_path = temp_dir.join(format!("fhir_test_{}.tgz", uuid::Uuid::new_v4()));
+        std::fs::write(&tgz_path, tgz_data).unwrap();
+        let result = parse_package(tgz_path.to_str().unwrap());
+        let _ = std::fs::remove_file(&tgz_path);
+        result
+    }
+
     #[test]
     fn parse_test_package() {
         let tgz_data = create_test_tgz();
@@ -218,5 +253,223 @@ mod tests {
     fn parse_nonexistent_file_returns_error() {
         let result = parse_package("/nonexistent/path.tgz");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_empty_package_returns_empty_ig() {
+        let tgz_data = create_custom_tgz(&[]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        assert_eq!(pkg.capability_statements.len(), 0);
+        assert_eq!(pkg.structure_definitions.len(), 0);
+        assert_eq!(pkg.search_parameters.len(), 0);
+        assert_eq!(pkg.operation_definitions.len(), 0);
+        assert!(pkg.raw_resources.is_empty());
+    }
+
+    #[test]
+    fn parse_skips_non_package_directory_files() {
+        let tgz_data = create_custom_tgz(&[(
+            "META-INF/manifest.xml",
+            r#"<?xml version="1.0"?><manifest/>"#,
+        )]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        assert_eq!(pkg.raw_resources.len(), 0);
+    }
+
+    #[test]
+    fn parse_skips_non_json_files_in_package() {
+        let tgz_data =
+            create_custom_tgz(&[("package/README.txt", "This is a text file, not JSON.")]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        assert_eq!(pkg.raw_resources.len(), 0);
+    }
+
+    #[test]
+    fn parse_skips_invalid_json_in_package() {
+        let tgz_data = create_custom_tgz(&[("package/bad.json", "this is not valid json {{{")]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        assert_eq!(pkg.raw_resources.len(), 0);
+    }
+
+    #[test]
+    fn parse_handles_unknown_resource_type() {
+        let tgz_data = create_custom_tgz(&[(
+            "package/CustomResource.json",
+            r#"{
+                "resourceType": "CustomResource",
+                "id": "custom-1",
+                "name": "My Custom Resource"
+            }"#,
+        )]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        // Unknown resource type should still be in raw_resources
+        assert_eq!(pkg.raw_resources.len(), 1);
+        // But not parsed into any typed collection
+        assert_eq!(pkg.capability_statements.len(), 0);
+        assert_eq!(pkg.structure_definitions.len(), 0);
+        assert_eq!(pkg.search_parameters.len(), 0);
+        assert_eq!(pkg.operation_definitions.len(), 0);
+    }
+
+    #[test]
+    fn parse_handles_search_parameter() {
+        let tgz_data = create_custom_tgz(&[(
+            "package/SearchParameter-patient-name.json",
+            r#"{
+                "resourceType": "SearchParameter",
+                "url": "http://hl7.org/fhir/SearchParameter/Patient-name",
+                "name": "name",
+                "code": "name",
+                "base": ["Patient"],
+                "type": "string"
+            }"#,
+        )]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        assert_eq!(pkg.search_parameters.len(), 1);
+        assert_eq!(pkg.search_parameters[0].code, "name");
+        assert_eq!(pkg.raw_resources.len(), 1);
+    }
+
+    #[test]
+    fn parse_handles_operation_definition() {
+        let tgz_data = create_custom_tgz(&[(
+            "package/OperationDefinition-everything.json",
+            r#"{
+                "resourceType": "OperationDefinition",
+                "url": "http://hl7.org/fhir/OperationDefinition/Patient-everything",
+                "name": "everything",
+                "code": "everything",
+                "system": false,
+                "instance": true
+            }"#,
+        )]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        assert_eq!(pkg.operation_definitions.len(), 1);
+        assert_eq!(pkg.operation_definitions[0].code, "everything");
+        assert_eq!(pkg.raw_resources.len(), 1);
+    }
+
+    #[test]
+    fn parse_handles_failed_capability_statement_deserialization() {
+        // CapabilityStatement with invalid data that fails deserialization
+        let tgz_data = create_custom_tgz(&[(
+            "package/CapabilityStatement-bad.json",
+            r#"{
+                "resourceType": "CapabilityStatement",
+                "rest": [{"mode": 123}]
+            }"#,
+        )]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        // Should still be in raw_resources even if typed parsing failed
+        assert_eq!(pkg.raw_resources.len(), 1);
+        assert_eq!(pkg.capability_statements.len(), 0);
+    }
+
+    #[test]
+    fn parse_handles_failed_structure_definition_deserialization() {
+        let tgz_data = create_custom_tgz(&[(
+            "package/StructureDefinition-bad.json",
+            r#"{
+                "resourceType": "StructureDefinition",
+                "url": "http://example.org/bad"
+            }"#,
+        )]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        assert_eq!(pkg.raw_resources.len(), 1);
+        assert_eq!(pkg.structure_definitions.len(), 0);
+    }
+
+    #[test]
+    fn parse_handles_failed_search_parameter_deserialization() {
+        let tgz_data = create_custom_tgz(&[(
+            "package/SearchParameter-bad.json",
+            r#"{
+                "resourceType": "SearchParameter",
+                "url": "http://example.org/bad"
+            }"#,
+        )]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        assert_eq!(pkg.raw_resources.len(), 1);
+        assert_eq!(pkg.search_parameters.len(), 0);
+    }
+
+    #[test]
+    fn parse_handles_failed_operation_definition_deserialization() {
+        let tgz_data = create_custom_tgz(&[(
+            "package/OperationDefinition-bad.json",
+            r#"{
+                "resourceType": "OperationDefinition",
+                "url": "http://example.org/bad"
+            }"#,
+        )]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        assert_eq!(pkg.raw_resources.len(), 1);
+        assert_eq!(pkg.operation_definitions.len(), 0);
+    }
+
+    #[test]
+    fn parse_handles_missing_resource_type() {
+        let tgz_data = create_custom_tgz(&[(
+            "package/no-resource-type.json",
+            r#"{
+                "name": "SomeResource",
+                "status": "active"
+            }"#,
+        )]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        // No resourceType means it goes to the _ => {} branch
+        assert_eq!(pkg.raw_resources.len(), 1);
+        assert_eq!(pkg.capability_statements.len(), 0);
+        assert_eq!(pkg.structure_definitions.len(), 0);
+    }
+
+    #[test]
+    fn parse_handles_multiple_resource_types() {
+        let tgz_data = create_custom_tgz(&[
+            (
+                "package/CapabilityStatement-server.json",
+                r#"{
+                    "resourceType": "CapabilityStatement",
+                    "status": "active",
+                    "rest": [{"mode": "server", "resource": [], "interaction": []}]
+                }"#,
+            ),
+            (
+                "package/StructureDefinition-Patient.json",
+                r#"{
+                    "resourceType": "StructureDefinition",
+                    "url": "http://example.org/Patient",
+                    "name": "Patient",
+                    "type": "Patient",
+                    "kind": "resource"
+                }"#,
+            ),
+            (
+                "package/SearchParameter-name.json",
+                r#"{
+                    "resourceType": "SearchParameter",
+                    "url": "http://example.org/sp-name",
+                    "name": "name",
+                    "code": "name",
+                    "base": ["Patient"],
+                    "type": "string"
+                }"#,
+            ),
+            (
+                "package/OperationDefinition-validate.json",
+                r#"{
+                    "resourceType": "OperationDefinition",
+                    "url": "http://example.org/op-validate",
+                    "name": "validate",
+                    "code": "validate"
+                }"#,
+            ),
+        ]);
+        let pkg = parse_tgz_bytes(&tgz_data).unwrap();
+        assert_eq!(pkg.capability_statements.len(), 1);
+        assert_eq!(pkg.structure_definitions.len(), 1);
+        assert_eq!(pkg.search_parameters.len(), 1);
+        assert_eq!(pkg.operation_definitions.len(), 1);
+        assert_eq!(pkg.raw_resources.len(), 4);
     }
 }

@@ -470,6 +470,157 @@ mod tests {
         let auth_value = auth_header.unwrap();
         assert!(auth_value.starts_with("Basic "));
     }
+
+    #[tokio::test]
+    async fn execute_patch_request() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+
+        let test = make_test_case("test_patch", "PATCH", "/Patient/test-id", 200, None);
+        let result = executor.execute_test(&test).await.unwrap();
+
+        assert_eq!(result.status_code, 200);
+        assert!(result.passed);
+
+        let recorded = server.last_request().unwrap();
+        assert_eq!(recorded.method, "PATCH");
+    }
+
+    #[tokio::test]
+    async fn execute_test_accept_statuses() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+
+        // expected_status=404, but accept_statuses includes 200
+        let mut test = make_test_case("test_accept", "GET", "/Patient/1", 404, None);
+        test.validation.response_assertion = Some(ResponseAssertion {
+            accept_statuses: vec![200],
+            ..ResponseAssertion::none()
+        });
+
+        let result = executor.execute_test(&test).await.unwrap();
+
+        // Server returns 200, expected 404, but accept_statuses includes 200 → pass
+        assert!(result.passed);
+        assert_eq!(result.status_code, 200);
+    }
+
+    #[tokio::test]
+    async fn execute_test_accept_statuses_not_matching() {
+        let server = TestServer::new().await;
+        let executor = TestExecutor::from_server_config(&server.addr, HashMap::new()).unwrap();
+
+        // expected_status=404, accept_statuses does NOT include 200
+        let mut test = make_test_case("test_no_accept", "GET", "/Patient/1", 404, None);
+        test.validation.response_assertion = Some(ResponseAssertion {
+            accept_statuses: vec![201, 202],
+            ..ResponseAssertion::none()
+        });
+
+        let result = executor.execute_test(&test).await.unwrap();
+
+        // Server returns 200, expected 404, accept_statuses doesn't include 200 → fail
+        assert!(!result.passed);
+        assert_eq!(result.status_code, 200);
+    }
+
+    #[tokio::test]
+    async fn execute_test_sentinel_zero_2xx_no_body() {
+        // expected_status=0, server returns 200 with no parseable body → fail
+        let app = axum::Router::new().route(
+            "/{*path}",
+            axum::routing::any(|| async { (axum::http::StatusCode::OK, "not-json") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let server_url = format!("http://{}", addr);
+
+        let executor = TestExecutor::from_server_config(&server_url, HashMap::new()).unwrap();
+
+        let test = make_test_case("test_no_body", "GET", "/Patient/1", 0, None);
+        let result = executor.execute_test(&test).await.unwrap();
+
+        // 2xx with no parseable body → fail
+        assert!(!result.passed);
+        assert_eq!(result.status_code, 200);
+    }
+
+    #[tokio::test]
+    async fn write_base_url_repository() {
+        let executor = TestExecutor::new(
+            "http://read.example.com/fhir".to_string(),
+            HashMap::new(),
+            WriteEndpoint::Repository {
+                base_url: "http://write.example.com/fhir".to_string(),
+                username: "user".to_string(),
+                password: "pass".to_string(),
+                upload_method: UploadMethod::Put,
+                concurrency: 1,
+                tls_config: TlsConfig::default(),
+            },
+        )
+        .unwrap();
+        assert_eq!(executor.write_base_url(), "http://write.example.com/fhir");
+    }
+
+    #[tokio::test]
+    async fn write_base_url_server() {
+        let executor = TestExecutor::new(
+            "http://read.example.com/fhir".to_string(),
+            HashMap::new(),
+            WriteEndpoint::Server {
+                base_url: "http://server.example.com/fhir".to_string(),
+                headers: HashMap::new(),
+                upload_method: UploadMethod::Post,
+                concurrency: 1,
+                tls_config: TlsConfig::default(),
+            },
+        )
+        .unwrap();
+        assert_eq!(executor.write_base_url(), "http://server.example.com/fhir");
+    }
+
+    #[tokio::test]
+    async fn add_write_auth_server_headers() {
+        let server = TestServer::new().await;
+        let mut write_headers = HashMap::new();
+        write_headers.insert("X-Api-Key".to_string(), "secret-key".to_string());
+        let executor = TestExecutor::new(
+            server.addr.clone(),
+            HashMap::new(),
+            WriteEndpoint::Server {
+                base_url: server.addr.clone(),
+                headers: write_headers,
+                upload_method: UploadMethod::Put,
+                concurrency: 1,
+                tls_config: TlsConfig::default(),
+            },
+        )
+        .unwrap();
+
+        server.push_response(serde_json::json!({
+            "resourceType": "Patient",
+            "id": "test-header-id",
+            "name": [{"family": "Header"}]
+        }));
+
+        let body = serde_json::json!({
+            "resourceType": "Patient",
+            "id": "test-header-id",
+            "name": [{"family": "Header"}]
+        });
+
+        let _result = executor.create_resource("Patient", &body).await.unwrap();
+
+        let recorded = server.last_request().unwrap();
+        assert_eq!(
+            recorded.headers.get("x-api-key").map(|s| s.as_str()),
+            Some("secret-key")
+        );
+    }
 }
 
 /// Executes HTTP requests against FHIR servers.

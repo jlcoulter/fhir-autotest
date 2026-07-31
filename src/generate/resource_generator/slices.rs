@@ -548,3 +548,162 @@ pub fn populate_extension_slices(
         resource["extension"] = serde_json::json!(extensions);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_element(
+        id: &str,
+        path: &str,
+        slice_name: Option<&str>,
+        min: u32,
+        type_code: &str,
+    ) -> ElementDefinition {
+        ElementDefinition {
+            id: id.into(),
+            path: path.into(),
+            slice_name: slice_name.map(|s| s.into()),
+            min: Some(min),
+            type_: if type_code.is_empty() {
+                vec![]
+            } else {
+                vec![ElementDefinitionType {
+                    code: type_code.into(),
+                    profile: vec![],
+                    target_profile: vec![],
+                    versioning: None,
+                }]
+            },
+            ..Default::default()
+        }
+    }
+
+    // ── populate_required_slices ────────────────────────────────────────
+
+    #[test]
+    fn test_populate_required_slices_no_slices() {
+        let mut resource = json!({"resourceType": "Patient", "identifier": [{"value": "test"}]});
+        let elements = vec![make_element("Patient", "Patient", None, 0, "")];
+        let result =
+            populate_required_slices(&mut resource, &elements, "Patient", &[], &HashMap::new());
+        assert!(result.is_ok());
+        assert_eq!(resource["identifier"][0]["value"], "test");
+    }
+
+    #[test]
+    fn test_populate_required_slices_with_required_slice() {
+        let mut resource = json!({"resourceType": "Patient", "identifier": [{"value": "test"}]});
+        let elements = vec![
+            make_element("Patient", "Patient", None, 0, ""),
+            make_element(
+                "Patient.identifier",
+                "Patient.identifier",
+                None,
+                0,
+                "Identifier",
+            ),
+            ElementDefinition {
+                id: "Patient.identifier:ABN".into(),
+                path: "Patient.identifier".into(),
+                slice_name: Some("ABN".into()),
+                min: Some(1),
+                type_: vec![ElementDefinitionType {
+                    code: "Identifier".into(),
+                    profile: vec![],
+                    target_profile: vec![],
+                    versioning: None,
+                }],
+                slicing: Some(ElementSlicing {
+                    discriminator: vec![SlicingDiscriminator {
+                        discriminator_type: "value".into(),
+                        path: "system".into(),
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ];
+        let result =
+            populate_required_slices(&mut resource, &elements, "Patient", &[], &HashMap::new());
+        assert!(result.is_ok());
+        // Should have at least one identifier entry
+        assert!(!resource["identifier"].as_array().unwrap().is_empty());
+    }
+
+    // ── apply_slices_for_path ──────────────────────────────────────────
+
+    #[test]
+    fn test_apply_slices_for_path_no_slices() {
+        let value = json!({"value": "test"});
+        let result = apply_slices_for_path(
+            value.clone(),
+            "Patient.identifier",
+            &[],
+            &[],
+            &HashMap::new(),
+        );
+        // When no slices exist, the value is returned as-is (not wrapped in array)
+        assert_eq!(result, json!({"value": "test"}));
+    }
+
+    #[test]
+    fn test_apply_slices_for_path_with_slices() {
+        let value = json!({"value": "test"});
+        let elements = vec![
+            make_element(
+                "Patient.identifier:ABN",
+                "Patient.identifier",
+                Some("ABN"),
+                0,
+                "Identifier",
+            ),
+            ElementDefinition {
+                id: "Patient.identifier".into(),
+                path: "Patient.identifier".into(),
+                slicing: Some(ElementSlicing {
+                    discriminator: vec![SlicingDiscriminator {
+                        discriminator_type: "value".into(),
+                        path: "system".into(),
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ];
+        let result =
+            apply_slices_for_path(value, "Patient.identifier", &elements, &[], &HashMap::new());
+        let arr = result.as_array().unwrap();
+        assert!(!arr.is_empty());
+    }
+
+    // ── populate_extension_slices ──────────────────────────────────────
+
+    #[test]
+    fn test_populate_extension_slices_no_slices() {
+        let mut resource = json!({"resourceType": "Patient"});
+        populate_extension_slices(&mut resource, &[], "Patient", &[], &HashMap::new());
+        assert!(resource.get("extension").is_none());
+    }
+
+    #[test]
+    fn test_populate_extension_slices_with_slice_but_no_def() {
+        let mut resource = json!({"resourceType": "Patient"});
+        let elements = vec![ElementDefinition {
+            id: "Patient.extension:testExt".into(),
+            path: "Patient.extension".into(),
+            slice_name: Some("testExt".into()),
+            type_: vec![ElementDefinitionType {
+                code: "Extension".into(),
+                profile: vec!["http://example.org/Extension/TestExt".into()],
+                target_profile: vec![],
+                versioning: None,
+            }],
+            ..Default::default()
+        }];
+        // No matching extension definition in all_profiles, so nothing should happen
+        populate_extension_slices(&mut resource, &elements, "Patient", &[], &HashMap::new());
+        assert!(resource.get("extension").is_none());
+    }
+}
