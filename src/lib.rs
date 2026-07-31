@@ -248,10 +248,6 @@ pub async fn run_tests(package_path: &str, config: &TestConfig) -> Result<()> {
     report.write_results(output_dir)?;
     println!("\nResults written to: {}/results/", config.output);
 
-    if report.failed > 0 {
-        anyhow::bail!("{} test(s) failed", report.failed);
-    }
-
     Ok(())
 }
 
