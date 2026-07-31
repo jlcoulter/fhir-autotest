@@ -1607,13 +1607,13 @@ pub fn validate_security(cs: &CapabilityStatement) -> CapabilityStatementValidat
             }
 
             for (j, service) in security.service.iter().enumerate() {
-                if let Some(ref coding) = service.coding
-                    && coding.code.as_deref() == Some("OAuth")
-                {
-                    warnings.push(format!(
-                        "rest[{}].security.service[{}] declares OAuth — OAuth endpoint should be reachable",
-                        i, j
-                    ));
+                for coding in &service.coding {
+                    if coding.code.as_deref() == Some("OAuth") {
+                        warnings.push(format!(
+                            "rest[{}].security.service[{}] declares OAuth — OAuth endpoint should be reachable",
+                            i, j
+                        ));
+                    }
                 }
             }
         }

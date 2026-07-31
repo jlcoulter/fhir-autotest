@@ -79,7 +79,8 @@ pub struct Security {
 /// A security service (e.g., OAuth) declared in a CapabilityStatement.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityService {
-    pub coding: Option<SecurityServiceCoding>,
+    #[serde(default)]
+    pub coding: Vec<SecurityServiceCoding>,
     pub text: Option<String>,
 }
 
@@ -220,11 +221,11 @@ mod tests {
                 "security": {
                     "cors": true,
                     "service": [{
-                        "coding": {
+                        "coding": [{
                             "system": "http://hl7.org/fhir/restful-security-service",
                             "code": "OAuth",
                             "display": "OAuth"
-                        }
+                        }]
                     }],
                     "description": "OAuth2 with SMART on FHIR"
                 },
@@ -264,12 +265,11 @@ mod tests {
         let sec = cs.rest[0].security.as_ref().unwrap();
         assert_eq!(sec.cors, Some(true));
         assert_eq!(sec.service.len(), 1);
-        assert_eq!(
+        assert!(
             sec.service[0]
                 .coding
-                .as_ref()
-                .and_then(|c| c.code.as_deref()),
-            Some("OAuth")
+                .iter()
+                .any(|c| c.code.as_deref() == Some("OAuth"))
         );
 
         // System-level interactions
