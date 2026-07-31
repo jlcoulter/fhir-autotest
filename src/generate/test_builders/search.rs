@@ -296,6 +296,38 @@ pub(crate) fn build_search_composite_test(
     }
 }
 
+/// Build a system-level search test (`GET /?_type=...`).
+/// System-level search searches across multiple resource types.
+pub(crate) fn build_system_search_test() -> TestCase {
+    TestCase {
+        name: "system_search".to_string(),
+        kind: TestCaseKind::SearchSingle {
+            param_name: "_type".to_string(),
+            param_type: "string".to_string(),
+        },
+        interaction: Interaction::SearchType,
+        resource_type: String::new(),
+        profile_url: None,
+        request: HttpRequest {
+            method: "GET".to_string(),
+            url: "/?_type=Patient,Observation&_count=1".to_string(),
+            headers: HashMap::new(),
+            body: None,
+        },
+        validation: ValidationSpec {
+            expected_status: 0,
+            profile_url: None,
+            required_elements: Vec::new(),
+            forbidden_elements: Vec::new(),
+            response_assertion: Some(ResponseAssertion {
+                bundle_type: Some("searchset".to_string()),
+                min_entries: Some(0),
+                ..ResponseAssertion::none()
+            }),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

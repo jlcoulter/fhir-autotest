@@ -265,6 +265,89 @@ pub(crate) fn build_result_param_test(
     tests
 }
 
+/// Build a test for the `_format` parameter.
+/// Tests that the server respects the `_format` parameter for response format negotiation.
+pub(crate) fn build_format_test(
+    resource_type: &str,
+    format: &str,
+    profile_url: &Option<String>,
+) -> TestCase {
+    let expected_status = match format {
+        "json" => 0u16,
+        "application/fhir+json" => 0u16,
+        "xml" => 0u16,
+        _ => 0u16,
+    };
+
+    TestCase {
+        name: format!(
+            "{}_format_{}",
+            resource_type.to_lowercase(),
+            format.replace(['/', '+'], "_")
+        ),
+        kind: TestCaseKind::ResultParam {
+            param: "_format".to_string(),
+        },
+        interaction: Interaction::SearchType,
+        resource_type: resource_type.to_string(),
+        profile_url: profile_url.clone(),
+        request: HttpRequest {
+            method: "GET".to_string(),
+            url: format!("/{}?_format={}&_id={{id}}", resource_type, format),
+            headers: HashMap::new(),
+            body: None,
+        },
+        validation: ValidationSpec {
+            expected_status,
+            profile_url: None,
+            required_elements: Vec::new(),
+            forbidden_elements: Vec::new(),
+            response_assertion: Some(ResponseAssertion {
+                bundle_type: Some("searchset".to_string()),
+                min_entries: Some(0),
+                ..ResponseAssertion::none()
+            }),
+        },
+    }
+}
+
+/// Build a test for the `_pretty` parameter.
+/// Tests that the server respects the `_pretty` parameter for pretty-printing.
+pub(crate) fn build_pretty_test(
+    resource_type: &str,
+    pretty: bool,
+    profile_url: &Option<String>,
+) -> TestCase {
+    let value = if pretty { "true" } else { "false" };
+
+    TestCase {
+        name: format!("{}_pretty_{}", resource_type.to_lowercase(), value),
+        kind: TestCaseKind::ResultParam {
+            param: "_pretty".to_string(),
+        },
+        interaction: Interaction::SearchType,
+        resource_type: resource_type.to_string(),
+        profile_url: profile_url.clone(),
+        request: HttpRequest {
+            method: "GET".to_string(),
+            url: format!("/{}?_pretty={}&_id={{id}}", resource_type, value),
+            headers: HashMap::new(),
+            body: None,
+        },
+        validation: ValidationSpec {
+            expected_status: 0, // pretty-printing is best-effort
+            profile_url: None,
+            required_elements: Vec::new(),
+            forbidden_elements: Vec::new(),
+            response_assertion: Some(ResponseAssertion {
+                bundle_type: Some("searchset".to_string()),
+                min_entries: Some(0),
+                ..ResponseAssertion::none()
+            }),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

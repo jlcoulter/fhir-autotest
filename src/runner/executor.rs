@@ -507,6 +507,9 @@ pub struct TestResult {
     /// The test group this result belongs to (e.g. "Patient", "_conformance").
     #[serde(default)]
     pub test_group: String,
+    /// Response headers from the server.
+    #[serde(default)]
+    pub response_headers: HashMap<String, String>,
 }
 
 impl TestExecutor {
@@ -615,6 +618,11 @@ impl TestExecutor {
             .with_context(|| format!("Failed to execute test: {}", test.name))?;
 
         let status = resp.status().as_u16();
+        let headers: HashMap<String, String> = resp
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
         let body: Option<serde_json::Value> = resp.json().await.ok();
 
         // expected_status == 0 is a sentinel meaning "expect non-2xx"
@@ -656,6 +664,7 @@ impl TestExecutor {
             request_method: test.request.method.clone(),
             request_body: test.request.body.clone(),
             test_group: String::new(), // stamped by orchestrator
+            response_headers: headers,
         })
     }
 
