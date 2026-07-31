@@ -1109,6 +1109,8 @@ fn extended_package_runs_against_mock_server() {
         server: fhir_autotest::config::models::ServerConfig {
             base_url: format!("{}/fhir", mock_url),
             headers: HashMap::new(),
+            tls_verify: true,
+            tls_ca_cert: None,
         },
         repository: None,
         overrides: fhir_autotest::config::models::OverrideConfig::default(),
