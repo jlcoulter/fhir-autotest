@@ -140,13 +140,14 @@ async fn search_resources(
 
     // Basic parameter filtering: if query params are present, try to match
     // string/token fields on the stored resources. Params starting with _ are
-    // FHIR special params and are skipped for filtering.
+    // FHIR special params and are skipped for filtering, except _id which is
+    // a search parameter that filters by resource id.
     // Supports modifiers (:exact, :contains, :missing, :not) and
     // prefixes (eq, ne, gt, lt, ge, le).
     let filter_keys: Vec<String> = params
         ._rest
         .keys()
-        .filter(|k| !k.starts_with('_'))
+        .filter(|k| !k.starts_with('_') || *k == "_id")
         .cloned()
         .collect();
 
@@ -252,6 +253,7 @@ async fn search_resources(
             let field_name = match (rtype.as_str(), search_param) {
                 ("Location", "organization") => "managingOrganization",
                 ("PractitionerRole", "service") => "healthcareService",
+                ("HealthcareService", "organization") => "providedBy",
                 _ => search_param,
             };
             // Collect referenced resource IDs from the matching resources
@@ -396,6 +398,14 @@ fn match_field_inner(
     prefix: Option<&str>,
     modifier: Option<&str>,
 ) -> bool {
+    // _id search: match against the resource's id field (exact match)
+    if field == "_id" {
+        if let Some(id_val) = resource.get("id").and_then(|v| v.as_str()) {
+            return id_val == value_lower || id_val.to_lowercase() == value_lower;
+        }
+        return false;
+    }
+
     // Direct top-level match
     if let Some(v) = resource.get(field)
         && json_contains_with_modifier(v, value_lower, prefix, modifier)
