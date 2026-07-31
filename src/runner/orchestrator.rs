@@ -34,13 +34,6 @@ pub struct RunReport {
 
 impl std::fmt::Display for RunReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "\n=== FHIR IG Test Results ===")?;
-        writeln!(
-            f,
-            "Total: {} | Passed: {} | Failed: {}",
-            self.total, self.passed, self.failed
-        )?;
-        writeln!(f, "---")?;
         for result in &self.results {
             let status = if result.passed { "PASS" } else { "FAIL" };
             writeln!(
@@ -78,6 +71,12 @@ impl std::fmt::Display for RunReport {
                 }
             }
         }
+        writeln!(f, "\n=== FHIR IG Test Results ===")?;
+        writeln!(
+            f,
+            "Total: {} | Passed: {} | Failed: {}",
+            self.total, self.passed, self.failed
+        )?;
         Ok(())
     }
 }
