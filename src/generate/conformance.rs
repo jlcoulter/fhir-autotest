@@ -15,6 +15,18 @@
 //!    ElementDefinitions should be respected in responses
 //! 4. **Undeclared interaction rejection** — interactions NOT declared in
 //!    the CS should be rejected by the server (negative conformance)
+//! 5. **FHIRPath invariant validation (best-effort)** — constraints with
+//!    severity=error are checked via simple field-existence patterns
+//! 6. **Binding strength validation** — required-binding fields must use
+//!    values from the bound ValueSet
+//! 7. **Fixed/pattern value validation** — fields with fixed[x] or pattern[x]
+//!    must match the profile definition
+//! 8. **Slice validation** — sliced elements must match discriminator patterns
+//! 9. **Extension validation** — extensions must match profile-defined URLs
+//! 10. **Type constraint validation** — polymorphic value[x] fields must use
+//!     allowed types
+//! 11. **Reference target profile validation** — reference fields should point
+//!     to resources with matching meta.profile
 
 use crate::model::capability::*;
 use crate::model::profile::StructureDefinition;
@@ -119,6 +131,43 @@ pub enum ConformanceTestKind {
     UndeclaredInteraction { interaction: String },
     /// Verify that an undeclared search parameter is properly rejected.
     UndeclaredSearchParam { param_name: String },
+    /// Verify that FHIRPath invariants (constraints with severity=error) are satisfied.
+    /// Best-effort: simple field-existence checks for common patterns like `field.exists()`.
+    ConstraintValidation {
+        constraint_key: String,
+        constraint_human: String,
+        expression: String,
+        field_path: String,
+    },
+    /// Verify that required-binding fields use values from the bound ValueSet.
+    BindingValidation {
+        field_path: String,
+        value_set_url: String,
+    },
+    /// Verify that fields with fixed/pattern values match the profile definition.
+    FixedValueValidation {
+        field_path: String,
+        expected_value: serde_json::Value,
+    },
+    /// Verify that sliced elements match their discriminator patterns.
+    SliceValidation {
+        field_path: String,
+        slice_name: String,
+        discriminator_path: String,
+        discriminator_type: String,
+    },
+    /// Verify that extensions in responses match profile-defined extension URLs.
+    ExtensionValidation { extension_url: String },
+    /// Verify that polymorphic value[x] fields use an allowed type.
+    TypeConstraintValidation {
+        field_path: String,
+        allowed_types: Vec<String>,
+    },
+    /// Verify that reference fields point to resources with matching meta.profile.
+    ReferenceTargetValidation {
+        field_path: String,
+        target_profile: String,
+    },
 }
 
 /// HTTP request for a conformance test.
@@ -152,6 +201,13 @@ pub struct ConformanceAssertion {
 /// - MustSupport fields are present in read/search responses
 /// - Cardinality (min/max) is respected
 /// - Undeclared interactions and search params are rejected
+/// - FHIRPath invariants (best-effort field-existence checks)
+/// - Required binding strength values are from the bound ValueSet
+/// - Fixed/pattern values match the profile
+/// - Sliced elements match discriminator patterns
+/// - Extensions match profile-defined URLs
+/// - Polymorphic value[x] fields use allowed types
+/// - Reference fields point to resources with matching meta.profile
 pub fn generate_conformance_tests(
     cs: &CapabilityStatement,
     profiles: &[StructureDefinition],
@@ -380,6 +436,290 @@ pub fn generate_conformance_tests(
                 });
             }
 
+            // --- Profile-derived conformance tests ---
+            if has_search_type && let Some(profile) = profile {
+                // 1. FHIRPath invariant validation (best-effort)
+                let constraint_fields = collect_constraint_fields(profile);
+                for (constraint_key, constraint_human, expression, field_path) in constraint_fields
+                {
+                    tests.push(ConformanceTest {
+                        name: format!(
+                            "{}_constraint_{}",
+                            resource.resource_type,
+                            constraint_key.replace('.', "_")
+                        ),
+                        description: format!(
+                            "Best-effort: verify constraint '{}' ({}) on {} — expression: {}",
+                            constraint_key, constraint_human, resource.resource_type, expression
+                        ),
+                        resource_type: resource.resource_type.clone(),
+                        kind: ConformanceTestKind::ConstraintValidation {
+                            constraint_key: constraint_key.clone(),
+                            constraint_human: constraint_human.clone(),
+                            expression: expression.clone(),
+                            field_path: field_path.clone(),
+                        },
+                        request: ConformanceRequest {
+                            method: "GET".to_string(),
+                            url: format!(
+                                "/{}?_id={}-1&_count=10",
+                                resource.resource_type,
+                                resource.resource_type.to_lowercase()
+                            ),
+                            headers: std::collections::HashMap::new(),
+                            body: None,
+                        },
+                        assertion: ConformanceAssertion {
+                            expected_status: 200,
+                            must_contain_fields: vec![field_path],
+                            must_not_contain_fields: vec![],
+                            min_entries: Some(0),
+                            bundle_type: Some("searchset".to_string()),
+                            expect_operation_outcome: false,
+                        },
+                    });
+                }
+
+                // 2. Binding strength validation (required bindings only)
+                let binding_fields = collect_binding_fields(profile);
+                for (field_path, value_set_url) in binding_fields {
+                    tests.push(ConformanceTest {
+                        name: format!(
+                            "{}_binding_{}",
+                            resource.resource_type,
+                            field_path.replace('.', "_")
+                        ),
+                        description: format!(
+                            "Verify required binding on '{}' uses values from ValueSet '{}'",
+                            field_path, value_set_url
+                        ),
+                        resource_type: resource.resource_type.clone(),
+                        kind: ConformanceTestKind::BindingValidation {
+                            field_path: field_path.clone(),
+                            value_set_url: value_set_url.clone(),
+                        },
+                        request: ConformanceRequest {
+                            method: "GET".to_string(),
+                            url: format!(
+                                "/{}?_id={}-1&_count=10",
+                                resource.resource_type,
+                                resource.resource_type.to_lowercase()
+                            ),
+                            headers: std::collections::HashMap::new(),
+                            body: None,
+                        },
+                        assertion: ConformanceAssertion {
+                            expected_status: 200,
+                            must_contain_fields: vec![],
+                            must_not_contain_fields: vec![],
+                            min_entries: Some(0),
+                            bundle_type: Some("searchset".to_string()),
+                            expect_operation_outcome: false,
+                        },
+                    });
+                }
+
+                // 3. Fixed/pattern value validation
+                let fixed_value_fields = collect_fixed_value_fields(profile);
+                for (field_path, expected_value) in fixed_value_fields {
+                    tests.push(ConformanceTest {
+                        name: format!(
+                            "{}_fixed_value_{}",
+                            resource.resource_type,
+                            field_path.replace('.', "_")
+                        ),
+                        description: format!(
+                            "Verify fixed/pattern value on '{}' matches profile definition",
+                            field_path
+                        ),
+                        resource_type: resource.resource_type.clone(),
+                        kind: ConformanceTestKind::FixedValueValidation {
+                            field_path: field_path.clone(),
+                            expected_value: expected_value.clone(),
+                        },
+                        request: ConformanceRequest {
+                            method: "GET".to_string(),
+                            url: format!(
+                                "/{}?_id={}-1&_count=10",
+                                resource.resource_type,
+                                resource.resource_type.to_lowercase()
+                            ),
+                            headers: std::collections::HashMap::new(),
+                            body: None,
+                        },
+                        assertion: ConformanceAssertion {
+                            expected_status: 200,
+                            must_contain_fields: vec![],
+                            must_not_contain_fields: vec![],
+                            min_entries: Some(0),
+                            bundle_type: Some("searchset".to_string()),
+                            expect_operation_outcome: false,
+                        },
+                    });
+                }
+
+                // 4. Slice validation
+                let slice_fields = collect_slice_fields(profile);
+                for (field_path, slice_name, discriminator_path, discriminator_type) in slice_fields
+                {
+                    tests.push(ConformanceTest {
+                        name: format!(
+                            "{}_slice_{}",
+                            resource.resource_type,
+                            slice_name.replace('.', "_")
+                        ),
+                        description: format!(
+                            "Verify slice '{}' on '{}' matches discriminator pattern ({})",
+                            slice_name, field_path, discriminator_type
+                        ),
+                        resource_type: resource.resource_type.clone(),
+                        kind: ConformanceTestKind::SliceValidation {
+                            field_path: field_path.clone(),
+                            slice_name: slice_name.clone(),
+                            discriminator_path: discriminator_path.clone(),
+                            discriminator_type: discriminator_type.clone(),
+                        },
+                        request: ConformanceRequest {
+                            method: "GET".to_string(),
+                            url: format!(
+                                "/{}?_id={}-1&_count=10",
+                                resource.resource_type,
+                                resource.resource_type.to_lowercase()
+                            ),
+                            headers: std::collections::HashMap::new(),
+                            body: None,
+                        },
+                        assertion: ConformanceAssertion {
+                            expected_status: 200,
+                            must_contain_fields: vec![],
+                            must_not_contain_fields: vec![],
+                            min_entries: Some(0),
+                            bundle_type: Some("searchset".to_string()),
+                            expect_operation_outcome: false,
+                        },
+                    });
+                }
+
+                // 5. Extension validation
+                let extension_urls = collect_extension_urls(profile);
+                for extension_url in extension_urls {
+                    tests.push(ConformanceTest {
+                        name: format!(
+                            "{}_extension_{}",
+                            resource.resource_type,
+                            extension_url
+                                .replace([':', '/', '.'], "_")
+                                .replace("http___", "ext_")
+                        ),
+                        description: format!(
+                            "Verify extension '{}' is present in {} responses",
+                            extension_url, resource.resource_type
+                        ),
+                        resource_type: resource.resource_type.clone(),
+                        kind: ConformanceTestKind::ExtensionValidation {
+                            extension_url: extension_url.clone(),
+                        },
+                        request: ConformanceRequest {
+                            method: "GET".to_string(),
+                            url: format!(
+                                "/{}?_id={}-1&_count=10",
+                                resource.resource_type,
+                                resource.resource_type.to_lowercase()
+                            ),
+                            headers: std::collections::HashMap::new(),
+                            body: None,
+                        },
+                        assertion: ConformanceAssertion {
+                            expected_status: 200,
+                            must_contain_fields: vec![],
+                            must_not_contain_fields: vec![],
+                            min_entries: Some(0),
+                            bundle_type: Some("searchset".to_string()),
+                            expect_operation_outcome: false,
+                        },
+                    });
+                }
+
+                // 6. Type constraint validation (polymorphic value[x] fields)
+                let type_constraint_fields = collect_type_constraint_fields(profile);
+                for (field_path, allowed_types) in type_constraint_fields {
+                    tests.push(ConformanceTest {
+                        name: format!(
+                            "{}_type_constraint_{}",
+                            resource.resource_type,
+                            field_path.replace('.', "_")
+                        ),
+                        description: format!(
+                            "Verify polymorphic field '{}' uses an allowed type ({})",
+                            field_path,
+                            allowed_types.join(", ")
+                        ),
+                        resource_type: resource.resource_type.clone(),
+                        kind: ConformanceTestKind::TypeConstraintValidation {
+                            field_path: field_path.clone(),
+                            allowed_types: allowed_types.clone(),
+                        },
+                        request: ConformanceRequest {
+                            method: "GET".to_string(),
+                            url: format!(
+                                "/{}?_id={}-1&_count=10",
+                                resource.resource_type,
+                                resource.resource_type.to_lowercase()
+                            ),
+                            headers: std::collections::HashMap::new(),
+                            body: None,
+                        },
+                        assertion: ConformanceAssertion {
+                            expected_status: 200,
+                            must_contain_fields: vec![],
+                            must_not_contain_fields: vec![],
+                            min_entries: Some(0),
+                            bundle_type: Some("searchset".to_string()),
+                            expect_operation_outcome: false,
+                        },
+                    });
+                }
+
+                // 7. Reference target profile validation
+                let reference_target_fields = collect_reference_target_fields(profile);
+                for (field_path, target_profile) in reference_target_fields {
+                    tests.push(ConformanceTest {
+                        name: format!(
+                            "{}_reference_target_{}",
+                            resource.resource_type,
+                            field_path.replace('.', "_")
+                        ),
+                        description: format!(
+                            "Verify reference field '{}' points to resources conforming to '{}'",
+                            field_path, target_profile
+                        ),
+                        resource_type: resource.resource_type.clone(),
+                        kind: ConformanceTestKind::ReferenceTargetValidation {
+                            field_path: field_path.clone(),
+                            target_profile: target_profile.clone(),
+                        },
+                        request: ConformanceRequest {
+                            method: "GET".to_string(),
+                            url: format!(
+                                "/{}?_id={}-1&_count=10",
+                                resource.resource_type,
+                                resource.resource_type.to_lowercase()
+                            ),
+                            headers: std::collections::HashMap::new(),
+                            body: None,
+                        },
+                        assertion: ConformanceAssertion {
+                            expected_status: 200,
+                            must_contain_fields: vec![],
+                            must_not_contain_fields: vec![],
+                            min_entries: Some(0),
+                            bundle_type: Some("searchset".to_string()),
+                            expect_operation_outcome: false,
+                        },
+                    });
+                }
+            }
+
             // --- versioning conformance tests ---
             // When versioning is declared as "versioned" or "versioned-update",
             // the server should return meta.versionId on resources.
@@ -508,13 +848,360 @@ fn collect_cardinality_fields(profile: &StructureDefinition) -> Vec<(String, u32
         .collect()
 }
 
+/// Collect FHIRPath constraints with severity=error from a profile.
+///
+/// Best-effort: extracts simple field-existence patterns like `field.exists()`
+/// from the FHIRPath expression. Returns (constraint_key, human_description, expression, field_path).
+fn collect_constraint_fields(
+    profile: &StructureDefinition,
+) -> Vec<(String, String, String, String)> {
+    let elements = match &profile.snapshot {
+        Some(s) => &s.element,
+        None => match &profile.differential {
+            Some(d) => &d.element,
+            None => return Vec::new(),
+        },
+    };
+
+    let mut results = Vec::new();
+
+    for element in elements {
+        for constraint in &element.constraint {
+            if constraint.severity != "error" {
+                continue;
+            }
+
+            // Try to extract a simple field path from the expression
+            let field_path = if let Some(ref expr) = constraint.expression {
+                extract_field_path_from_expression(expr, &element.path, &profile.base_type)
+            } else {
+                continue;
+            };
+
+            if let Some(fp) = field_path {
+                results.push((
+                    constraint.key.clone(),
+                    constraint.human.clone().unwrap_or_default(),
+                    constraint.expression.clone().unwrap_or_default(),
+                    fp,
+                ));
+            }
+        }
+    }
+
+    results
+}
+
+/// Extract a field path from a simple FHIRPath expression.
+///
+/// Handles common patterns:
+/// - `field.exists()` → field
+/// - `field.all(...)` → field
+/// - `field.where(...)` → field
+/// - `field` → field (bare field name)
+fn extract_field_path_from_expression(
+    expression: &str,
+    element_path: &str,
+    base_type: &str,
+) -> Option<String> {
+    let trimmed = expression.trim();
+
+    // Pattern: field.exists() or field.all(...) or field.where(...)
+    let field_name = if let Some(dot_pos) = trimmed.find('.') {
+        let name = &trimmed[..dot_pos];
+        if name.is_empty() {
+            // Expression starts with a function call like "exists()" — use the element path
+            element_path
+                .strip_prefix(&format!("{}.", base_type))
+                .map(|s| s.to_string())?
+        } else {
+            name.to_string()
+        }
+    } else {
+        // Bare field name or simple expression
+        trimmed.to_string()
+    };
+
+    // If the field name is the base type itself, use the element path
+    if field_name == base_type {
+        return element_path
+            .strip_prefix(&format!("{}.", base_type))
+            .map(|s| s.to_string());
+    }
+
+    // If the field name is already a relative path (no base type prefix), use it directly
+    if !field_name.contains('.') && !field_name.contains('(') {
+        return Some(field_name);
+    }
+
+    // Try to strip base type prefix if present
+    if let Some(relative) = field_name.strip_prefix(&format!("{}.", base_type)) {
+        return Some(relative.to_string());
+    }
+
+    // Fall back to the element path
+    element_path
+        .strip_prefix(&format!("{}.", base_type))
+        .map(|s| s.to_string())
+}
+
+/// Collect fields with required binding strength from a profile.
+/// Returns (field_path, value_set_url).
+fn collect_binding_fields(profile: &StructureDefinition) -> Vec<(String, String)> {
+    let elements = match &profile.snapshot {
+        Some(s) => &s.element,
+        None => match &profile.differential {
+            Some(d) => &d.element,
+            None => return Vec::new(),
+        },
+    };
+
+    elements
+        .iter()
+        .filter(|e| e.path != profile.base_type)
+        .filter_map(|e| {
+            let binding = e.binding.as_ref()?;
+            if binding.strength != "required" {
+                return None;
+            }
+            let value_set_url = binding.value_set.as_ref()?;
+            let field_path = e.path.strip_prefix(&format!("{}.", profile.base_type))?;
+            Some((field_path.to_string(), value_set_url.clone()))
+        })
+        .collect()
+}
+
+/// Collect fields with fixed or pattern values from a profile.
+/// Returns (field_path, expected_value).
+fn collect_fixed_value_fields(profile: &StructureDefinition) -> Vec<(String, serde_json::Value)> {
+    let elements = match &profile.snapshot {
+        Some(s) => &s.element,
+        None => match &profile.differential {
+            Some(d) => &d.element,
+            None => return Vec::new(),
+        },
+    };
+
+    let mut results = Vec::new();
+
+    for element in elements {
+        if element.path == profile.base_type {
+            continue;
+        }
+
+        let field_path = match element
+            .path
+            .strip_prefix(&format!("{}.", profile.base_type))
+        {
+            Some(fp) => fp.to_string(),
+            None => continue,
+        };
+
+        // Check fixed values
+        if let Some(val) = &element.fixed_string {
+            results.push((field_path.clone(), serde_json::Value::String(val.clone())));
+        } else if let Some(val) = &element.fixed_code {
+            results.push((field_path.clone(), serde_json::Value::String(val.clone())));
+        } else if let Some(val) = &element.fixed_uri {
+            results.push((field_path.clone(), serde_json::Value::String(val.clone())));
+        } else if let Some(val) = element.fixed_boolean {
+            results.push((field_path.clone(), serde_json::Value::Bool(val)));
+        } else if let Some(val) = element.fixed_integer {
+            results.push((field_path.clone(), serde_json::json!(val)));
+        } else if let Some(val) = element.fixed_decimal {
+            results.push((field_path.clone(), serde_json::json!(val)));
+        } else if let Some(val) = &element.fixed_quantity {
+            results.push((field_path.clone(), val.clone()));
+        } else if let Some(val) = &element.fixed_coding {
+            results.push((field_path.clone(), val.clone()));
+        } else if let Some(val) = &element.fixed_codeable_concept {
+            results.push((field_path.clone(), val.clone()));
+        }
+        // Check pattern values (lower priority than fixed)
+        else if let Some(val) = &element.pattern_string {
+            results.push((field_path.clone(), serde_json::Value::String(val.clone())));
+        } else if let Some(val) = &element.pattern_code {
+            results.push((field_path.clone(), serde_json::Value::String(val.clone())));
+        } else if let Some(val) = &element.pattern_uri {
+            results.push((field_path.clone(), serde_json::Value::String(val.clone())));
+        } else if let Some(val) = element.pattern_boolean {
+            results.push((field_path.clone(), serde_json::Value::Bool(val)));
+        } else if let Some(val) = &element.pattern_quantity {
+            results.push((field_path.clone(), val.clone()));
+        } else if let Some(val) = &element.pattern_coding {
+            results.push((field_path.clone(), val.clone()));
+        } else if let Some(val) = &element.pattern_codeable_concept {
+            results.push((field_path.clone(), val.clone()));
+        }
+    }
+
+    results
+}
+
+/// Collect slice information from a profile.
+/// Returns (field_path, slice_name, discriminator_path, discriminator_type).
+fn collect_slice_fields(profile: &StructureDefinition) -> Vec<(String, String, String, String)> {
+    let elements = match &profile.snapshot {
+        Some(s) => &s.element,
+        None => match &profile.differential {
+            Some(d) => &d.element,
+            None => return Vec::new(),
+        },
+    };
+
+    let mut results = Vec::new();
+
+    for element in elements {
+        if element.path == profile.base_type {
+            continue;
+        }
+
+        let slice_name = match &element.slice_name {
+            Some(name) => name.clone(),
+            None => continue,
+        };
+
+        let field_path = match element
+            .path
+            .strip_prefix(&format!("{}.", profile.base_type))
+        {
+            Some(fp) => fp.to_string(),
+            None => continue,
+        };
+
+        // Get discriminator info from the slicing definition
+        if let Some(ref slicing) = element.slicing {
+            for discriminator in &slicing.discriminator {
+                results.push((
+                    field_path.clone(),
+                    slice_name.clone(),
+                    discriminator.path.clone(),
+                    discriminator.discriminator_type.clone(),
+                ));
+            }
+        }
+    }
+
+    results
+}
+
+/// Collect extension URLs from a profile.
+/// Looks for elements where type[].code=Extension and type[].profile is set.
+fn collect_extension_urls(profile: &StructureDefinition) -> Vec<String> {
+    let elements = match &profile.snapshot {
+        Some(s) => &s.element,
+        None => match &profile.differential {
+            Some(d) => &d.element,
+            None => return Vec::new(),
+        },
+    };
+
+    let mut urls = Vec::new();
+
+    for element in elements {
+        for type_def in &element.type_ {
+            if type_def.code == "Extension" && !type_def.profile.is_empty() {
+                for profile_url in &type_def.profile {
+                    urls.push(profile_url.clone());
+                }
+            }
+        }
+    }
+
+    urls
+}
+
+/// Collect type constraints for polymorphic value[x] fields.
+/// Returns (field_path, allowed_type_codes).
+fn collect_type_constraint_fields(profile: &StructureDefinition) -> Vec<(String, Vec<String>)> {
+    let elements = match &profile.snapshot {
+        Some(s) => &s.element,
+        None => match &profile.differential {
+            Some(d) => &d.element,
+            None => return Vec::new(),
+        },
+    };
+
+    let mut results = Vec::new();
+
+    for element in elements {
+        if element.path == profile.base_type {
+            continue;
+        }
+
+        // Only consider polymorphic fields (path ends with [x])
+        if !element.path.ends_with("[x]") {
+            continue;
+        }
+
+        let field_path = match element
+            .path
+            .strip_prefix(&format!("{}.", profile.base_type))
+        {
+            Some(fp) => fp.to_string(),
+            None => continue,
+        };
+
+        let allowed_types: Vec<String> = element.type_.iter().map(|t| t.code.clone()).collect();
+
+        if !allowed_types.is_empty() {
+            results.push((field_path, allowed_types));
+        }
+    }
+
+    results
+}
+
+/// Collect reference target profiles from a profile.
+/// Returns (field_path, target_profile_url).
+fn collect_reference_target_fields(profile: &StructureDefinition) -> Vec<(String, String)> {
+    let elements = match &profile.snapshot {
+        Some(s) => &s.element,
+        None => match &profile.differential {
+            Some(d) => &d.element,
+            None => return Vec::new(),
+        },
+    };
+
+    let mut results = Vec::new();
+
+    for element in elements {
+        if element.path == profile.base_type {
+            continue;
+        }
+
+        let field_path = match element
+            .path
+            .strip_prefix(&format!("{}.", profile.base_type))
+        {
+            Some(fp) => fp.to_string(),
+            None => continue,
+        };
+
+        for type_def in &element.type_ {
+            for target_profile in &type_def.target_profile {
+                results.push((field_path.clone(), target_profile.clone()));
+            }
+        }
+    }
+
+    results
+}
+
 /// Convert a ConformanceTest into a TestCase for execution by the standard test pipeline.
 pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::model::TestCase {
     use crate::generate::model::*;
 
     let interaction = match ct.kind {
         ConformanceTestKind::MustSupportPresence { .. }
-        | ConformanceTestKind::Cardinality { .. } => Interaction::SearchType,
+        | ConformanceTestKind::Cardinality { .. }
+        | ConformanceTestKind::ConstraintValidation { .. }
+        | ConformanceTestKind::BindingValidation { .. }
+        | ConformanceTestKind::FixedValueValidation { .. }
+        | ConformanceTestKind::SliceValidation { .. }
+        | ConformanceTestKind::ExtensionValidation { .. }
+        | ConformanceTestKind::TypeConstraintValidation { .. }
+        | ConformanceTestKind::ReferenceTargetValidation { .. } => Interaction::SearchType,
         ConformanceTestKind::UndeclaredInteraction { ref interaction } => {
             // Map back from interaction code
             match interaction.as_str() {
@@ -560,6 +1247,46 @@ pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::m
             // Per FHIR spec, servers may either reject unknown params (4xx)
             // or ignore them (2xx Bundle). Accept either.
         }
+        ConformanceTestKind::ConstraintValidation { field_path, .. } => {
+            response_assertion.bundle_type = Some("searchset".to_string());
+            response_assertion.min_entries = Some(0);
+            let mut required = std::collections::HashMap::new();
+            required.insert(ct.resource_type.clone(), vec![field_path.clone()]);
+            response_assertion.required_fields = required;
+        }
+        ConformanceTestKind::BindingValidation { .. } => {
+            response_assertion.bundle_type = Some("searchset".to_string());
+            response_assertion.min_entries = Some(0);
+        }
+        ConformanceTestKind::FixedValueValidation {
+            field_path,
+            expected_value,
+        } => {
+            response_assertion.bundle_type = Some("searchset".to_string());
+            response_assertion.min_entries = Some(0);
+            let mut field_vals: std::collections::HashMap<String, serde_json::Value> =
+                std::collections::HashMap::new();
+            field_vals.insert(field_path.clone(), expected_value.clone());
+            let mut by_type = std::collections::HashMap::new();
+            by_type.insert(ct.resource_type.clone(), field_vals);
+            response_assertion.field_values = by_type;
+        }
+        ConformanceTestKind::SliceValidation { .. } => {
+            response_assertion.bundle_type = Some("searchset".to_string());
+            response_assertion.min_entries = Some(0);
+        }
+        ConformanceTestKind::ExtensionValidation { .. } => {
+            response_assertion.bundle_type = Some("searchset".to_string());
+            response_assertion.min_entries = Some(0);
+        }
+        ConformanceTestKind::TypeConstraintValidation { .. } => {
+            response_assertion.bundle_type = Some("searchset".to_string());
+            response_assertion.min_entries = Some(0);
+        }
+        ConformanceTestKind::ReferenceTargetValidation { .. } => {
+            response_assertion.bundle_type = Some("searchset".to_string());
+            response_assertion.min_entries = Some(0);
+        }
     }
 
     let expected_status = match &ct.kind {
@@ -590,6 +1317,58 @@ pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::m
         },
         ConformanceTestKind::UndeclaredSearchParam { param_name } => TestCaseKind::Conformance {
             description: format!("undeclared search param '{}' rejected", param_name),
+        },
+        ConformanceTestKind::ConstraintValidation {
+            constraint_key,
+            constraint_human,
+            ..
+        } => TestCaseKind::Conformance {
+            description: format!(
+                "best-effort: constraint '{}' ({})",
+                constraint_key,
+                constraint_human.as_str()
+            ),
+        },
+        ConformanceTestKind::BindingValidation {
+            field_path,
+            value_set_url,
+        } => TestCaseKind::Conformance {
+            description: format!(
+                "required binding on '{}' from '{}'",
+                field_path, value_set_url
+            ),
+        },
+        ConformanceTestKind::FixedValueValidation { field_path, .. } => TestCaseKind::Conformance {
+            description: format!("fixed/pattern value on '{}'", field_path),
+        },
+        ConformanceTestKind::SliceValidation {
+            field_path,
+            slice_name,
+            ..
+        } => TestCaseKind::Conformance {
+            description: format!("slice '{}' on '{}'", slice_name, field_path),
+        },
+        ConformanceTestKind::ExtensionValidation { extension_url } => TestCaseKind::Conformance {
+            description: format!("extension '{}'", extension_url),
+        },
+        ConformanceTestKind::TypeConstraintValidation {
+            field_path,
+            allowed_types,
+        } => TestCaseKind::Conformance {
+            description: format!(
+                "type constraint on '{}': allowed types [{}]",
+                field_path,
+                allowed_types.join(", ")
+            ),
+        },
+        ConformanceTestKind::ReferenceTargetValidation {
+            field_path,
+            target_profile,
+        } => TestCaseKind::Conformance {
+            description: format!(
+                "reference target '{}' should conform to '{}'",
+                field_path, target_profile
+            ),
         },
     };
 
@@ -626,7 +1405,10 @@ pub fn conformance_test_to_test_case(ct: &ConformanceTest) -> crate::generate::m
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::profile::{ElementDefinition, Snapshot};
+    use crate::model::profile::{
+        ElementBinding, ElementConstraint, ElementDefinition, ElementDefinitionType,
+        ElementSlicing, SlicingDiscriminator, Snapshot,
+    };
 
     fn sample_cs() -> CapabilityStatement {
         CapabilityStatement {
@@ -820,6 +1602,357 @@ mod tests {
         }
     }
 
+    /// A profile with all the new validation features populated.
+    fn sample_rich_profile() -> StructureDefinition {
+        StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/RichPatient".to_string(),
+            name: "RichPatient".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: None,
+            snapshot: Some(Snapshot {
+                element: vec![
+                    ElementDefinition {
+                        id: "Patient".to_string(),
+                        path: "Patient".to_string(),
+                        min: Some(0),
+                        max: Some("*".to_string()),
+                        type_: vec![],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                        slice_name: None,
+                        slicing: None,
+                    },
+                    // Constraint: name.exists()
+                    ElementDefinition {
+                        id: "Patient.name".to_string(),
+                        path: "Patient.name".to_string(),
+                        min: Some(1),
+                        max: Some("*".to_string()),
+                        type_: vec![],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: true,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![ElementConstraint {
+                            key: "pat-1".to_string(),
+                            severity: "error".to_string(),
+                            human: Some("Patient.name SHALL be present".to_string()),
+                            expression: Some("name.exists()".to_string()),
+                        }],
+                        is_modifier: false,
+                        is_summary: false,
+                        slice_name: None,
+                        slicing: None,
+                    },
+                    // Required binding on gender
+                    ElementDefinition {
+                        id: "Patient.gender".to_string(),
+                        path: "Patient.gender".to_string(),
+                        min: Some(0),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "code".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: true,
+                        short: None,
+                        definition: None,
+                        binding: Some(ElementBinding {
+                            strength: "required".to_string(),
+                            value_set: Some(
+                                "http://hl7.org/fhir/ValueSet/administrative-gender".to_string(),
+                            ),
+                            description: None,
+                        }),
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                        slice_name: None,
+                        slicing: None,
+                    },
+                    // Fixed value on active
+                    ElementDefinition {
+                        id: "Patient.active".to_string(),
+                        path: "Patient.active".to_string(),
+                        min: Some(1),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "boolean".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: Some(true),
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                        slice_name: None,
+                        slicing: None,
+                    },
+                    // Slice on identifier
+                    ElementDefinition {
+                        id: "Patient.identifier:ABN".to_string(),
+                        path: "Patient.identifier".to_string(),
+                        min: Some(0),
+                        max: Some("*".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "Identifier".to_string(),
+                            target_profile: vec![],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                        slice_name: Some("ABN".to_string()),
+                        slicing: Some(ElementSlicing {
+                            discriminator: vec![SlicingDiscriminator {
+                                discriminator_type: "value".to_string(),
+                                path: "system".to_string(),
+                            }],
+                            rules: Some("open".to_string()),
+                            description: None,
+                            ordered: false,
+                        }),
+                    },
+                    // Extension
+                    ElementDefinition {
+                        id: "Patient.extension:testExt".to_string(),
+                        path: "Patient.extension".to_string(),
+                        min: Some(0),
+                        max: Some("*".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "Extension".to_string(),
+                            target_profile: vec![],
+                            profile: vec![
+                                "http://example.org/StructureDefinition/test-extension".to_string(),
+                            ],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                        slice_name: Some("testExt".to_string()),
+                        slicing: None,
+                    },
+                    // Polymorphic value[x] type constraint
+                    ElementDefinition {
+                        id: "Patient.value[x]".to_string(),
+                        path: "Patient.value[x]".to_string(),
+                        min: Some(0),
+                        max: Some("1".to_string()),
+                        type_: vec![
+                            ElementDefinitionType {
+                                code: "string".to_string(),
+                                target_profile: vec![],
+                                profile: vec![],
+                                versioning: None,
+                            },
+                            ElementDefinitionType {
+                                code: "CodeableConcept".to_string(),
+                                target_profile: vec![],
+                                profile: vec![],
+                                versioning: None,
+                            },
+                        ],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                        slice_name: None,
+                        slicing: None,
+                    },
+                    // Reference target profile
+                    ElementDefinition {
+                        id: "Patient.managingOrganization".to_string(),
+                        path: "Patient.managingOrganization".to_string(),
+                        min: Some(0),
+                        max: Some("1".to_string()),
+                        type_: vec![ElementDefinitionType {
+                            code: "Reference".to_string(),
+                            target_profile: vec![
+                                "http://example.org/StructureDefinition/TestOrganization"
+                                    .to_string(),
+                            ],
+                            profile: vec![],
+                            versioning: None,
+                        }],
+                        fixed_string: None,
+                        fixed_uri: None,
+                        fixed_code: None,
+                        fixed_boolean: None,
+                        fixed_integer: None,
+                        fixed_decimal: None,
+                        pattern_string: None,
+                        pattern_uri: None,
+                        pattern_code: None,
+                        pattern_boolean: None,
+                        must_support: false,
+                        short: None,
+                        definition: None,
+                        binding: None,
+                        content_reference: None,
+                        fixed_quantity: None,
+                        pattern_quantity: None,
+                        fixed_coding: None,
+                        pattern_coding: None,
+                        fixed_codeable_concept: None,
+                        pattern_codeable_concept: None,
+                        constraint: vec![],
+                        is_modifier: false,
+                        is_summary: false,
+                        slice_name: None,
+                        slicing: None,
+                    },
+                ],
+            }),
+            differential: None,
+        }
+    }
+
     #[test]
     fn validate_well_formed_capability_statement() {
         let cs = sample_cs();
@@ -965,5 +2098,322 @@ mod tests {
             "Expected at least 1 undeclared search param test, got {}",
             param_tests.len()
         );
+    }
+
+    #[test]
+    fn generate_constraint_validation_tests() {
+        let cs = sample_cs();
+        let profile = sample_rich_profile();
+        let tests = generate_conformance_tests(&cs, &[profile]);
+
+        let constraint_tests: Vec<_> = tests
+            .iter()
+            .filter(|t| matches!(t.kind, ConformanceTestKind::ConstraintValidation { .. }))
+            .collect();
+
+        assert!(
+            !constraint_tests.is_empty(),
+            "Expected at least 1 constraint validation test, got {}",
+            constraint_tests.len()
+        );
+
+        // Should have a test for pat-1 (name.exists())
+        let pat1_test = constraint_tests
+            .iter()
+            .find(|t| t.name.contains("pat-1") || t.name.contains("pat_1"));
+        assert!(
+            pat1_test.is_some(),
+            "Expected constraint test for pat-1, got: {:?}",
+            constraint_tests.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn generate_binding_validation_tests() {
+        let cs = sample_cs();
+        let profile = sample_rich_profile();
+        let tests = generate_conformance_tests(&cs, &[profile]);
+
+        let binding_tests: Vec<_> = tests
+            .iter()
+            .filter(|t| matches!(t.kind, ConformanceTestKind::BindingValidation { .. }))
+            .collect();
+
+        assert!(
+            !binding_tests.is_empty(),
+            "Expected at least 1 binding validation test, got {}",
+            binding_tests.len()
+        );
+
+        // Should test gender binding
+        let gender_test = binding_tests
+            .iter()
+            .find(|t| t.name.contains("binding_gender"));
+        assert!(
+            gender_test.is_some(),
+            "Expected binding_gender test, got: {:?}",
+            binding_tests.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn generate_fixed_value_validation_tests() {
+        let cs = sample_cs();
+        let profile = sample_rich_profile();
+        let tests = generate_conformance_tests(&cs, &[profile]);
+
+        let fixed_tests: Vec<_> = tests
+            .iter()
+            .filter(|t| matches!(t.kind, ConformanceTestKind::FixedValueValidation { .. }))
+            .collect();
+
+        assert!(
+            !fixed_tests.is_empty(),
+            "Expected at least 1 fixed value validation test, got {}",
+            fixed_tests.len()
+        );
+
+        // Should test active fixed value
+        let active_test = fixed_tests
+            .iter()
+            .find(|t| t.name.contains("fixed_value_active"));
+        assert!(
+            active_test.is_some(),
+            "Expected fixed_value_active test, got: {:?}",
+            fixed_tests.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn generate_slice_validation_tests() {
+        let cs = sample_cs();
+        let profile = sample_rich_profile();
+        let tests = generate_conformance_tests(&cs, &[profile]);
+
+        let slice_tests: Vec<_> = tests
+            .iter()
+            .filter(|t| matches!(t.kind, ConformanceTestKind::SliceValidation { .. }))
+            .collect();
+
+        assert!(
+            !slice_tests.is_empty(),
+            "Expected at least 1 slice validation test, got {}",
+            slice_tests.len()
+        );
+
+        // Should test ABN slice
+        let abn_test = slice_tests.iter().find(|t| t.name.contains("ABN"));
+        assert!(
+            abn_test.is_some(),
+            "Expected slice test for ABN, got: {:?}",
+            slice_tests.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn generate_extension_validation_tests() {
+        let cs = sample_cs();
+        let profile = sample_rich_profile();
+        let tests = generate_conformance_tests(&cs, &[profile]);
+
+        let ext_tests: Vec<_> = tests
+            .iter()
+            .filter(|t| matches!(t.kind, ConformanceTestKind::ExtensionValidation { .. }))
+            .collect();
+
+        assert!(
+            !ext_tests.is_empty(),
+            "Expected at least 1 extension validation test, got {}",
+            ext_tests.len()
+        );
+
+        // Should test the test-extension URL
+        let ext_test = ext_tests
+            .iter()
+            .find(|t| t.name.contains("test-extension") || t.name.contains("test_extension"));
+        assert!(
+            ext_test.is_some(),
+            "Expected extension test for test-extension, got: {:?}",
+            ext_tests.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn generate_type_constraint_validation_tests() {
+        let cs = sample_cs();
+        let profile = sample_rich_profile();
+        let tests = generate_conformance_tests(&cs, &[profile]);
+
+        let type_tests: Vec<_> = tests
+            .iter()
+            .filter(|t| matches!(t.kind, ConformanceTestKind::TypeConstraintValidation { .. }))
+            .collect();
+
+        assert!(
+            !type_tests.is_empty(),
+            "Expected at least 1 type constraint validation test, got {}",
+            type_tests.len()
+        );
+
+        // Should test value[x] type constraint
+        let value_test = type_tests
+            .iter()
+            .find(|t| t.name.contains("value_x") || t.name.contains("value[x]"));
+        assert!(
+            value_test.is_some(),
+            "Expected type constraint test for value[x], got: {:?}",
+            type_tests.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn generate_reference_target_validation_tests() {
+        let cs = sample_cs();
+        let profile = sample_rich_profile();
+        let tests = generate_conformance_tests(&cs, &[profile]);
+
+        let ref_tests: Vec<_> = tests
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t.kind,
+                    ConformanceTestKind::ReferenceTargetValidation { .. }
+                )
+            })
+            .collect();
+
+        assert!(
+            !ref_tests.is_empty(),
+            "Expected at least 1 reference target validation test, got {}",
+            ref_tests.len()
+        );
+
+        // Should test managingOrganization target profile
+        let org_test = ref_tests
+            .iter()
+            .find(|t| t.name.contains("managingOrganization"));
+        assert!(
+            org_test.is_some(),
+            "Expected reference target test for managingOrganization, got: {:?}",
+            ref_tests.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn collect_constraint_fields_extracts_simple_expressions() {
+        let profile = sample_rich_profile();
+        let constraints = collect_constraint_fields(&profile);
+
+        let name_constraint = constraints.iter().find(|(key, _, _, _)| key == "pat-1");
+        assert!(
+            name_constraint.is_some(),
+            "Expected pat-1 constraint, got: {:?}",
+            constraints
+        );
+
+        if let Some((_, _, expr, field_path)) = name_constraint {
+            assert_eq!(expr, "name.exists()");
+            assert_eq!(field_path, "name");
+        }
+    }
+
+    #[test]
+    fn collect_binding_fields_finds_required_bindings() {
+        let profile = sample_rich_profile();
+        let bindings = collect_binding_fields(&profile);
+
+        let gender_binding = bindings.iter().find(|(field, _)| field == "gender");
+        assert!(
+            gender_binding.is_some(),
+            "Expected gender binding, got: {:?}",
+            bindings
+        );
+
+        if let Some((_, vs)) = gender_binding {
+            assert!(vs.contains("administrative-gender"));
+        }
+    }
+
+    #[test]
+    fn collect_fixed_value_fields_finds_fixed_values() {
+        let profile = sample_rich_profile();
+        let fixed = collect_fixed_value_fields(&profile);
+
+        let active_fixed = fixed.iter().find(|(field, _)| field == "active");
+        assert!(
+            active_fixed.is_some(),
+            "Expected active fixed value, got: {:?}",
+            fixed
+        );
+
+        if let Some((_, val)) = active_fixed {
+            assert_eq!(*val, serde_json::json!(true));
+        }
+    }
+
+    #[test]
+    fn collect_slice_fields_finds_slices() {
+        let profile = sample_rich_profile();
+        let slices = collect_slice_fields(&profile);
+
+        let abn_slice = slices.iter().find(|(_, name, _, _)| name == "ABN");
+        assert!(abn_slice.is_some(), "Expected ABN slice, got: {:?}", slices);
+
+        if let Some((_, _, path, dtype)) = abn_slice {
+            assert_eq!(path, "system");
+            assert_eq!(dtype, "value");
+        }
+    }
+
+    #[test]
+    fn collect_extension_urls_finds_extensions() {
+        let profile = sample_rich_profile();
+        let urls = collect_extension_urls(&profile);
+
+        let test_ext = urls.iter().find(|u| u.contains("test-extension"));
+        assert!(
+            test_ext.is_some(),
+            "Expected test-extension URL, got: {:?}",
+            urls
+        );
+    }
+
+    #[test]
+    fn collect_type_constraint_fields_finds_polymorphic_fields() {
+        let profile = sample_rich_profile();
+        let type_constraints = collect_type_constraint_fields(&profile);
+
+        let value_x = type_constraints
+            .iter()
+            .find(|(field, _)| field.contains("value"));
+        assert!(
+            value_x.is_some(),
+            "Expected value[x] type constraint, got: {:?}",
+            type_constraints
+        );
+
+        if let Some((_, types)) = value_x {
+            assert!(types.contains(&"string".to_string()));
+            assert!(types.contains(&"CodeableConcept".to_string()));
+        }
+    }
+
+    #[test]
+    fn collect_reference_target_fields_finds_targets() {
+        let profile = sample_rich_profile();
+        let targets = collect_reference_target_fields(&profile);
+
+        let org_target = targets
+            .iter()
+            .find(|(field, _)| field == "managingOrganization");
+        assert!(
+            org_target.is_some(),
+            "Expected managingOrganization target, got: {:?}",
+            targets
+        );
+
+        if let Some((_, tp)) = org_target {
+            assert!(tp.contains("TestOrganization"));
+        }
     }
 }

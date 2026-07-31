@@ -70,6 +70,32 @@ pub struct ResponseAssertion {
     #[serde(default)]
     pub response_resource_types: Vec<String>,
 
+    /// For binding validation: field paths with required bindings that must
+    /// use values from the specified ValueSet URL.
+    /// Keyed by resource type → (field_path, value_set_url).
+    #[serde(default)]
+    pub required_bindings: HashMap<String, Vec<(String, String)>>,
+
+    /// For slice validation: sliced elements that must match discriminator patterns.
+    /// Keyed by resource type → (field_path, slice_name, discriminator_path, discriminator_type).
+    #[serde(default)]
+    pub slice_assertions: HashMap<String, Vec<(String, String, String, String)>>,
+
+    /// For extension validation: extension URLs that must be present in responses.
+    /// Keyed by resource type → list of extension URLs.
+    #[serde(default)]
+    pub required_extensions: HashMap<String, Vec<String>>,
+
+    /// For type constraint validation: polymorphic value[x] fields and their allowed types.
+    /// Keyed by resource type → (field_path, allowed_types).
+    #[serde(default)]
+    pub type_constraints: HashMap<String, Vec<(String, Vec<String>)>>,
+
+    /// For reference target validation: reference fields and their target profiles.
+    /// Keyed by resource type → (field_path, target_profile).
+    #[serde(default)]
+    pub reference_targets: HashMap<String, Vec<(String, String)>>,
+
     /// For _total: whether the Bundle MUST have a `total` field.
     /// - Some(true): Bundle MUST have `total` present
     /// - Some(false): Bundle MUST NOT have `total` present
@@ -124,6 +150,11 @@ impl ResponseAssertion {
             bundle_total_present: None,
             summary_mode: None,
             accept_statuses: Vec::new(),
+            required_bindings: HashMap::new(),
+            slice_assertions: HashMap::new(),
+            required_extensions: HashMap::new(),
+            type_constraints: HashMap::new(),
+            reference_targets: HashMap::new(),
         }
     }
 }

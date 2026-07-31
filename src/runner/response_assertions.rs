@@ -432,6 +432,278 @@ pub fn assert_response(
         }
     }
 
+    // --- Required binding validation ---
+    // For fields with required bindings, check that the field values are
+    // within the bound ValueSet. This is a best-effort check — we verify
+    // the field exists and has a value, but full ValueSet membership
+    // validation requires resolving the ValueSet from the IG package.
+    for (resource_type, bindings) in &assertion.required_bindings {
+        if let Some(body) = body
+            && let Some(entries) = body.get("entry").and_then(|v| v.as_array())
+        {
+            let matching: Vec<&Value> = entries
+                .iter()
+                .filter(|e| {
+                    e.get("resource")
+                        .and_then(|r| r.get("resourceType"))
+                        .and_then(|v| v.as_str())
+                        == Some(resource_type.as_str())
+                })
+                .collect();
+
+            if matching.is_empty() {
+                continue;
+            }
+
+            for (field_path, value_set_url) in bindings {
+                for entry in &matching {
+                    if let Some(resource) = entry.get("resource") {
+                        let actual = resolve_json_path(resource, field_path);
+                        if actual.is_none() {
+                            errors.push(format!(
+                                "{}: required binding field '{}' not found in response (ValueSet: {})",
+                                resource_type, field_path, value_set_url
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Slice validation ---
+    // For sliced elements, check that the discriminator path/value matches.
+    // This is a best-effort check — we verify the field exists and has the
+    // expected discriminator value.
+    for (resource_type, slices) in &assertion.slice_assertions {
+        if let Some(body) = body
+            && let Some(entries) = body.get("entry").and_then(|v| v.as_array())
+        {
+            let matching: Vec<&Value> = entries
+                .iter()
+                .filter(|e| {
+                    e.get("resource")
+                        .and_then(|r| r.get("resourceType"))
+                        .and_then(|v| v.as_str())
+                        == Some(resource_type.as_str())
+                })
+                .collect();
+
+            if matching.is_empty() {
+                continue;
+            }
+
+            for (field_path, slice_name, discriminator_path, discriminator_type) in slices {
+                for entry in &matching {
+                    if let Some(resource) = entry.get("resource") {
+                        let field_value = resolve_json_path(resource, field_path);
+                        if let Some(val) = field_value {
+                            // For value-type discriminators, check the discriminator path exists
+                            if discriminator_type == "value" || discriminator_type == "pattern" {
+                                let disc_value = resolve_json_path(&val, discriminator_path);
+                                if disc_value.is_none() {
+                                    errors.push(format!(
+                                        "{}: slice '{}' on '{}' missing discriminator '{}' (type: {})",
+                                        resource_type, slice_name, field_path, discriminator_path, discriminator_type
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Extension validation ---
+    // Check that extensions in responses match profile-defined extension URLs.
+    for (resource_type, extension_urls) in &assertion.required_extensions {
+        if let Some(body) = body
+            && let Some(entries) = body.get("entry").and_then(|v| v.as_array())
+        {
+            let matching: Vec<&Value> = entries
+                .iter()
+                .filter(|e| {
+                    e.get("resource")
+                        .and_then(|r| r.get("resourceType"))
+                        .and_then(|v| v.as_str())
+                        == Some(resource_type.as_str())
+                })
+                .collect();
+
+            if matching.is_empty() {
+                continue;
+            }
+
+            for extension_url in extension_urls {
+                for entry in &matching {
+                    if let Some(resource) = entry.get("resource")
+                        && let Some(extensions) =
+                            resource.get("extension").and_then(|v| v.as_array())
+                    {
+                        let has_url = extensions.iter().any(|ext| {
+                            ext.get("url")
+                                .and_then(|v| v.as_str())
+                                .map(|u| u == extension_url)
+                                .unwrap_or(false)
+                        });
+                        if !has_url {
+                            errors.push(format!(
+                                "{}: extension '{}' not found in response",
+                                resource_type, extension_url
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Type constraint validation ---
+    // For polymorphic value[x] fields, check that the actual key used
+    // matches one of the allowed types.
+    for (resource_type, constraints) in &assertion.type_constraints {
+        if let Some(body) = body
+            && let Some(entries) = body.get("entry").and_then(|v| v.as_array())
+        {
+            let matching: Vec<&Value> = entries
+                .iter()
+                .filter(|e| {
+                    e.get("resource")
+                        .and_then(|r| r.get("resourceType"))
+                        .and_then(|v| v.as_str())
+                        == Some(resource_type.as_str())
+                })
+                .collect();
+
+            if matching.is_empty() {
+                continue;
+            }
+
+            for (field_path, allowed_types) in constraints {
+                for entry in &matching {
+                    if let Some(resource) = entry.get("resource") {
+                        // The field_path is like "value[x]" — resolve it
+                        let actual = resolve_json_path(resource, field_path);
+                        if let Some(val) = actual {
+                            // Check that the actual key used matches an allowed type
+                            // For value[x], the actual key will be something like valueString, valueCodeableConcept, etc.
+                            let base_name = field_path.trim_end_matches("[x]");
+                            let found_key = resource.as_object().and_then(|obj| {
+                                obj.keys()
+                                    .find(|k| k.starts_with(base_name) && k.len() > base_name.len())
+                            });
+
+                            if let Some(actual_key) = found_key {
+                                let type_suffix = actual_key.strip_prefix(base_name).unwrap_or("");
+                                let is_allowed = allowed_types.iter().any(|t| {
+                                    // Check if the type suffix matches (case-insensitive)
+                                    t.eq_ignore_ascii_case(type_suffix)
+                                });
+                                if !is_allowed {
+                                    errors.push(format!(
+                                        "{}: polymorphic field '{}' uses type '{}' which is not in allowed types {:?}",
+                                        resource_type, field_path, actual_key, allowed_types
+                                    ));
+                                }
+                            }
+
+                            // Also check that the value itself is present
+                            if val.is_null() {
+                                errors.push(format!(
+                                    "{}: polymorphic field '{}' has null value",
+                                    resource_type, field_path
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Reference target profile validation ---
+    // For reference fields with target profiles, check that the referenced
+    // resources have matching meta.profile. This is a best-effort check
+    // since we may not have the referenced resource in the response.
+    for (resource_type, targets) in &assertion.reference_targets {
+        if let Some(body) = body
+            && let Some(entries) = body.get("entry").and_then(|v| v.as_array())
+        {
+            let matching: Vec<&Value> = entries
+                .iter()
+                .filter(|e| {
+                    e.get("resource")
+                        .and_then(|r| r.get("resourceType"))
+                        .and_then(|v| v.as_str())
+                        == Some(resource_type.as_str())
+                })
+                .collect();
+
+            if matching.is_empty() {
+                continue;
+            }
+
+            for (field_path, target_profile) in targets {
+                for entry in &matching {
+                    if let Some(resource) = entry.get("resource") {
+                        let reference = resolve_json_path(resource, field_path);
+                        if let Some(ref_val) = reference {
+                            // Check if the reference has a resource that's also in the Bundle
+                            if let Some(ref_str) = ref_val.as_str() {
+                                // Try to find the referenced resource in the Bundle entries
+                                let referenced = entries.iter().find(|e| {
+                                    e.get("fullUrl")
+                                        .and_then(|v| v.as_str())
+                                        .map(|url| {
+                                            ref_str
+                                                .ends_with(url.split('/').next_back().unwrap_or(""))
+                                        })
+                                        .unwrap_or(false)
+                                });
+
+                                if let Some(ref_entry) = referenced
+                                    && let Some(ref_resource) = ref_entry.get("resource")
+                                {
+                                    let profiles = ref_resource
+                                        .get("meta")
+                                        .and_then(|m| m.get("profile"))
+                                        .and_then(|p| p.as_array());
+
+                                    match profiles {
+                                        Some(profiles) => {
+                                            let has_profile = profiles.iter().any(|p| {
+                                                p.as_str()
+                                                    .map(|s| {
+                                                        s == target_profile
+                                                            || s.starts_with(target_profile)
+                                                    })
+                                                    .unwrap_or(false)
+                                            });
+                                            if !has_profile {
+                                                errors.push(format!(
+                                                    "{}: reference '{}' points to resource without target profile '{}' (meta.profile: {:?})",
+                                                    resource_type, field_path, target_profile,
+                                                    profiles.iter().filter_map(|p| p.as_str()).collect::<Vec<_>>()
+                                                ));
+                                            }
+                                        }
+                                        None => {
+                                            errors.push(format!(
+                                                "{}: reference '{}' points to resource with no meta.profile (expected '{}')",
+                                                resource_type, field_path, target_profile
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     errors
 }
 
