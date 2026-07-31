@@ -692,114 +692,6 @@ pub async fn delete_all_resources(
             for id in type_ids.iter().rev() {
                 remaining.push((resource_type.clone(), id.clone()));
             }
-<<<<<<< HEAD
-            let total = type_ids.len();
-            println!("  Deleting {} {} resources ...", total, resource_type);
-
-            let mut deleted = 0usize;
-            let mut errors = 0usize;
-            let batch_size = concurrency.max(1);
-
-            // Reverse IDs so dependents (uploaded in later waves) are deleted first,
-            // avoiding 409 referential conflicts from same-type references like
-            // Organization.partOf → Organization/{id}.
-            let reversed: Vec<String> = type_ids.iter().rev().cloned().collect();
-
-            for chunk in reversed.chunks(batch_size) {
-                let mut handles: Vec<DeleteHandle> = Vec::new();
-
-                for id in chunk {
-                    let repo_client = repo_client.clone();
-                    let resource_type = resource_type.clone();
-                    let id_clone = id.clone();
-                    let id = id.clone();
-
-                    handles.push((
-                        tokio::spawn(async move {
-                            // Retry up to 3 times on 409 (referential integrity conflict)
-                            let mut last_body = None;
-                            for attempt in 0..3 {
-                                let resp = repo_client
-                                    .delete_resource(&resource_type, &id_clone)
-                                    .await?;
-                                let status = resp.status().as_u16();
-                                if status == 409 {
-                                    last_body = resp.text().await.ok();
-                                    if attempt < 2 {
-                                        tokio::time::sleep(std::time::Duration::from_millis(
-                                            200 * (attempt + 1),
-                                        ))
-                                        .await;
-                                        continue;
-                                    }
-                                }
-                                let body = if status == 409 { last_body } else { None };
-                                return Ok::<(u16, Option<String>), anyhow::Error>((status, body));
-                            }
-                            // Unreachable — loop always returns
-                            unreachable!()
-                        }),
-                        id.clone(),
-                    ));
-                }
-
-                for (handle, id_for_log) in handles {
-                    match handle.await {
-                        Ok(Ok((200 | 204 | 404 | 410, _))) => {
-                            deleted += 1;
-                        }
-                        Ok(Ok((409, body))) => {
-                            errors += 1;
-                            let detail = body.as_deref().unwrap_or("(no body)");
-                            tracing::warn!(
-                                "Conflict (409) when deleting {}/{} — still referenced: {}",
-                                resource_type,
-                                id_for_log,
-                                detail,
-                            );
-                        }
-                        Ok(Ok((status, _))) => {
-                            errors += 1;
-                            tracing::warn!(
-                                "Unexpected status {} when deleting {}/{}",
-                                status,
-                                resource_type,
-                                id_for_log,
-                            );
-                        }
-                        Ok(Err(e)) => {
-                            errors += 1;
-                            tracing::warn!(
-                                "Request error when deleting {}/{}: {:#}",
-                                resource_type,
-                                id_for_log,
-                                e,
-                            );
-                        }
-                        Err(e) => {
-                            errors += 1;
-                            tracing::warn!(
-                                "Task join error when deleting {}/{}: {}",
-                                resource_type,
-                                id_for_log,
-                                e,
-                            );
-                        }
-                    }
-                }
-
-                if deleted > 0 && deleted.is_multiple_of(1000) {
-                    println!("    {}/{} {} deleted", deleted, total, resource_type);
-                }
-            }
-
-            println!(
-                "  → {}/{} {} deleted ({} errors)",
-                deleted, total, resource_type, errors
-            );
-            total_errors += errors;
-=======
->>>>>>> d1abc60 (fix: multi-pass wave deletion to resolve cross-type 409 conflicts)
         }
     }
 
@@ -1574,13 +1466,8 @@ mod tests {
         .unwrap();
 
         let log = log.lock().unwrap();
-<<<<<<< HEAD
-        // Should delete in reverse creation order: Organization first, then Patient.
-        // Within each type, IDs are reversed so dependents (later upload waves) are deleted first.
-=======
         // Flat list: [Organization/org-1, Patient/patient-2, Patient/patient-1]
         // (reverse creation order, reversed within type)
->>>>>>> d1abc60 (fix: multi-pass wave deletion to resolve cross-type 409 conflicts)
         assert_eq!(log.requests.len(), 3);
         assert_eq!(log.requests[0].0, "DELETE");
         assert!(log.requests[0].1.contains("/Organization/org-1"));
