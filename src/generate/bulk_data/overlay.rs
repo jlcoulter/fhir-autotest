@@ -63,12 +63,21 @@ pub fn overlay_cross_references(
                 );
             }
             if !hs_ids.is_empty() {
-                // Always reference the first HealthcareService ID to avoid
-                // HAPI-1096 ("Resource is deleted") — random HealthcareService
-                // references may point to resources deleted by a previous test
-                // run's cleanup, which HAPI permanently marks as deleted and
-                // refuses new references to.
-                let ref_str = format!("HealthcareService/{}", hs_ids[0]);
+                // Distribute references across all HealthcareService IDs
+                // using a round-robin based on the PractitionerRole id suffix.
+                // This avoids creating a hot-spot on hs_ids[0] that would
+                // cause 409 conflicts during deletion — if every PractitionerRole
+                // references the same HealthcareService, that single resource
+                // can't be deleted until all PractitionerRole deletes have
+                // committed, and the retry pass may not give the server enough
+                // time to finish processing.
+                let idx = _id
+                    .rsplit('-')
+                    .next()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0)
+                    % hs_ids.len();
+                let ref_str = format!("HealthcareService/{}", hs_ids[idx]);
                 obj.insert(
                     "healthcareService".to_string(),
                     serde_json::json!([{ "reference": ref_str }]),

@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use anyhow::Context;
 
 /// HTTP method for uploading resources to the repository.
 ///
@@ -53,6 +56,64 @@ fn resolve_env_vars(s: &str) -> String {
     }
     result.push_str(rest);
     result
+}
+
+/// Validate that a path does not escape the expected base directory.
+///
+/// Canonicalizes both the path and the base directory, then checks that
+/// the resolved path starts with the resolved base. This prevents path
+/// traversal attacks via `../` components.
+///
+/// For paths that don't exist yet (e.g. output directories), use
+/// [`validate_output_path`] instead.
+pub fn validate_path(path: &Path, base: &Path) -> anyhow::Result<PathBuf> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("Path does not exist or is inaccessible: {}", path.display()))?;
+    let base_canonical = base.canonicalize().with_context(|| {
+        format!(
+            "Base directory does not exist or is inaccessible: {}",
+            base.display()
+        )
+    })?;
+    if !canonical.starts_with(&base_canonical) {
+        anyhow::bail!(
+            "Path traversal detected: {} resolves outside {}",
+            path.display(),
+            base.display()
+        );
+    }
+    Ok(canonical)
+}
+
+/// Validate that an output path does not escape the current working directory
+/// via `..` components.
+///
+/// Unlike [`validate_path`], this does not require the path to already exist.
+/// Absolute paths are allowed (the user explicitly chose them). Relative paths
+/// are resolved against the CWD and checked for traversal.
+fn validate_output_path(path: &Path) -> anyhow::Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let cwd = std::env::current_dir().context("Failed to get current working directory")?;
+    let resolved = cwd.join(path);
+    // The parent directory must exist for canonicalization
+    let parent = resolved.parent().unwrap_or(&resolved);
+    let parent_canonical = parent.canonicalize().with_context(|| {
+        format!(
+            "Output parent directory does not exist: {}",
+            parent.display()
+        )
+    })?;
+    let cwd_canonical = cwd.canonicalize().context("Failed to canonicalize CWD")?;
+    if !parent_canonical.starts_with(&cwd_canonical) {
+        anyhow::bail!(
+            "Path traversal detected: output path {} resolves outside the current working directory",
+            path.display()
+        );
+    }
+    Ok(resolved)
 }
 
 /// Configuration for running tests against a FHIR server.
@@ -139,6 +200,20 @@ pub struct ServerConfig {
     /// Optional HTTP headers sent with every request (e.g. auth tokens).
     #[serde(default)]
     pub headers: HashMap<String, String>,
+
+    /// Whether to verify TLS certificates (default: true).
+    ///
+    /// Set to `false` to accept self-signed or otherwise invalid certificates
+    /// (useful for development/testing with internal CAs).
+    #[serde(default = "default_tls_verify")]
+    pub tls_verify: bool,
+
+    /// Optional path to a PEM-encoded CA certificate bundle.
+    ///
+    /// When set, this certificate is added to the root certificate store,
+    /// allowing connections to servers using custom/internal CAs.
+    #[serde(default)]
+    pub tls_ca_cert: Option<PathBuf>,
 }
 
 /// Internal repository configuration for resource creation/deletion.
@@ -200,10 +275,90 @@ pub struct RepositoryConfig {
     /// repositories that can handle higher concurrency.
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
+
+    /// Whether to verify TLS certificates (default: true).
+    ///
+    /// Set to `false` to accept self-signed or otherwise invalid certificates
+    /// (useful for development/testing with internal CAs).
+    #[serde(default = "default_tls_verify")]
+    pub tls_verify: bool,
+
+    /// Optional path to a PEM-encoded CA certificate bundle.
+    ///
+    /// When set, this certificate is added to the root certificate store,
+    /// allowing connections to servers using custom/internal CAs.
+    #[serde(default)]
+    pub tls_ca_cert: Option<PathBuf>,
 }
 
 pub fn default_concurrency() -> usize {
     1
+}
+
+pub fn default_tls_verify() -> bool {
+    true
+}
+
+/// TLS configuration for HTTP clients.
+///
+/// Controls certificate verification and custom CA certificates.
+/// These settings apply to all HTTP clients created by the application.
+#[derive(Debug, Clone)]
+pub struct TlsConfig {
+    /// Whether to verify TLS certificates (default: true).
+    pub verify: bool,
+    /// Optional path to a PEM-encoded CA certificate bundle.
+    pub ca_cert: Option<PathBuf>,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            verify: true,
+            ca_cert: None,
+        }
+    }
+}
+
+impl TlsConfig {
+    /// Extract TLS config from a `ServerConfig`.
+    pub fn from_server(config: &ServerConfig) -> Self {
+        Self {
+            verify: config.tls_verify,
+            ca_cert: config.tls_ca_cert.clone(),
+        }
+    }
+
+    /// Extract TLS config from a `RepositoryConfig`.
+    pub fn from_repository(config: &RepositoryConfig) -> Self {
+        Self {
+            verify: config.tls_verify,
+            ca_cert: config.tls_ca_cert.clone(),
+        }
+    }
+
+    /// Build a `reqwest::Client` with this TLS configuration applied.
+    pub fn build_client(&self) -> anyhow::Result<reqwest::Client> {
+        let mut builder = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .user_agent("fhir-autotest/0.1");
+        if !self.verify {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        if let Some(ca_path) = &self.ca_cert {
+            let cert = std::fs::read(ca_path)
+                .with_context(|| format!("Failed to read CA certificate: {}", ca_path.display()))?;
+            builder = builder.add_root_certificate(
+                reqwest::Certificate::from_pem(&cert).with_context(|| {
+                    format!(
+                        "Failed to parse CA certificate from PEM: {}",
+                        ca_path.display()
+                    )
+                })?,
+            );
+        }
+        Ok(builder.build()?)
+    }
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -263,6 +418,26 @@ impl TestConfig {
         let content = std::fs::read_to_string(path)?;
         let mut config: TestConfig = toml::from_str(&content)?;
 
+        // Resolve the config file's parent directory for relative path validation
+        let config_path = Path::new(path);
+        let config_dir = config_path
+            .parent()
+            .context("Config file has no parent directory")?
+            .canonicalize()
+            .context("Failed to canonicalize config file directory")?;
+
+        // Validate output path — must not escape the current working directory
+        let output_path = Path::new(&config.output);
+        validate_output_path(output_path)?;
+
+        // Validate read-only paths that must exist
+        if let Some(cs_path) = &config.overrides.capability_statement_file {
+            validate_path(cs_path, &config_dir)?;
+        }
+        if let Some(fixtures_path) = &config.overrides.fixtures_dir {
+            validate_path(fixtures_path, &config_dir)?;
+        }
+
         // Resolve env vars in repository credentials
         if let Some(repo) = &mut config.repository {
             repo.username = resolve_env_vars(&repo.username);
@@ -270,9 +445,12 @@ impl TestConfig {
 
             // Load credential file if configured
             if let Some(cred_path) = &repo.credential_file {
-                let cred_path = resolve_env_vars(&cred_path.to_string_lossy());
-                let cred_content = std::fs::read_to_string(&cred_path).map_err(|e| {
-                    anyhow::anyhow!("Failed to read credential file '{}': {}", cred_path, e)
+                let cred_path_str = resolve_env_vars(&cred_path.to_string_lossy());
+                let cred_path_buf = PathBuf::from(&cred_path_str);
+                // Validate credential file path against config file directory
+                validate_path(&cred_path_buf, &config_dir)?;
+                let cred_content = std::fs::read_to_string(&cred_path_str).map_err(|e| {
+                    anyhow::anyhow!("Failed to read credential file '{}': {}", cred_path_str, e)
                 })?;
                 #[derive(Deserialize)]
                 struct CredentialFile {
@@ -280,7 +458,7 @@ impl TestConfig {
                     password: Option<String>,
                 }
                 let creds: CredentialFile = toml::from_str(&cred_content).map_err(|e| {
-                    anyhow::anyhow!("Failed to parse credential file '{}': {}", cred_path, e)
+                    anyhow::anyhow!("Failed to parse credential file '{}': {}", cred_path_str, e)
                 })?;
                 if let Some(u) = creds.username {
                     repo.username = resolve_env_vars(&u);
@@ -338,12 +516,14 @@ impl TestConfig {
                 password: repo.password.clone(),
                 upload_method: repo.upload_method,
                 concurrency: repo.concurrency,
+                tls_config: TlsConfig::from_repository(repo),
             },
             None => WriteEndpoint::Server {
                 base_url: self.server.base_url.clone(),
                 headers: self.server.headers.clone(),
                 upload_method: UploadMethod::default(),
                 concurrency: default_concurrency(),
+                tls_config: TlsConfig::from_server(&self.server),
             },
         }
     }
@@ -363,6 +543,8 @@ pub enum WriteEndpoint {
         upload_method: UploadMethod,
         /// Number of parallel requests for upload and delete.
         concurrency: usize,
+        /// TLS configuration for this endpoint.
+        tls_config: TlsConfig,
     },
     Server {
         base_url: String,
@@ -371,6 +553,8 @@ pub enum WriteEndpoint {
         upload_method: UploadMethod,
         /// Number of parallel requests for upload and delete.
         concurrency: usize,
+        /// TLS configuration for this endpoint.
+        tls_config: TlsConfig,
     },
 }
 
@@ -740,5 +924,112 @@ credential_file = "{}"
         assert_eq!(repo.username, "main-user");
         // password should be overridden by credential file
         assert_eq!(repo.password, "from-file");
+    }
+
+    #[test]
+    fn validate_path_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let legit_path = dir.path().join("legit.txt");
+        std::fs::write(&legit_path, "ok").unwrap();
+
+        // Legitimate path should pass
+        assert!(validate_path(&legit_path, dir.path()).is_ok());
+
+        // Path traversal outside the base should fail
+        let traversal = PathBuf::from("../../../etc/passwd");
+        let result = validate_path(&traversal, dir.path());
+        assert!(result.is_err(), "Expected path traversal to be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Path traversal detected") || err.contains("does not exist"),
+            "Unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_output_path_rejects_traversal() {
+        // Path traversal outside CWD should fail
+        let traversal = Path::new("../../../etc");
+        let result = validate_output_path(traversal);
+        assert!(
+            result.is_err(),
+            "Expected output path traversal to be rejected"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Path traversal detected"),
+            "Unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_config_rejects_output_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml = r#"
+output = "../../../etc"
+
+[server]
+base_url = "http://localhost:8080/fhir"
+"#
+        .to_string();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, &toml).unwrap();
+        let result = TestConfig::load(config_path.to_str().unwrap());
+        assert!(
+            result.is_err(),
+            "Expected output path traversal to be rejected"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Path traversal detected"),
+            "Unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_config_rejects_capability_statement_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml = r#"
+[server]
+base_url = "http://localhost:8080/fhir"
+
+[overrides]
+capability_statement_file = "../../../etc/passwd"
+"#
+        .to_string();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, &toml).unwrap();
+        let result = TestConfig::load(config_path.to_str().unwrap());
+        assert!(result.is_err(), "Expected CS file traversal to be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Path traversal detected") || err.contains("does not exist"),
+            "Unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_config_rejects_fixtures_dir_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml = r#"
+[server]
+base_url = "http://localhost:8080/fhir"
+
+[overrides]
+fixtures_dir = "../../../etc"
+"#
+        .to_string();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, &toml).unwrap();
+        let result = TestConfig::load(config_path.to_str().unwrap());
+        assert!(
+            result.is_err(),
+            "Expected fixtures dir traversal to be rejected"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Path traversal detected") || err.contains("does not exist"),
+            "Unexpected error: {err}"
+        );
     }
 }

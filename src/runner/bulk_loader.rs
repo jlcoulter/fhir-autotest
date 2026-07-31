@@ -1,9 +1,12 @@
-use crate::config::models::{UploadMethod, WriteEndpoint};
+#[allow(unused_imports)]
+use crate::config::models::{TlsConfig, UploadMethod, WriteEndpoint};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::Path;
 use std::sync::Arc;
+
+type DeleteHandle = tokio::task::JoinHandle<anyhow::Result<(u16, Option<String>)>>;
 
 /// HL7 R5 extension StructureDefinitions that the HCPD profile references for slicing.
 /// These must be available in the HAPI validator's registry or validation of Practitioner
@@ -145,39 +148,120 @@ const R5_EXTENSION_PROFILES: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// A shared HTTP client for interacting with a FHIR repository.
+///
+/// Encapsulates the `reqwest::Client`, base URL, upload method, and auth logic
+/// so that callers don't need to duplicate client creation, URL building, or
+/// auth header injection.
+pub struct FhirRepositoryClient {
+    client: reqwest::Client,
+    base_url: String,
+    upload_method: UploadMethod,
+    write_endpoint: WriteEndpoint,
+}
+
+impl FhirRepositoryClient {
+    /// Create a new client from a `WriteEndpoint`.
+    pub fn new(write_endpoint: &WriteEndpoint) -> Result<Self> {
+        let tls_config = match write_endpoint {
+            WriteEndpoint::Repository { tls_config, .. }
+            | WriteEndpoint::Server { tls_config, .. } => tls_config.clone(),
+        };
+        let client = tls_config.build_client()?;
+        let base_url = match write_endpoint {
+            WriteEndpoint::Repository { base_url, .. } => base_url.clone(),
+            WriteEndpoint::Server { base_url, .. } => base_url.clone(),
+        };
+        let upload_method = match write_endpoint {
+            WriteEndpoint::Repository { upload_method, .. }
+            | WriteEndpoint::Server { upload_method, .. } => *upload_method,
+        };
+        Ok(Self {
+            client,
+            base_url,
+            upload_method,
+            write_endpoint: write_endpoint.clone(),
+        })
+    }
+
+    /// The base URL of the FHIR repository.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// The upload method (PUT or POST).
+    pub fn upload_method(&self) -> UploadMethod {
+        self.upload_method
+    }
+
+    /// PUT a resource to `/{resource_type}/{id}`.
+    pub async fn put_resource(
+        &self,
+        resource_type: &str,
+        id: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let url = format!("{}/{}/{}", self.base_url, resource_type, id);
+        let req = self
+            .client
+            .put(&url)
+            .header("Content-Type", "application/fhir+json")
+            .header("Accept", "application/fhir+json")
+            .json(body);
+        let req = add_write_auth(req, &self.write_endpoint);
+        Ok(req.send().await?)
+    }
+
+    /// POST a resource to `/{resource_type}`.
+    pub async fn post_resource(
+        &self,
+        resource_type: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let url = format!("{}/{}", self.base_url, resource_type);
+        let req = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/fhir+json")
+            .header("Accept", "application/fhir+json")
+            .json(body);
+        let req = add_write_auth(req, &self.write_endpoint);
+        Ok(req.send().await?)
+    }
+
+    /// DELETE a resource at `/{resource_type}/{id}`.
+    pub async fn delete_resource(
+        &self,
+        resource_type: &str,
+        id: &str,
+    ) -> Result<reqwest::Response> {
+        let url = format!("{}/{}/{}", self.base_url, resource_type, id);
+        let req = self
+            .client
+            .delete(&url)
+            .header("Accept", "application/fhir+json");
+        let req = add_write_auth(req, &self.write_endpoint);
+        Ok(req.send().await?)
+    }
+}
+
 /// Ensure the required HL7 R5 extension StructureDefinitions are present in the
 /// FHIR repository. If a profile is missing (404), uploads the embedded minimal
 /// StructureDefinition so the HAPI validator can resolve profile URIs used in
 /// extension slicing discriminators.
 pub async fn ensure_r5_extension_profiles(write_endpoint: &WriteEndpoint) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
-
-    let base_url = match write_endpoint {
-        WriteEndpoint::Repository { base_url, .. } => base_url,
-        WriteEndpoint::Server { base_url, .. } => base_url,
-    };
+    let client = FhirRepositoryClient::new(write_endpoint)?;
 
     for (id, canonical_url, embedded_json) in R5_EXTENSION_PROFILES {
-        let repo_url = format!("{}/StructureDefinition/{}", base_url, id);
-
-        // Always PUT the embedded StructureDefinition to ensure the latest version
-        // is present. HAPI handles idempotent updates gracefully.
-
         // Parse the embedded minimal StructureDefinition
         let sd_json: serde_json::Value = serde_json::from_str(embedded_json)
             .with_context(|| format!("Failed to parse embedded StructureDefinition for {}", id))?;
 
         // Upload to repository
-        let put_req = client
-            .put(&repo_url)
-            .header("Content-Type", "application/fhir+json")
-            .header("Accept", "application/fhir+json")
-            .json(&sd_json);
-        let put_req = add_write_auth(put_req, write_endpoint);
-
-        match put_req.send().await {
+        match client
+            .put_resource("StructureDefinition", id, &sd_json)
+            .await
+        {
             Ok(r) if r.status().as_u16() < 300 => {
                 tracing::info!("Uploaded R5 extension profile: {}", canonical_url);
                 println!("  Uploaded R5 profile: {}", canonical_url);
@@ -215,14 +299,7 @@ pub async fn upload_supplement_resources(
     value_set_systems: &std::collections::HashMap<String, String>,
     write_endpoint: &WriteEndpoint,
 ) -> Result<HashMap<String, Vec<String>>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
-
-    let base_url = match write_endpoint {
-        WriteEndpoint::Repository { base_url, .. } => base_url,
-        WriteEndpoint::Server { base_url, .. } => base_url,
-    };
+    let client = FhirRepositoryClient::new(write_endpoint)?;
 
     let mut supplement_ids: HashMap<String, Vec<String>> = HashMap::new();
     let mut any_uploaded = false;
@@ -260,21 +337,13 @@ pub async fn upload_supplement_resources(
         };
 
         let id = format!("{}-1", resource_type.to_lowercase());
-        let url = format!("{}/{}/{}", base_url, resource_type, id);
 
         if !any_uploaded {
             println!("\n── Uploading supplement resources (uncovered types) ──");
             any_uploaded = true;
         }
 
-        let req = client
-            .put(&url)
-            .header("Content-Type", "application/fhir+json")
-            .header("Accept", "application/fhir+json")
-            .json(&resource);
-        let req = add_write_auth(req, write_endpoint);
-
-        match req.send().await {
+        match client.put_resource(resource_type, &id, &resource).await {
             Ok(r) if r.status().as_u16() < 300 => {
                 tracing::info!("Uploaded supplement {} ({})", resource_type, id);
                 println!("  {} {}", resource_type, id);
@@ -453,19 +522,8 @@ pub async fn upload_ndjson_files(
     write_endpoint: &WriteEndpoint,
     concurrency: usize,
 ) -> Result<HashMap<String, Vec<String>>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
-
-    let base_url = match write_endpoint {
-        WriteEndpoint::Repository { base_url, .. } => base_url,
-        WriteEndpoint::Server { base_url, .. } => base_url,
-    };
-
-    let upload_method = match write_endpoint {
-        WriteEndpoint::Repository { upload_method, .. }
-        | WriteEndpoint::Server { upload_method, .. } => *upload_method,
-    };
+    let repo_client = Arc::new(FhirRepositoryClient::new(write_endpoint)?);
+    let upload_method = repo_client.upload_method();
 
     let mut all_ids: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -496,7 +554,7 @@ pub async fn upload_ndjson_files(
             "Uploading {} {} resources to {}",
             total,
             resource_type,
-            base_url
+            repo_client.base_url()
         );
 
         let mut ids: Vec<String> = Vec::with_capacity(total);
@@ -537,16 +595,8 @@ pub async fn upload_ndjson_files(
                     resource.as_object_mut().map(|o| o.remove("id"));
                 }
 
-                let url = if upload_method == UploadMethod::Put {
-                    // PUT /{rtype}/{id} — update-as-create with client-assigned ID
-                    format!("{}/{}/{}", base_url, resource_type, client_id)
-                } else {
-                    // POST /{rtype} — server-assigned ID
-                    format!("{}/{}", base_url, resource_type)
-                };
-
-                let client = client.clone();
-                let write_endpoint = write_endpoint.clone();
+                let repo_client = repo_client.clone();
+                let resource_type = resource_type.clone();
                 // Acquire a permit before spawning so at most `concurrency`
                 // requests are ever in flight; the permit is released when the
                 // task finishes, immediately admitting the next one.
@@ -554,21 +604,13 @@ pub async fn upload_ndjson_files(
 
                 join_set.spawn(async move {
                     let _permit = permit;
-                    let req = if upload_method == UploadMethod::Put {
-                        client
-                            .put(&url)
-                            .header("Content-Type", "application/fhir+json")
-                            .header("Accept", "application/fhir+json")
-                            .json(&resource)
+                    let resp = if upload_method == UploadMethod::Put {
+                        repo_client
+                            .put_resource(&resource_type, &client_id, &resource)
+                            .await?
                     } else {
-                        client
-                            .post(&url)
-                            .header("Content-Type", "application/fhir+json")
-                            .header("Accept", "application/fhir+json")
-                            .json(&resource)
+                        repo_client.post_resource(&resource_type, &resource).await?
                     };
-                    let req = add_write_auth(req, &write_endpoint);
-                    let resp = req.send().await?;
                     let status = resp.status();
                     let body: serde_json::Value = resp.json().await.unwrap_or_default();
                     anyhow::Ok((client_id, status.as_u16(), body))
@@ -628,6 +670,11 @@ pub async fn upload_ndjson_files(
 
 /// Delete all resources in `ids` from the repository, in reverse creation order.
 ///
+/// Uses a multi-pass wave approach to handle cross-type referential conflicts:
+/// resources that 409 (still referenced) are retried in subsequent passes until
+/// all are deleted or no progress is made. This handles arbitrary reference webs
+/// including circular dependencies like Organization ↔ Endpoint.
+///
 /// Uses concurrency for throughput. Returns an error if any deletes failed.
 pub async fn delete_all_resources(
     ids: &HashMap<String, Vec<String>>,
@@ -635,76 +682,162 @@ pub async fn delete_all_resources(
     write_endpoint: &WriteEndpoint,
     concurrency: usize,
 ) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()?;
+    let repo_client = Arc::new(FhirRepositoryClient::new(write_endpoint)?);
 
-    let base_url = match write_endpoint {
-        WriteEndpoint::Repository { base_url, .. } => base_url,
-        WriteEndpoint::Server { base_url, .. } => base_url,
-    };
-
-    let mut total_errors = 0usize;
-
-    // Delete in reverse creation order
+    // Build a flat list of (resource_type, id) pairs in reverse creation order,
+    // with IDs within each type reversed so same-type dependents are deleted first.
+    let mut remaining: Vec<(String, String)> = Vec::new();
     for resource_type in creation_order.iter().rev() {
         if let Some(type_ids) = ids.get(resource_type) {
-            if type_ids.is_empty() {
-                continue;
+            for id in type_ids.iter().rev() {
+                remaining.push((resource_type.clone(), id.clone()));
             }
-            let total = type_ids.len();
-            println!("  Deleting {} {} resources ...", total, resource_type);
-
-            let mut deleted = 0usize;
-            let mut errors = 0usize;
-            let batch_size = concurrency.max(1);
-
-            for chunk in type_ids.chunks(batch_size) {
-                let mut handles = Vec::new();
-
-                for id in chunk {
-                    let url = format!("{}/{}/{}", base_url, resource_type, id);
-                    let client = client.clone();
-                    let write_endpoint = write_endpoint.clone();
-
-                    handles.push(tokio::spawn(async move {
-                        let req = client
-                            .delete(&url)
-                            .header("Accept", "application/fhir+json");
-                        let req = add_write_auth(req, &write_endpoint);
-                        let resp = req.send().await?;
-                        Ok::<u16, anyhow::Error>(resp.status().as_u16())
-                    }));
-                }
-
-                for handle in handles {
-                    match handle.await {
-                        Ok(Ok(200 | 204 | 404 | 410)) => {
-                            deleted += 1;
-                        }
-                        _ => {
-                            errors += 1;
-                        }
-                    }
-                }
-
-                if deleted > 0 && deleted.is_multiple_of(1000) {
-                    println!("    {}/{} {} deleted", deleted, total, resource_type);
-                }
-            }
-
-            println!(
-                "  → {}/{} {} deleted ({} errors)",
-                deleted, total, resource_type, errors
-            );
-            total_errors += errors;
         }
     }
 
+    if remaining.is_empty() {
+        return Ok(());
+    }
+
+    let total = remaining.len();
+    println!("  Deleting {} resources ...", total);
+
+    let mut total_deleted = 0usize;
+    let mut total_errors = 0usize;
+
+    // Multi-pass wave deletion: keep retrying 409'd resources until done or stuck.
+    // A small delay between passes gives the server time to commit referent deletions.
+    let mut last_stuck_count = remaining.len() + 1;
+    let mut consecutive_stuck_passes = 0u32;
+    loop {
+        if remaining.is_empty() {
+            break;
+        }
+
+        // If we made no progress last pass, we're stuck — log and give up.
+        // Require 2 consecutive stuck passes to avoid giving up too early
+        // when the server is still processing deletes from the previous pass.
+        if remaining.len() >= last_stuck_count {
+            consecutive_stuck_passes += 1;
+            if consecutive_stuck_passes >= 2 {
+                for (resource_type, id) in &remaining {
+                    tracing::warn!(
+                        "Giving up on deleting {}/{} — still referenced after retry pass",
+                        resource_type,
+                        id,
+                    );
+                }
+                total_errors += remaining.len();
+                break;
+            }
+        } else {
+            consecutive_stuck_passes = 0;
+        }
+        last_stuck_count = remaining.len();
+
+        // Brief delay between passes so the server can commit referent deletions
+        // before we retry the resources that 409'd.
+        if total_deleted > 0 && !remaining.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        let batch_size = concurrency.max(1);
+        let mut still_referenced: Vec<(String, String)> = Vec::new();
+
+        for chunk in remaining.chunks(batch_size) {
+            let mut handles: Vec<DeleteHandle> = Vec::new();
+
+            for (resource_type, id) in chunk {
+                let repo_client = repo_client.clone();
+                let resource_type = resource_type.clone();
+                let id_clone = id.clone();
+
+                handles.push(tokio::spawn(async move {
+                    let resp = repo_client
+                        .delete_resource(&resource_type, &id_clone)
+                        .await?;
+                    let status = resp.status().as_u16();
+                    let body = if status == 409 {
+                        resp.text().await.ok()
+                    } else {
+                        None
+                    };
+                    Ok::<(u16, Option<String>), anyhow::Error>((status, body))
+                }));
+            }
+
+            for (handle, (resource_type, id)) in handles.into_iter().zip(chunk.iter()) {
+                match handle.await {
+                    Ok(Ok((200 | 204 | 404 | 410, _))) => {
+                        total_deleted += 1;
+                    }
+                    Ok(Ok((409, body))) => {
+                        still_referenced.push((resource_type.clone(), id.clone()));
+                        let detail = body.as_deref().unwrap_or("(no body)");
+                        tracing::debug!(
+                            "Conflict (409) when deleting {}/{} — still referenced: {}",
+                            resource_type,
+                            id,
+                            detail,
+                        );
+                    }
+                    Ok(Ok((status, _))) => {
+                        total_errors += 1;
+                        tracing::warn!(
+                            "Unexpected status {} when deleting {}/{}",
+                            status,
+                            resource_type,
+                            id,
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        total_errors += 1;
+                        tracing::warn!(
+                            "Request error when deleting {}/{}: {:#}",
+                            resource_type,
+                            id,
+                            e,
+                        );
+                    }
+                    Err(e) => {
+                        total_errors += 1;
+                        tracing::warn!(
+                            "Task join error when deleting {}/{}: {}",
+                            resource_type,
+                            id,
+                            e,
+                        );
+                    }
+                }
+            }
+
+            if total_deleted > 0 && total_deleted.is_multiple_of(1000) {
+                println!("    {}/{} deleted", total_deleted, total);
+            }
+        }
+
+        remaining = still_referenced;
+
+        if !remaining.is_empty() {
+            println!(
+                "    {}/{} deleted, {} still referenced — retrying ...",
+                total_deleted,
+                total,
+                remaining.len()
+            );
+        }
+    }
+
+    println!(
+        "  → {}/{} deleted ({} errors)",
+        total_deleted, total, total_errors
+    );
+
     if total_errors > 0 {
         anyhow::bail!(
-            "{} resource(s) failed to delete during cleanup",
-            total_errors
+            "Failed to delete {} resources ({} deleted successfully)",
+            total_errors,
+            total_deleted,
         );
     }
 
@@ -970,6 +1103,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let ids = upload_ndjson_files(&data_dir, &["Patient".to_string()], &endpoint, 1)
@@ -1023,6 +1157,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let ids = upload_ndjson_files(
@@ -1070,6 +1205,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Post,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let ids = upload_ndjson_files(&data_dir, &["Patient".to_string()], &endpoint, 1)
@@ -1104,6 +1240,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         // Should not crash — should return empty map
@@ -1144,6 +1281,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         // Should not crash — should log the error and continue
@@ -1196,6 +1334,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let ids = upload_supplement_resources(
@@ -1241,6 +1380,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let ids = upload_supplement_resources(
@@ -1286,6 +1426,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let ids = upload_supplement_resources(
@@ -1327,6 +1468,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         delete_all_resources(
@@ -1339,14 +1481,15 @@ mod tests {
         .unwrap();
 
         let log = log.lock().unwrap();
-        // Should delete in reverse creation order: Organization first, then Patient
+        // Flat list: [Organization/org-1, Patient/patient-2, Patient/patient-1]
+        // (reverse creation order, reversed within type)
         assert_eq!(log.requests.len(), 3);
         assert_eq!(log.requests[0].0, "DELETE");
         assert!(log.requests[0].1.contains("/Organization/org-1"));
         assert_eq!(log.requests[1].0, "DELETE");
-        assert!(log.requests[1].1.contains("/Patient/patient-1"));
+        assert!(log.requests[1].1.contains("/Patient/patient-2"));
         assert_eq!(log.requests[2].0, "DELETE");
-        assert!(log.requests[2].1.contains("/Patient/patient-2"));
+        assert!(log.requests[2].1.contains("/Patient/patient-1"));
     }
 
     #[tokio::test]
@@ -1361,6 +1504,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         // Should not crash — 404 is logged and processing continues
@@ -1383,6 +1527,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         ensure_r5_extension_profiles(&endpoint).await.unwrap();
@@ -1411,6 +1556,7 @@ mod tests {
             password: "s3cret".to_string(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let client = reqwest::Client::new();
@@ -1435,6 +1581,7 @@ mod tests {
             headers,
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let client = reqwest::Client::new();
@@ -1485,6 +1632,7 @@ mod tests {
             password: "s3cret".to_string(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let client = reqwest::Client::new();
@@ -1546,6 +1694,7 @@ mod tests {
             headers,
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         let client = reqwest::Client::new();
@@ -1610,6 +1759,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         // Step 1: Upload
@@ -1704,6 +1854,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 4,
+            tls_config: TlsConfig::default(),
         };
 
         // Upload with concurrency = 4
@@ -1750,6 +1901,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         // Should not crash — should skip the empty file
@@ -1781,6 +1933,7 @@ mod tests {
             headers: HashMap::new(),
             upload_method: UploadMethod::Put,
             concurrency: 1,
+            tls_config: TlsConfig::default(),
         };
 
         // Should not crash — should skip the empty file

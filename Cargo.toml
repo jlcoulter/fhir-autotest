@@ -31,3 +31,4 @@ predicates = "3"
 tempfile = "3"
 http-body-util = "0.1"
 bytes = "1"
+cargo-husky = { version = "1", features = ["run-cargo-fmt", "run-cargo-clippy", "run-cargo-test"]}

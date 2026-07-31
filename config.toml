@@ -83,7 +83,7 @@ concurrency = 100
 # Optional path to a responder CapabilityStatement JSON file.
 # When set, this file replaces the CapabilityStatement selected from the IG
 # package for test planning/conformance checks.
-capability_statement_file = "./package/metadata.json"
+# capability_statement_file = "./package/metadata.json"
 
 # Manual creation order. If set, this replaces the auto-resolved dependency
 # order. Resource types not listed here are appended in their original order.
