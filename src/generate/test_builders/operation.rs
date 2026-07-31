@@ -543,4 +543,217 @@ mod tests {
         assert!(body["parameter"].is_array());
         assert_eq!(body["parameter"][0]["name"], "start");
     }
+
+    // ── New operation tests ────────────────────────────────────────────
+
+    #[test]
+    fn build_operation_test_type_scope() {
+        let op_def = OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/OperationDefinition/Patient-validate".to_string(),
+            name: "validate".to_string(),
+            code: "validate".to_string(),
+            system: Some(false),
+            type_: Some(true),
+            instance: Some(false),
+            parameter: vec![],
+            affects_state: None,
+            idempotent: None,
+        };
+        let test = build_operation_test(
+            "Patient",
+            "validate",
+            Some(&op_def),
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.request.url, "/Patient/$validate");
+        assert_eq!(test.request.method, "GET");
+    }
+
+    #[test]
+    fn build_operation_test_unknown_scope_defaults_to_resource_level() {
+        let op_def = OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/OperationDefinition/Test-op".to_string(),
+            name: "op".to_string(),
+            code: "op".to_string(),
+            system: Some(false),
+            type_: Some(false),
+            instance: Some(false),
+            parameter: vec![],
+            affects_state: None,
+            idempotent: None,
+        };
+        let test = build_operation_test(
+            "Patient",
+            "op",
+            Some(&op_def),
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.request.url, "/Patient/$op");
+    }
+
+    #[test]
+    fn build_operation_idempotent_test_basic() {
+        let op_def = OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/OperationDefinition/Patient-everything".to_string(),
+            name: "everything".to_string(),
+            code: "everything".to_string(),
+            system: Some(false),
+            type_: Some(false),
+            instance: Some(true),
+            parameter: vec![],
+            affects_state: None,
+            idempotent: Some(true),
+        };
+        let test = build_operation_idempotent_test(
+            "Patient",
+            "everything",
+            Some(&op_def),
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.name, "patient_operation_everything_idempotent");
+        assert!(matches!(test.kind, TestCaseKind::Conformance { .. }));
+        assert_eq!(test.validation.expected_status, 0);
+    }
+
+    #[test]
+    fn build_operation_affects_state_test_basic() {
+        let op_def = OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/OperationDefinition/Patient-everything".to_string(),
+            name: "everything".to_string(),
+            code: "everything".to_string(),
+            system: Some(false),
+            type_: Some(false),
+            instance: Some(true),
+            parameter: vec![],
+            affects_state: Some(false),
+            idempotent: None,
+        };
+        let test = build_operation_affects_state_test(
+            "Patient",
+            "everything",
+            Some(&op_def),
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.name, "patient_operation_everything_affects_state");
+        assert!(matches!(test.kind, TestCaseKind::Conformance { .. }));
+        assert_eq!(test.validation.expected_status, 0);
+    }
+
+    #[test]
+    fn build_operation_error_test_basic() {
+        let op_def = OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/OperationDefinition/Patient-everything".to_string(),
+            name: "everything".to_string(),
+            code: "everything".to_string(),
+            system: Some(false),
+            type_: Some(false),
+            instance: Some(true),
+            parameter: vec![OperationParameter {
+                name: "start".to_string(),
+                use_: Some("in".to_string()),
+                min: Some(1),
+                max: Some("1".to_string()),
+                param_type: Some("date".to_string()),
+            }],
+            affects_state: None,
+            idempotent: None,
+        };
+        let test = build_operation_error_test("Patient", "everything", Some(&op_def), &None);
+        assert_eq!(
+            test.name,
+            "patient_operation_everything_missing_required_params"
+        );
+        assert!(matches!(test.kind, TestCaseKind::Negative { .. }));
+        assert_eq!(test.validation.expected_status, 0);
+        assert!(test.request.body.is_some());
+        let body = test.request.body.unwrap();
+        assert_eq!(body["parameter"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn build_operation_scope_test_system_only() {
+        let op_def = OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/uv/bulkdata/OperationDefinition/export".to_string(),
+            name: "export".to_string(),
+            code: "export".to_string(),
+            system: Some(true),
+            type_: Some(false),
+            instance: Some(false),
+            parameter: vec![],
+            affects_state: None,
+            idempotent: None,
+        };
+        let tests = build_operation_scope_test("Patient", "export", Some(&op_def), &None);
+        // Should have 2 tests: type-level and instance-level (both invalid for system-only)
+        assert_eq!(tests.len(), 2);
+        assert!(tests.iter().any(|t| t.name.contains("scope_type_level")));
+        assert!(
+            tests
+                .iter()
+                .any(|t| t.name.contains("scope_instance_level"))
+        );
+        for t in &tests {
+            assert!(matches!(t.kind, TestCaseKind::Negative { .. }));
+        }
+    }
+
+    #[test]
+    fn build_operation_scope_test_instance_only() {
+        let op_def = OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/OperationDefinition/Patient-everything".to_string(),
+            name: "everything".to_string(),
+            code: "everything".to_string(),
+            system: Some(false),
+            type_: Some(false),
+            instance: Some(true),
+            parameter: vec![],
+            affects_state: None,
+            idempotent: None,
+        };
+        let tests = build_operation_scope_test("Patient", "everything", Some(&op_def), &None);
+        // Should have 1 test: system-level (invalid for instance-only)
+        assert_eq!(tests.len(), 1);
+        assert!(tests[0].name.contains("scope_system_level"));
+    }
+
+    #[test]
+    fn build_operation_scope_test_type_only() {
+        let op_def = OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/OperationDefinition/Patient-validate".to_string(),
+            name: "validate".to_string(),
+            code: "validate".to_string(),
+            system: Some(false),
+            type_: Some(true),
+            instance: Some(false),
+            parameter: vec![],
+            affects_state: None,
+            idempotent: None,
+        };
+        let tests = build_operation_scope_test("Patient", "validate", Some(&op_def), &None);
+        // Should have 1 test: instance-level (invalid for type-only)
+        assert_eq!(tests.len(), 1);
+        assert!(tests[0].name.contains("scope_instance_level"));
+    }
+
+    #[test]
+    fn build_operation_scope_test_no_def_returns_empty() {
+        let tests = build_operation_scope_test("Patient", "export", None, &None);
+        assert!(tests.is_empty());
+    }
 }

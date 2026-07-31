@@ -1685,7 +1685,7 @@ mod tests {
     }
 
     #[test]
-    fn assertion_for_kind_include() {
+    fn assertion_for_kind_include_variant() {
         let kind = TestCaseKind::Include {
             param: "organization".to_string(),
             revinclude: false,
@@ -1704,6 +1704,1026 @@ mod tests {
         assert!(
             assertion.is_none(),
             "Negative should have no response assertion"
+        );
+    }
+
+    // ── Additional assertion_for_kind tests ────────────────────────────
+
+    #[test]
+    fn assertion_for_kind_search_modifier() {
+        let kind = TestCaseKind::SearchModifier {
+            param_name: "name".to_string(),
+            modifier: SearchModifier::Exact,
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+        assert_eq!(assertion.min_entries, Some(0));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_prefix() {
+        let kind = TestCaseKind::SearchPrefix {
+            param_name: "birthdate".to_string(),
+            prefix: SearchPrefix::Gt,
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_near() {
+        let kind = TestCaseKind::SearchNear {
+            param_name: "near".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Location").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_combo() {
+        let kind = TestCaseKind::SearchCombo {
+            params: vec!["name".to_string(), "birthdate".to_string()],
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_chained() {
+        let kind = TestCaseKind::SearchChained {
+            chain_param: "organization".to_string(),
+            target_param: "name".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_chained_modifier() {
+        let kind = TestCaseKind::SearchChainedModifier {
+            chain_param: "organization".to_string(),
+            target_param: "name".to_string(),
+            modifier: SearchModifier::Exact,
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_chained_multi_hop() {
+        let kind = TestCaseKind::SearchChainedMultiHop {
+            chain_params: vec!["subject".to_string(), "managingOrganization".to_string()],
+            target_param: "name".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Observation").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_search_composite() {
+        let kind = TestCaseKind::SearchComposite {
+            param_name: "custom-composite".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_include() {
+        let kind = TestCaseKind::Include {
+            param: "organization".to_string(),
+            revinclude: false,
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_result_param_summary() {
+        let kind = TestCaseKind::ResultParam {
+            param: "_summary".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+        assert!(!assertion.absent_fields.is_empty());
+        assert!(assertion.required_fields.contains_key("Patient"));
+    }
+
+    #[test]
+    fn assertion_for_kind_result_param_count() {
+        let kind = TestCaseKind::ResultParam {
+            param: "_count".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+        assert_eq!(assertion.max_entries, Some(1));
+    }
+
+    #[test]
+    fn assertion_for_kind_result_param_total() {
+        let kind = TestCaseKind::ResultParam {
+            param: "_total".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_result_param_filter() {
+        let kind = TestCaseKind::ResultParam {
+            param: "_filter".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_result_param_unknown() {
+        let kind = TestCaseKind::ResultParam {
+            param: "_unknown".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(assertion.bundle_type, Some("searchset".to_string()));
+    }
+
+    #[test]
+    fn assertion_for_kind_operation() {
+        let kind = TestCaseKind::Operation {
+            code: "everything".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient").unwrap();
+        assert_eq!(
+            assertion.response_contains_key,
+            Some("resourceType".to_string())
+        );
+    }
+
+    #[test]
+    fn assertion_for_kind_conformance() {
+        let kind = TestCaseKind::Conformance {
+            description: "test".to_string(),
+        };
+        let assertion = assertion_for_kind(&kind, "Patient");
+        assert!(assertion.is_none());
+    }
+
+    // ── generate_test_plan edge case tests ──────────────────────────────
+
+    #[test]
+    fn generate_test_plan_skips_non_server_mode() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "client".to_string(), // not "server"
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+                    supported_profile: vec![],
+                    interaction: vec![RestInteraction {
+                        code: "read".to_string(),
+                    }],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
+        // No test groups because mode is "client", not "server"
+        assert_eq!(plan.test_groups.len(), 0);
+    }
+
+    #[test]
+    fn generate_test_plan_skips_non_resource_types() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Parameters".to_string(), // non-resource type
+                    profile: Some("http://hl7.org/fhir/StructureDefinition/Parameters".to_string()),
+                    supported_profile: vec![],
+                    interaction: vec![RestInteraction {
+                        code: "read".to_string(),
+                    }],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
+        // Parameters should be skipped (no test groups)
+        assert_eq!(plan.test_groups.len(), 0);
+    }
+
+    #[test]
+    fn generate_test_plan_system_interactions() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![],
+                interaction: vec![
+                    RestInteraction {
+                        code: "batch".to_string(),
+                    },
+                    RestInteraction {
+                        code: "transaction".to_string(),
+                    },
+                    RestInteraction {
+                        code: "search-system".to_string(),
+                    },
+                    RestInteraction {
+                        code: "history-system".to_string(),
+                    },
+                ],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
+        // Should have a system_interactions group
+        let sys_group = plan
+            .test_groups
+            .iter()
+            .find(|g| g.resource_type == "$$system_interactions");
+        assert!(sys_group.is_some(), "Should have system interactions group");
+        let sys_group = sys_group.unwrap();
+        // batch, transaction, search-system, history-system = 4 interactions + 1 search-system test = 5
+        assert_eq!(sys_group.tests.len(), 5);
+    }
+
+    #[test]
+    fn generate_test_plan_system_operations() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![],
+                interaction: vec![],
+                operation: vec![RestOperation {
+                    name: "export".to_string(),
+                    definition: Some(
+                        "http://hl7.org/fhir/uv/bulkdata/OperationDefinition/export".to_string(),
+                    ),
+                }],
+                security: None,
+            }],
+        };
+        let ops = vec![OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/uv/bulkdata/OperationDefinition/export".to_string(),
+            name: "export".to_string(),
+            code: "export".to_string(),
+            system: Some(true),
+            type_: Some(false),
+            instance: Some(false),
+            parameter: vec![],
+            affects_state: Some(false),
+            idempotent: Some(true),
+        }];
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], Some(&ops), None, &empty_fv, &empty_ids);
+        // Should have a system $export group
+        let sys_op_group = plan
+            .test_groups
+            .iter()
+            .find(|g| g.resource_type == "$$export");
+        assert!(
+            sys_op_group.is_some(),
+            "Should have system operation group for $export"
+        );
+        let sys_op_group = sys_op_group.unwrap();
+        // Base operation + affects_state=false test + idempotent=true test + scope tests
+        assert!(sys_op_group.tests.len() >= 3);
+    }
+
+    #[test]
+    fn generate_test_plan_conditional_operations() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+                    supported_profile: vec![],
+                    interaction: vec![
+                        RestInteraction {
+                            code: "read".to_string(),
+                        },
+                        RestInteraction {
+                            code: "create".to_string(),
+                        },
+                        RestInteraction {
+                            code: "update".to_string(),
+                        },
+                        RestInteraction {
+                            code: "delete".to_string(),
+                        },
+                    ],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: Some(true),
+                    versioning: None,
+                    conditional_create: Some(true),
+                    conditional_read: Some("if-modified-since".to_string()),
+                    conditional_update: Some(true),
+                    conditional_delete: Some("single".to_string()),
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
+        let group = &plan.test_groups[0];
+        // Should have conditional tests
+        let test_names: Vec<&str> = group.tests.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            test_names.iter().any(|n| n.contains("conditional_create")),
+            "Should have conditional create test"
+        );
+        assert!(
+            test_names.iter().any(|n| n.contains("conditional_update")),
+            "Should have conditional update test"
+        );
+        assert!(
+            test_names.iter().any(|n| n.contains("conditional_read")),
+            "Should have conditional read test"
+        );
+        assert!(
+            test_names.iter().any(|n| n.contains("conditional_delete")),
+            "Should have conditional delete test"
+        );
+        assert!(
+            test_names.iter().any(|n| n.contains("update_create")),
+            "Should have update-create test"
+        );
+    }
+
+    #[test]
+    fn generate_test_plan_history_and_read_params() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+                    supported_profile: vec![],
+                    interaction: vec![
+                        RestInteraction {
+                            code: "read".to_string(),
+                        },
+                        RestInteraction {
+                            code: "history-instance".to_string(),
+                        },
+                        RestInteraction {
+                            code: "history-type".to_string(),
+                        },
+                    ],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
+        let group = &plan.test_groups[0];
+        let test_names: Vec<&str> = group.tests.iter().map(|t| t.name.as_str()).collect();
+        // Should have history param tests
+        assert!(
+            test_names.iter().any(|n| n.contains("history")),
+            "Should have history param tests"
+        );
+        // Should have read param tests (_elements, _summary)
+        assert!(
+            test_names.iter().any(|n| n.contains("_elements")),
+            "Should have _elements read param test"
+        );
+        assert!(
+            test_names.iter().any(|n| n.contains("_summary")),
+            "Should have _summary read param test"
+        );
+    }
+
+    #[test]
+    fn generate_test_plan_ig_url_passthrough() {
+        let cs = sample_capability_statement();
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(
+            &cs,
+            &[],
+            None,
+            Some("http://example.org/ig"),
+            &empty_fv,
+            &empty_ids,
+        );
+        assert_eq!(plan.ig_url, Some("http://example.org/ig".to_string()));
+    }
+
+    #[test]
+    fn generate_test_plan_unnamed_cs_fallback() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: None, // no name
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![],
+        };
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
+        assert_eq!(plan.name, "Unnamed IG");
+    }
+
+    #[test]
+    fn generate_test_plan_composite_search_params() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+                    supported_profile: vec![],
+                    interaction: vec![RestInteraction {
+                        code: "search-type".to_string(),
+                    }],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let search_params = vec![SearchParameter {
+            resource_type: "SearchParameter".to_string(),
+            url: "http://hl7.org/fhir/SearchParameter/Patient-composite-test".to_string(),
+            name: "composite-test".to_string(),
+            code: "composite-test".to_string(),
+            base: vec!["Patient".to_string()],
+            param_type: "composite".to_string(),
+            expression: None,
+            description: None,
+            target: vec![],
+            comparator: vec![],
+            modifier: vec![],
+        }];
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &search_params, None, None, &empty_fv, &empty_ids);
+        let group = &plan.test_groups[0];
+        assert!(
+            group
+                .tests
+                .iter()
+                .any(|t| matches!(t.kind, TestCaseKind::SearchComposite { .. })),
+            "Should have composite search test"
+        );
+    }
+
+    #[test]
+    fn generate_test_plan_declared_comparators_and_modifiers() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+                    supported_profile: vec![],
+                    interaction: vec![RestInteraction {
+                        code: "search-type".to_string(),
+                    }],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let search_params = vec![SearchParameter {
+            resource_type: "SearchParameter".to_string(),
+            url: "http://hl7.org/fhir/SearchParameter/individual-birthdate".to_string(),
+            name: "birthdate".to_string(),
+            code: "birthdate".to_string(),
+            base: vec!["Patient".to_string()],
+            param_type: "date".to_string(),
+            expression: Some("Patient.birthDate".to_string()),
+            description: None,
+            target: vec![],
+            comparator: vec!["gt".to_string(), "lt".to_string()],
+            modifier: vec!["missing".to_string(), "exact".to_string()],
+        }];
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &search_params, None, None, &empty_fv, &empty_ids);
+        let group = &plan.test_groups[0];
+        // Should have declared comparator tests (gt, lt)
+        let prefix_tests: Vec<&TestCase> = group
+            .tests
+            .iter()
+            .filter(|t| matches!(t.kind, TestCaseKind::SearchPrefix { .. }))
+            .collect();
+        assert!(
+            prefix_tests.len() >= 2,
+            "Should have at least 2 declared comparator tests"
+        );
+        // Should have declared modifier tests (missing, exact)
+        let modifier_tests: Vec<&TestCase> = group
+            .tests
+            .iter()
+            .filter(|t| matches!(t.kind, TestCaseKind::SearchModifier { .. }))
+            .collect();
+        assert!(
+            modifier_tests.len() >= 2,
+            "Should have at least 2 declared modifier tests"
+        );
+    }
+
+    #[test]
+    fn generate_test_plan_include_revinclude_combined() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+                    supported_profile: vec![],
+                    interaction: vec![RestInteraction {
+                        code: "search-type".to_string(),
+                    }],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec!["Patient:organization".to_string()],
+                    search_revinclude: vec!["Observation:subject".to_string()],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
+        let group = &plan.test_groups[0];
+        // Should have _include + _revinclude combined test
+        assert!(
+            group
+                .tests
+                .iter()
+                .any(|t| t.name.contains("include_revinclude")),
+            "Should have _include + _revinclude combined test"
+        );
+    }
+
+    #[test]
+    fn generate_test_plan_operation_affects_state_idempotent_error_scope() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+                    supported_profile: vec![],
+                    interaction: vec![],
+                    search_param: vec![],
+                    operation: vec![RestOperation {
+                        name: "validate".to_string(),
+                        definition: Some(
+                            "http://hl7.org/fhir/OperationDefinition/Resource-validate".to_string(),
+                        ),
+                    }],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let ops = vec![OperationDefinition {
+            resource_type: "OperationDefinition".to_string(),
+            url: "http://hl7.org/fhir/OperationDefinition/Resource-validate".to_string(),
+            name: "validate".to_string(),
+            code: "validate".to_string(),
+            system: Some(false),
+            type_: Some(false),
+            instance: Some(true), // instance-only — scope tests will try system level
+            parameter: vec![OperationParameter {
+                name: "resource".to_string(),
+                use_: Some("in".to_string()),
+                min: Some(1),
+                max: Some("1".to_string()),
+                param_type: Some("Resource".to_string()),
+            }],
+            affects_state: Some(false),
+            idempotent: Some(true),
+        }];
+        let empty_fv = HashMap::new();
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Patient".to_string(), "patient-123".to_string());
+        let plan = generate_test_plan(&cs, &[], Some(&ops), None, &empty_fv, &created_ids);
+        let group = &plan.test_groups[0];
+        let test_names: Vec<&str> = group.tests.iter().map(|t| t.name.as_str()).collect();
+        // Should have affects_state=false test
+        assert!(
+            test_names.iter().any(|n| n.contains("affects_state")),
+            "Should have affects_state=false test"
+        );
+        // Should have idempotent test
+        assert!(
+            test_names.iter().any(|n| n.contains("idempotent")),
+            "Should have idempotent test"
+        );
+        // Should have error test (has required input param)
+        assert!(
+            test_names
+                .iter()
+                .any(|n| n.contains("missing_required_params")),
+            "Should have error test for required input"
+        );
+        // Should have scope tests
+        assert!(
+            test_names.iter().any(|n| n.contains("scope")),
+            "Should have scope tests"
+        );
+    }
+
+    #[test]
+    fn generate_test_plan_field_values_in_urls() {
+        let cs = sample_capability_statement();
+        let mut field_values = HashMap::new();
+        let mut patient_fields = HashMap::new();
+        patient_fields.insert("Patient.name[0].family".to_string(), "Smith".to_string());
+        patient_fields.insert("Patient.birthDate".to_string(), "1990-01-01".to_string());
+        field_values.insert("Patient".to_string(), patient_fields);
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(
+            &cs,
+            &sample_search_params(),
+            None,
+            None,
+            &field_values,
+            &empty_ids,
+        );
+        let group = &plan.test_groups[0];
+        // Search single tests should use field values in URLs
+        let single_tests: Vec<&TestCase> = group
+            .tests
+            .iter()
+            .filter(|t| matches!(t.kind, TestCaseKind::SearchSingle { .. }))
+            .collect();
+        assert!(!single_tests.is_empty(), "Should have single search tests");
+        // At least one should have a URL with the field value
+        let has_field_value = single_tests
+            .iter()
+            .any(|t| t.request.url.contains("Smith") || t.request.url.contains("1990"));
+        assert!(has_field_value, "Search URLs should contain field values");
+    }
+
+    #[test]
+    fn generate_test_plan_created_ids_in_urls() {
+        let cs = sample_capability_statement();
+        let empty_fv = HashMap::new();
+        let mut created_ids = HashMap::new();
+        created_ids.insert("Patient".to_string(), "patient-123".to_string());
+        let plan = generate_test_plan(
+            &cs,
+            &sample_search_params(),
+            None,
+            None,
+            &empty_fv,
+            &created_ids,
+        );
+        let group = &plan.test_groups[0];
+        // Interaction tests use {id} placeholder which gets resolved later
+        // by the orchestrator. Verify the URL pattern is correct.
+        let interaction_tests: Vec<&TestCase> = group
+            .tests
+            .iter()
+            .filter(|t| matches!(t.kind, TestCaseKind::Interaction))
+            .collect();
+        assert!(
+            !interaction_tests.is_empty(),
+            "Should have interaction tests"
+        );
+        // At least one should have a URL with the {id} placeholder
+        let has_id_placeholder = interaction_tests
+            .iter()
+            .any(|t| t.request.url.contains("{id}"));
+        assert!(
+            has_id_placeholder,
+            "Interaction URLs should contain {{id}} placeholder"
+        );
+    }
+
+    #[test]
+    fn generate_test_plan_conditional_read_not_supported() {
+        // When conditional_read is "not-supported", no conditional read tests should be generated
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+                    supported_profile: vec![],
+                    interaction: vec![RestInteraction {
+                        code: "read".to_string(),
+                    }],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: Some("not-supported".to_string()),
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
+        let group = &plan.test_groups[0];
+        let test_names: Vec<&str> = group.tests.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            !test_names.iter().any(|n| n.contains("conditional_read")),
+            "Should NOT have conditional read tests when not-supported"
+        );
+    }
+
+    #[test]
+    fn generate_test_plan_conditional_delete_not_supported() {
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+                    supported_profile: vec![],
+                    interaction: vec![RestInteraction {
+                        code: "delete".to_string(),
+                    }],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: Some("not-supported".to_string()),
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
+        let group = &plan.test_groups[0];
+        let test_names: Vec<&str> = group.tests.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            !test_names.iter().any(|n| n.contains("conditional_delete")),
+            "Should NOT have conditional delete tests when not-supported"
+        );
+    }
+
+    #[test]
+    fn generate_test_plan_supported_profile_preferred() {
+        // When supported_profile is set, it should be preferred over profile
+        let cs = CapabilityStatement {
+            resource_type: "CapabilityStatement".to_string(),
+            url: Some("http://example.org/CapabilityStatement/test".to_string()),
+            name: Some("TestCS".to_string()),
+            status: Some("active".to_string()),
+            software: None,
+            implementation: None,
+            messaging: vec![],
+            document: vec![],
+            rest: vec![Rest {
+                mode: "server".to_string(),
+                resource: vec![RestResource {
+                    resource_type: "Patient".to_string(),
+                    profile: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+                    supported_profile: vec![
+                        "http://example.org/StructureDefinition/SupportedProfile".to_string(),
+                    ],
+                    interaction: vec![RestInteraction {
+                        code: "read".to_string(),
+                    }],
+                    search_param: vec![],
+                    operation: vec![],
+                    read_history: None,
+                    update_create: None,
+                    versioning: None,
+                    conditional_create: None,
+                    conditional_read: None,
+                    conditional_update: None,
+                    conditional_delete: None,
+                    search_include: vec![],
+                    search_revinclude: vec![],
+                }],
+                interaction: vec![],
+                operation: vec![],
+                security: None,
+            }],
+        };
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan(&cs, &[], None, None, &empty_fv, &empty_ids);
+        let group = &plan.test_groups[0];
+        // The profile_url should be the supported_profile, not the profile
+        assert_eq!(
+            group.profile_url,
+            Some("http://example.org/StructureDefinition/SupportedProfile".to_string())
         );
     }
 }

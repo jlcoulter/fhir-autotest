@@ -391,6 +391,7 @@ fn luhn_with_prefix(prefix: &str, total_len: usize, rng: &mut impl Rng) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn is_hcpd_ig_detects_digitalhealth_gov_au() {
@@ -443,6 +444,13 @@ mod tests {
     }
 
     #[test]
+    fn random_digits_zero_length() {
+        let mut rng = rand::rng();
+        let s = random_digits(0, &mut rng);
+        assert_eq!(s.len(), 0);
+    }
+
+    #[test]
     fn luhn_with_prefix_produces_valid_checksum() {
         let mut rng = rand::rng();
         let s = luhn_with_prefix("800362", 16, &mut rng);
@@ -471,6 +479,23 @@ mod tests {
     }
 
     #[test]
+    fn luhn_with_prefix_exact_prefix_length() {
+        let mut rng = rand::rng();
+        // total_len = prefix.len() + 1 (check digit only)
+        let s = luhn_with_prefix("800362", 7, &mut rng);
+        assert_eq!(s.len(), 7);
+        assert!(s.starts_with("800362"));
+    }
+
+    #[test]
+    fn luhn_with_prefix_prefix_longer_than_payload() {
+        let mut rng = rand::rng();
+        let s = luhn_with_prefix("8003621567890", 10, &mut rng);
+        assert_eq!(s.len(), 10);
+        // Should be truncated to payload_len
+    }
+
+    #[test]
     fn extract_reference_id_works() {
         assert_eq!(extract_reference_id("Organization/org-1"), Some("org-1"));
         assert_eq!(
@@ -478,5 +503,555 @@ mod tests {
             Some("prac-42")
         );
         assert_eq!(extract_reference_id("no-slash"), None);
+    }
+
+    // ── apply_hcpd_bulk_fixes tests ──────────────────────────────────────
+
+    #[test]
+    fn apply_hcpd_bulk_fixes_organization() {
+        let mut resource = json!({"resourceType": "Organization"});
+        let mut rng = rand::rng();
+        let mut reg = HashMap::new();
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        apply_hcpd_bulk_fixes(
+            &mut resource,
+            "Organization",
+            "org-1",
+            &mut reg,
+            &vs_systems,
+            &cs_codes,
+            &mut rng,
+        );
+
+        // Should have identifier array
+        assert!(resource["identifier"].is_array());
+        let identifiers = resource["identifier"].as_array().unwrap();
+        assert_eq!(identifiers.len(), 2);
+        // First identifier should be ABN
+        assert_eq!(identifiers[0]["system"], "http://hl7.org.au/id/abn");
+        assert_eq!(identifiers[0]["type"]["coding"][0]["code"], "TAX");
+        // Second identifier should be HPIO
+        assert_eq!(
+            identifiers[1]["system"],
+            "http://ns.electronichealth.net.au/id/hi/hpio/1.0"
+        );
+        // Should have address with AU defaults
+        assert!(resource["address"].is_array());
+        let addr = &resource["address"][0];
+        assert_eq!(addr["type"], "physical");
+        assert_eq!(addr["city"], "Sydney");
+        assert_eq!(addr["country"], "AU");
+    }
+
+    #[test]
+    fn apply_hcpd_bulk_fixes_organization_preserves_existing_address() {
+        let mut resource = json!({
+            "resourceType": "Organization",
+            "address": [{
+                "type": "postal",
+                "line": ["PO Box 123"],
+                "city": "Melbourne",
+                "state": "VIC",
+                "postalCode": "3000",
+                "country": "AU"
+            }]
+        });
+        let mut rng = rand::rng();
+        let mut reg = HashMap::new();
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        apply_hcpd_bulk_fixes(
+            &mut resource,
+            "Organization",
+            "org-1",
+            &mut reg,
+            &vs_systems,
+            &cs_codes,
+            &mut rng,
+        );
+
+        // Existing address fields should be preserved
+        let addr = &resource["address"][0];
+        assert_eq!(addr["type"], "postal");
+        assert_eq!(addr["city"], "Melbourne");
+        assert_eq!(addr["state"], "VIC");
+    }
+
+    #[test]
+    fn apply_hcpd_bulk_fixes_practitioner() {
+        let mut resource = json!({"resourceType": "Practitioner"});
+        let mut rng = rand::rng();
+        let mut reg = HashMap::new();
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        apply_hcpd_bulk_fixes(
+            &mut resource,
+            "Practitioner",
+            "prac-1",
+            &mut reg,
+            &vs_systems,
+            &cs_codes,
+            &mut rng,
+        );
+
+        // Should have identifier with HPI-I
+        assert!(resource["identifier"].is_array());
+        assert_eq!(
+            resource["identifier"][0]["system"],
+            "http://ns.electronichealth.net.au/id/hi/hpii/1.0"
+        );
+        // Should have qualification
+        assert!(resource["qualification"].is_array());
+        assert_eq!(
+            resource["qualification"][0]["code"]["text"],
+            "General practice"
+        );
+        // Should have extension (recordedSexOrGender)
+        assert!(resource["extension"].is_array());
+        assert_eq!(
+            resource["extension"][0]["url"],
+            "http://hl7.org/fhir/StructureDefinition/individual-recordedSexOrGender"
+        );
+        // Registration number should be stored
+        assert!(reg.contains_key("prac-1"));
+    }
+
+    #[test]
+    fn apply_hcpd_bulk_fixes_healthcare_service() {
+        let mut resource = json!({"resourceType": "HealthcareService"});
+        let mut rng = rand::rng();
+        let mut reg = HashMap::new();
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        apply_hcpd_bulk_fixes(
+            &mut resource,
+            "HealthcareService",
+            "hs-1",
+            &mut reg,
+            &vs_systems,
+            &cs_codes,
+            &mut rng,
+        );
+
+        // Should have type with SNOMED coding
+        assert!(resource["type"].is_array());
+        assert_eq!(
+            resource["type"][0]["coding"][0]["system"],
+            "http://snomed.info/sct"
+        );
+        assert_eq!(resource["type"][0]["coding"][0]["code"], "408443003");
+    }
+
+    #[test]
+    fn apply_hcpd_bulk_fixes_healthcare_service_preserves_existing_type() {
+        let mut resource = json!({
+            "resourceType": "HealthcareService",
+            "type": [{"text": "Existing type"}]
+        });
+        let mut rng = rand::rng();
+        let mut reg = HashMap::new();
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        apply_hcpd_bulk_fixes(
+            &mut resource,
+            "HealthcareService",
+            "hs-1",
+            &mut reg,
+            &vs_systems,
+            &cs_codes,
+            &mut rng,
+        );
+
+        // Should still have the SNOMED coding added
+        assert_eq!(resource["type"][0]["coding"][0]["code"], "408443003");
+    }
+
+    #[test]
+    fn apply_hcpd_bulk_fixes_location() {
+        let mut resource = json!({"resourceType": "Location"});
+        let mut rng = rand::rng();
+        let mut reg = HashMap::new();
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        apply_hcpd_bulk_fixes(
+            &mut resource,
+            "Location",
+            "loc-1",
+            &mut reg,
+            &vs_systems,
+            &cs_codes,
+            &mut rng,
+        );
+
+        // Should have type with text
+        assert!(resource["type"].is_array());
+        assert_eq!(resource["type"][0]["text"], "Healthcare service location");
+    }
+
+    #[test]
+    fn apply_hcpd_bulk_fixes_practitioner_role() {
+        let mut resource = json!({
+            "resourceType": "PractitionerRole",
+            "practitioner": {"reference": "Practitioner/prac-1"}
+        });
+        let mut rng = rand::rng();
+        let mut reg = HashMap::new();
+        reg.insert("prac-1".to_string(), "MED1234567890".to_string());
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        apply_hcpd_bulk_fixes(
+            &mut resource,
+            "PractitionerRole",
+            "pr-1",
+            &mut reg,
+            &vs_systems,
+            &cs_codes,
+            &mut rng,
+        );
+
+        // Should have identifier with AHPRA registration number
+        assert!(resource["identifier"].is_array());
+        let identifiers = resource["identifier"].as_array().unwrap();
+        assert_eq!(identifiers.len(), 2);
+        // First identifier should be local identifier
+        assert_eq!(
+            identifiers[0]["system"],
+            "http://digitalhealth.gov.au/fhir/hcpd/id/hcpd-local-identifier"
+        );
+        // Second identifier should be AHPRA registration
+        assert_eq!(
+            identifiers[1]["system"],
+            "http://hl7.org.au/id/ahpra-registration-number"
+        );
+        assert_eq!(identifiers[1]["value"], "MED1234567890");
+    }
+
+    #[test]
+    fn apply_hcpd_bulk_fixes_practitioner_role_no_practitioner_ref() {
+        let mut resource = json!({"resourceType": "PractitionerRole"});
+        let mut rng = rand::rng();
+        let mut reg = HashMap::new();
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        apply_hcpd_bulk_fixes(
+            &mut resource,
+            "PractitionerRole",
+            "pr-1",
+            &mut reg,
+            &vs_systems,
+            &cs_codes,
+            &mut rng,
+        );
+
+        // Should still have identifiers (with random registration number)
+        assert!(resource["identifier"].is_array());
+        let identifiers = resource["identifier"].as_array().unwrap();
+        assert_eq!(identifiers.len(), 2);
+        // Registration number should be random (not from reg map since no practitioner ref)
+        assert!(identifiers[1]["value"].as_str().unwrap().starts_with("MED"));
+    }
+
+    #[test]
+    fn apply_hcpd_bulk_fixes_unknown_type() {
+        let mut resource = json!({"resourceType": "Unknown"});
+        let mut rng = rand::rng();
+        let mut reg = HashMap::new();
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        apply_hcpd_bulk_fixes(
+            &mut resource,
+            "Unknown",
+            "unk-1",
+            &mut reg,
+            &vs_systems,
+            &cs_codes,
+            &mut rng,
+        );
+
+        // Should not modify anything for unknown type
+        assert_eq!(resource.get("identifier"), None);
+        assert_eq!(resource.get("type"), None);
+    }
+
+    // ── fix_suppressed_by_coding tests ──────────────────────────────────
+
+    #[test]
+    fn fix_suppressed_by_coding_no_extension() {
+        let mut resource = json!({"resourceType": "HealthcareService"});
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        fix_suppressed_by_coding(&mut resource, &vs_systems, &cs_codes);
+        // Should not crash, no extension added
+        assert!(resource.get("extension").is_none());
+    }
+
+    #[test]
+    fn fix_suppressed_by_coding_no_suppressed_extension() {
+        let mut resource = json!({
+            "resourceType": "HealthcareService",
+            "extension": [{
+                "url": "http://example.org/extension/other",
+                "extension": [{
+                    "url": "suppressedBy",
+                    "valueCodeableConcept": {
+                        "coding": [{"system": "http://hl7.org/fhir/ValueSet/NullFlavor", "code": "UNK"}]
+                    }
+                }]
+            }]
+        });
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        fix_suppressed_by_coding(&mut resource, &vs_systems, &cs_codes);
+        // Should not modify non-suppressed extensions
+        let coding = &resource["extension"][0]["extension"][0]["valueCodeableConcept"]["coding"][0];
+        assert_eq!(coding["code"], "UNK");
+    }
+
+    #[test]
+    fn fix_suppressed_by_coding_with_suppressed_extension() {
+        let mut resource = json!({
+            "resourceType": "HealthcareService",
+            "extension": [{
+                "url": "http://hl7.org/fhir/StructureDefinition/healthcareservice-suppressed",
+                "extension": [{
+                    "url": "suppressedBy",
+                    "valueCodeableConcept": {
+                        "coding": [{"system": "http://hl7.org/fhir/ValueSet/NullFlavor", "code": "UNK"}]
+                    }
+                }]
+            }]
+        });
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        fix_suppressed_by_coding(&mut resource, &vs_systems, &cs_codes);
+        // Should replace with fallback UNK
+        let coding = &resource["extension"][0]["extension"][0]["valueCodeableConcept"]["coding"][0];
+        assert_eq!(coding["code"], "UNK");
+        assert_eq!(
+            coding["system"],
+            "http://digitalhealth.gov.au/fhir/cc/CodeSystem/responsible-party-type"
+        );
+    }
+
+    #[test]
+    fn fix_suppressed_by_coding_with_valid_coding_skipped() {
+        let mut resource = json!({
+            "resourceType": "HealthcareService",
+            "extension": [{
+                "url": "http://hl7.org/fhir/StructureDefinition/healthcareservice-suppressed",
+                "extension": [{
+                    "url": "suppressedBy",
+                    "valueCodeableConcept": {
+                        "coding": [{"system": "http://example.org/valid", "code": "valid-code"}]
+                    }
+                }]
+            }]
+        });
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        fix_suppressed_by_coding(&mut resource, &vs_systems, &cs_codes);
+        // Should NOT replace because the coding is already valid (not NullFlavor)
+        let coding = &resource["extension"][0]["extension"][0]["valueCodeableConcept"]["coding"][0];
+        assert_eq!(coding["code"], "valid-code");
+        assert_eq!(coding["system"], "http://example.org/valid");
+    }
+
+    #[test]
+    fn fix_suppressed_by_coding_with_value_set_system() {
+        let mut resource = json!({
+            "resourceType": "HealthcareService",
+            "extension": [{
+                "url": "http://hl7.org/fhir/StructureDefinition/healthcareservice-suppressed",
+                "extension": [{
+                    "url": "suppressedBy",
+                    "valueCodeableConcept": {
+                        "coding": [{"system": "http://hl7.org/fhir/ValueSet/NullFlavor", "code": "UNK"}]
+                    }
+                }]
+            }]
+        });
+        let mut vs_systems = HashMap::new();
+        vs_systems.insert(
+            "http://digitalhealth.gov.au/fhir/cc/ValueSet/responsible-party-type".to_string(),
+            "http://example.org/cs/responsible-party".to_string(),
+        );
+        let mut cs_codes = HashMap::new();
+        cs_codes.insert(
+            "http://example.org/cs/responsible-party".to_string(),
+            (
+                "org-init".to_string(),
+                Some("Organisation initiated".to_string()),
+            ),
+        );
+
+        fix_suppressed_by_coding(&mut resource, &vs_systems, &cs_codes);
+        // Should use the value set system and code
+        let coding = &resource["extension"][0]["extension"][0]["valueCodeableConcept"]["coding"][0];
+        assert_eq!(coding["system"], "http://example.org/cs/responsible-party");
+        assert_eq!(coding["code"], "org-init");
+    }
+
+    #[test]
+    fn fix_suppressed_by_coding_no_sub_extensions() {
+        let mut resource = json!({
+            "resourceType": "HealthcareService",
+            "extension": [{
+                "url": "http://hl7.org/fhir/StructureDefinition/healthcareservice-suppressed"
+            }]
+        });
+        let vs_systems = HashMap::new();
+        let cs_codes = HashMap::new();
+
+        fix_suppressed_by_coding(&mut resource, &vs_systems, &cs_codes);
+        // Should not crash — extension has no sub-extensions
+        assert!(resource["extension"][0].get("extension").is_none());
+    }
+
+    // ── fix_service_provision_code tests ────────────────────────────────
+
+    #[test]
+    fn fix_service_provision_code_no_service_provision_code() {
+        let mut resource = json!({"resourceType": "HealthcareService"});
+        let cs_codes = HashMap::new();
+
+        fix_service_provision_code(&mut resource, &cs_codes);
+        // Should not crash
+        assert!(resource.get("serviceProvisionCode").is_none());
+    }
+
+    #[test]
+    fn fix_service_provision_code_with_unknown_code() {
+        let mut resource = json!({
+            "resourceType": "HealthcareService",
+            "serviceProvisionCode": [{
+                "coding": [{"system": "http://digitalhealth.gov.au/fhir/hcpd/CodeSystem/service-provision-cs", "code": "unknown"}]
+            }]
+        });
+        let cs_codes = HashMap::new();
+
+        fix_service_provision_code(&mut resource, &cs_codes);
+        // Should replace with fallback "inperson"
+        assert_eq!(
+            resource["serviceProvisionCode"][0]["coding"][0]["code"],
+            "inperson"
+        );
+        assert_eq!(
+            resource["serviceProvisionCode"][0]["coding"][0]["display"],
+            "In person"
+        );
+    }
+
+    #[test]
+    fn fix_service_provision_code_with_unk_code() {
+        let mut resource = json!({
+            "resourceType": "HealthcareService",
+            "serviceProvisionCode": [{
+                "coding": [{"system": "http://digitalhealth.gov.au/fhir/hcpd/CodeSystem/service-provision-cs", "code": "UNK"}]
+            }]
+        });
+        let cs_codes = HashMap::new();
+
+        fix_service_provision_code(&mut resource, &cs_codes);
+        // Should replace with fallback "inperson"
+        assert_eq!(
+            resource["serviceProvisionCode"][0]["coding"][0]["code"],
+            "inperson"
+        );
+    }
+
+    #[test]
+    fn fix_service_provision_code_with_valid_code() {
+        let mut resource = json!({
+            "resourceType": "HealthcareService",
+            "serviceProvisionCode": [{
+                "coding": [{"system": "http://digitalhealth.gov.au/fhir/hcpd/CodeSystem/service-provision-cs", "code": "inperson"}]
+            }]
+        });
+        let cs_codes = HashMap::new();
+
+        fix_service_provision_code(&mut resource, &cs_codes);
+        // Should NOT replace valid code
+        assert_eq!(
+            resource["serviceProvisionCode"][0]["coding"][0]["code"],
+            "inperson"
+        );
+    }
+
+    #[test]
+    fn fix_service_provision_code_with_code_system_codes() {
+        let mut resource = json!({
+            "resourceType": "HealthcareService",
+            "serviceProvisionCode": [{
+                "coding": [{"system": "http://digitalhealth.gov.au/fhir/hcpd/CodeSystem/service-provision-cs", "code": "unknown"}]
+            }]
+        });
+        let mut cs_codes = HashMap::new();
+        cs_codes.insert(
+            "http://digitalhealth.gov.au/fhir/hcpd/CodeSystem/service-provision-cs".to_string(),
+            ("telehealth".to_string(), Some("Telehealth".to_string())),
+        );
+
+        fix_service_provision_code(&mut resource, &cs_codes);
+        // Should use the code from the map
+        assert_eq!(
+            resource["serviceProvisionCode"][0]["coding"][0]["code"],
+            "telehealth"
+        );
+        assert_eq!(
+            resource["serviceProvisionCode"][0]["coding"][0]["display"],
+            "Telehealth"
+        );
+    }
+
+    #[test]
+    fn fix_service_provision_code_no_coding_array() {
+        let mut resource = json!({
+            "resourceType": "HealthcareService",
+            "serviceProvisionCode": [{}]
+        });
+        let cs_codes = HashMap::new();
+
+        fix_service_provision_code(&mut resource, &cs_codes);
+        // Should not crash — no coding array
+        assert!(resource["serviceProvisionCode"][0].get("coding").is_none());
+    }
+
+    #[test]
+    fn fix_service_provision_code_multiple_codings() {
+        let mut resource = json!({
+            "resourceType": "HealthcareService",
+            "serviceProvisionCode": [{
+                "coding": [
+                    {"system": "http://digitalhealth.gov.au/fhir/hcpd/CodeSystem/service-provision-cs", "code": "unknown"},
+                    {"system": "http://example.org/other", "code": "valid"}
+                ]
+            }]
+        });
+        let cs_codes = HashMap::new();
+
+        fix_service_provision_code(&mut resource, &cs_codes);
+        // First coding should be replaced, second should stay
+        assert_eq!(
+            resource["serviceProvisionCode"][0]["coding"][0]["code"],
+            "inperson"
+        );
+        assert_eq!(
+            resource["serviceProvisionCode"][0]["coding"][1]["code"],
+            "valid"
+        );
     }
 }

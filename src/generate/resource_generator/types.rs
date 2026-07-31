@@ -585,3 +585,925 @@ fn code_value_for_system(system: &str) -> serde_json::Value {
         _ => serde_json::json!("active"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── generate_typed_value ───────────────────────────────────────────
+
+    #[test]
+    fn test_generate_typed_value_primitives() {
+        let el = ElementDefinition {
+            id: "test".into(),
+            path: "test".into(),
+            min: Some(0),
+            max: Some("1".into()),
+            type_: vec![],
+            fixed_string: None,
+            fixed_uri: None,
+            fixed_code: None,
+            fixed_boolean: None,
+            fixed_integer: None,
+            fixed_decimal: None,
+            pattern_string: None,
+            pattern_uri: None,
+            pattern_code: None,
+            pattern_boolean: None,
+            must_support: false,
+            short: None,
+            definition: None,
+            binding: None,
+            content_reference: None,
+            fixed_quantity: None,
+            pattern_quantity: None,
+            fixed_coding: None,
+            pattern_coding: None,
+            fixed_codeable_concept: None,
+            pattern_codeable_concept: None,
+            constraint: vec![],
+            is_modifier: false,
+            is_summary: false,
+            slice_name: None,
+            slicing: None,
+        };
+        let vs = HashMap::new();
+
+        assert_eq!(
+            generate_typed_value("string", &[], &el, &vs),
+            json!("Generated string")
+        );
+        assert_eq!(
+            generate_typed_value("uri", &[], &el, &vs),
+            json!("urn:ietf:rfc:3986")
+        );
+        assert_eq!(
+            generate_typed_value("url", &[], &el, &vs),
+            json!("https://example.org/fhir/resource")
+        );
+        assert_eq!(generate_typed_value("boolean", &[], &el, &vs), json!(true));
+        assert_eq!(generate_typed_value("integer", &[], &el, &vs), json!(1));
+        assert_eq!(generate_typed_value("decimal", &[], &el, &vs), json!(1.0));
+        assert_eq!(
+            generate_typed_value("date", &[], &el, &vs),
+            json!("2024-01-01")
+        );
+        assert_eq!(
+            generate_typed_value("dateTime", &[], &el, &vs),
+            json!("2024-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            generate_typed_value("instant", &[], &el, &vs),
+            json!("2024-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            generate_typed_value("time", &[], &el, &vs),
+            json!("00:00:00")
+        );
+        assert_eq!(generate_typed_value("unsignedInt", &[], &el, &vs), json!(1));
+        assert_eq!(generate_typed_value("positiveInt", &[], &el, &vs), json!(1));
+        assert_eq!(
+            generate_typed_value("base64Binary", &[], &el, &vs),
+            json!("")
+        );
+        assert_eq!(
+            generate_typed_value("markdown", &[], &el, &vs),
+            json!("Generated text")
+        );
+        assert_eq!(
+            generate_typed_value("oid", &[], &el, &vs),
+            json!("urn:oid:2.16.840.1.113883.19.5")
+        );
+    }
+
+    #[test]
+    fn test_generate_typed_value_code_default() {
+        let el = ElementDefinition {
+            id: "test".into(),
+            path: "test".into(),
+            min: Some(0),
+            max: Some("1".into()),
+            type_: vec![],
+            fixed_string: None,
+            fixed_uri: None,
+            fixed_code: None,
+            fixed_boolean: None,
+            fixed_integer: None,
+            fixed_decimal: None,
+            pattern_string: None,
+            pattern_uri: None,
+            pattern_code: None,
+            pattern_boolean: None,
+            must_support: false,
+            short: None,
+            definition: None,
+            binding: None,
+            content_reference: None,
+            fixed_quantity: None,
+            pattern_quantity: None,
+            fixed_coding: None,
+            pattern_coding: None,
+            fixed_codeable_concept: None,
+            pattern_codeable_concept: None,
+            constraint: vec![],
+            is_modifier: false,
+            is_summary: false,
+            slice_name: None,
+            slicing: None,
+        };
+        let vs = HashMap::new();
+        assert_eq!(generate_typed_value("code", &[], &el, &vs), json!("active"));
+    }
+
+    #[test]
+    fn test_generate_typed_value_code_with_bound_system() {
+        let mut vs = HashMap::new();
+        vs.insert(
+            "http://hl7.org/fhir/ValueSet/days-of-week".into(),
+            "http://hl7.org/fhir/days-of-week".into(),
+        );
+        let el = ElementDefinition {
+            id: "test.daysOfWeek".into(),
+            path: "test.daysOfWeek".into(),
+            min: Some(0),
+            max: Some("1".into()),
+            type_: vec![],
+            fixed_string: None,
+            fixed_uri: None,
+            fixed_code: None,
+            fixed_boolean: None,
+            fixed_integer: None,
+            fixed_decimal: None,
+            pattern_string: None,
+            pattern_uri: None,
+            pattern_code: None,
+            pattern_boolean: None,
+            must_support: false,
+            short: None,
+            definition: None,
+            binding: Some(ElementBinding {
+                strength: "required".into(),
+                value_set: Some("http://hl7.org/fhir/ValueSet/days-of-week".into()),
+                description: None,
+            }),
+            content_reference: None,
+            fixed_quantity: None,
+            pattern_quantity: None,
+            fixed_coding: None,
+            pattern_coding: None,
+            fixed_codeable_concept: None,
+            pattern_codeable_concept: None,
+            constraint: vec![],
+            is_modifier: false,
+            is_summary: false,
+            slice_name: None,
+            slicing: None,
+        };
+        assert_eq!(generate_typed_value("code", &[], &el, &vs), json!("mon"));
+    }
+
+    #[test]
+    fn test_generate_typed_value_code_days_of_week_fallback() {
+        let el = ElementDefinition {
+            id: "test.daysOfWeek".into(),
+            path: "test.daysOfWeek".into(),
+            min: Some(0),
+            max: Some("1".into()),
+            type_: vec![],
+            fixed_string: None,
+            fixed_uri: None,
+            fixed_code: None,
+            fixed_boolean: None,
+            fixed_integer: None,
+            fixed_decimal: None,
+            pattern_string: None,
+            pattern_uri: None,
+            pattern_code: None,
+            pattern_boolean: None,
+            must_support: false,
+            short: None,
+            definition: None,
+            binding: None,
+            content_reference: None,
+            fixed_quantity: None,
+            pattern_quantity: None,
+            fixed_coding: None,
+            pattern_coding: None,
+            fixed_codeable_concept: None,
+            pattern_codeable_concept: None,
+            constraint: vec![],
+            is_modifier: false,
+            is_summary: false,
+            slice_name: None,
+            slicing: None,
+        };
+        let vs = HashMap::new();
+        assert_eq!(generate_typed_value("code", &[], &el, &vs), json!("mon"));
+    }
+
+    #[test]
+    fn test_generate_typed_value_complex_types() {
+        let el = ElementDefinition {
+            id: "test".into(),
+            path: "test".into(),
+            min: Some(0),
+            max: Some("1".into()),
+            type_: vec![],
+            fixed_string: None,
+            fixed_uri: None,
+            fixed_code: None,
+            fixed_boolean: None,
+            fixed_integer: None,
+            fixed_decimal: None,
+            pattern_string: None,
+            pattern_uri: None,
+            pattern_code: None,
+            pattern_boolean: None,
+            must_support: false,
+            short: None,
+            definition: None,
+            binding: None,
+            content_reference: None,
+            fixed_quantity: None,
+            pattern_quantity: None,
+            fixed_coding: None,
+            pattern_coding: None,
+            fixed_codeable_concept: None,
+            pattern_codeable_concept: None,
+            constraint: vec![],
+            is_modifier: false,
+            is_summary: false,
+            slice_name: None,
+            slicing: None,
+        };
+        let vs = HashMap::new();
+
+        let val = generate_typed_value("Identifier", &[], &el, &vs);
+        assert!(val.get("system").is_some());
+        assert!(val.get("value").is_some());
+
+        let val = generate_typed_value("HumanName", &[], &el, &vs);
+        assert_eq!(val["family"], "Smith");
+
+        let val = generate_typed_value("ContactPoint", &[], &el, &vs);
+        assert_eq!(val["system"], "phone");
+
+        let val = generate_typed_value("CodeableConcept", &[], &el, &vs);
+        assert!(val.get("coding").is_some());
+
+        let val = generate_typed_value("Coding", &[], &el, &vs);
+        assert!(val.get("code").is_some());
+
+        let val = generate_typed_value("Quantity", &[], &el, &vs);
+        assert_eq!(val["value"], 1.0);
+
+        let val = generate_typed_value("Period", &[], &el, &vs);
+        assert!(val.get("start").is_some());
+
+        let val = generate_typed_value("Attachment", &[], &el, &vs);
+        assert_eq!(val["contentType"], "text/plain");
+
+        let val = generate_typed_value("Annotation", &[], &el, &vs);
+        assert_eq!(val["text"], "Generated annotation");
+
+        let val = generate_typed_value("Range", &[], &el, &vs);
+        assert!(val.get("low").is_some());
+
+        let val = generate_typed_value("Ratio", &[], &el, &vs);
+        assert!(val.get("numerator").is_some());
+
+        let val = generate_typed_value("Timing", &[], &el, &vs);
+        assert!(val.get("repeat").is_some());
+
+        let val = generate_typed_value("SampledData", &[], &el, &vs);
+        assert_eq!(val["dimensions"], 1);
+
+        let val = generate_typed_value("BackboneElement", &[], &el, &vs);
+        assert_eq!(val, json!({}));
+
+        let val = generate_typed_value("UnknownType", &[], &el, &vs);
+        assert_eq!(val, json!({}));
+    }
+
+    #[test]
+    fn test_generate_typed_value_reference_with_profile() {
+        let el = ElementDefinition {
+            id: "test".into(),
+            path: "test".into(),
+            min: Some(0),
+            max: Some("1".into()),
+            type_: vec![],
+            fixed_string: None,
+            fixed_uri: None,
+            fixed_code: None,
+            fixed_boolean: None,
+            fixed_integer: None,
+            fixed_decimal: None,
+            pattern_string: None,
+            pattern_uri: None,
+            pattern_code: None,
+            pattern_boolean: None,
+            must_support: false,
+            short: None,
+            definition: None,
+            binding: None,
+            content_reference: None,
+            fixed_quantity: None,
+            pattern_quantity: None,
+            fixed_coding: None,
+            pattern_coding: None,
+            fixed_codeable_concept: None,
+            pattern_codeable_concept: None,
+            constraint: vec![],
+            is_modifier: false,
+            is_summary: false,
+            slice_name: None,
+            slicing: None,
+        };
+        let vs = HashMap::new();
+        let val = generate_typed_value(
+            "Reference",
+            &["http://example.org/StructureDefinition/MyPatient".into()],
+            &el,
+            &vs,
+        );
+        // reference_type_from_target extracts "MyPatient" from the profile URL
+        assert!(
+            val.get("reference")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .starts_with("MyPatient/")
+        );
+    }
+
+    #[test]
+    fn test_generate_typed_value_codeable_concept_with_bound_system() {
+        let mut vs = HashMap::new();
+        vs.insert(
+            "http://hl7.org/fhir/ValueSet/administrative-gender".into(),
+            "http://hl7.org/fhir/administrative-gender".into(),
+        );
+        let el = ElementDefinition {
+            id: "test".into(),
+            path: "test".into(),
+            min: Some(0),
+            max: Some("1".into()),
+            type_: vec![],
+            fixed_string: None,
+            fixed_uri: None,
+            fixed_code: None,
+            fixed_boolean: None,
+            fixed_integer: None,
+            fixed_decimal: None,
+            pattern_string: None,
+            pattern_uri: None,
+            pattern_code: None,
+            pattern_boolean: None,
+            must_support: false,
+            short: None,
+            definition: None,
+            binding: Some(ElementBinding {
+                strength: "required".into(),
+                value_set: Some("http://hl7.org/fhir/ValueSet/administrative-gender".into()),
+                description: None,
+            }),
+            content_reference: None,
+            fixed_quantity: None,
+            pattern_quantity: None,
+            fixed_coding: None,
+            pattern_coding: None,
+            fixed_codeable_concept: None,
+            pattern_codeable_concept: None,
+            constraint: vec![],
+            is_modifier: false,
+            is_summary: false,
+            slice_name: None,
+            slicing: None,
+        };
+        let val = generate_typed_value("CodeableConcept", &[], &el, &vs);
+        assert_eq!(
+            val["coding"][0]["system"],
+            "http://hl7.org/fhir/administrative-gender"
+        );
+    }
+
+    // ── capitalize_fhir_type ───────────────────────────────────────────
+
+    #[test]
+    fn test_capitalize_fhir_type() {
+        assert_eq!(capitalize_fhir_type("string"), "String");
+        assert_eq!(capitalize_fhir_type("boolean"), "Boolean");
+        assert_eq!(capitalize_fhir_type("markdown"), "Markdown");
+        assert_eq!(capitalize_fhir_type("CodeableConcept"), "CodeableConcept");
+        assert_eq!(capitalize_fhir_type(""), "");
+        assert_eq!(capitalize_fhir_type("a"), "A");
+    }
+
+    // ── is_complex_type ────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_complex_type_true() {
+        assert!(is_complex_type("Identifier"));
+        assert!(is_complex_type("HumanName"));
+        assert!(is_complex_type("Address"));
+        assert!(is_complex_type("ContactPoint"));
+        assert!(is_complex_type("CodeableConcept"));
+        assert!(is_complex_type("Coding"));
+        assert!(is_complex_type("Quantity"));
+        assert!(is_complex_type("Reference"));
+        assert!(is_complex_type("Period"));
+        assert!(is_complex_type("Attachment"));
+        assert!(is_complex_type("Annotation"));
+        assert!(is_complex_type("Range"));
+        assert!(is_complex_type("Ratio"));
+        assert!(is_complex_type("Timing"));
+        assert!(is_complex_type("SampledData"));
+        assert!(is_complex_type("BackboneElement"));
+    }
+
+    #[test]
+    fn test_is_complex_type_false() {
+        assert!(!is_complex_type("string"));
+        assert!(!is_complex_type("boolean"));
+        assert!(!is_complex_type("integer"));
+        assert!(!is_complex_type("date"));
+        assert!(!is_complex_type("code"));
+        assert!(!is_complex_type("uri"));
+    }
+
+    // ── is_base_spec_repeatable ────────────────────────────────────────
+
+    #[test]
+    fn test_is_base_spec_repeatable_always_true() {
+        assert!(is_base_spec_repeatable("Patient", "identifier"));
+        assert!(is_base_spec_repeatable("Patient", "telecom"));
+        assert!(is_base_spec_repeatable("Patient", "extension"));
+        assert!(is_base_spec_repeatable("Patient", "contained"));
+        assert!(is_base_spec_repeatable("Patient", "contact"));
+        assert!(is_base_spec_repeatable("Patient", "coding"));
+        assert!(is_base_spec_repeatable("Patient", "given"));
+        assert!(is_base_spec_repeatable("Patient", "line"));
+    }
+
+    #[test]
+    fn test_is_base_spec_repeatable_resource_specific() {
+        assert!(is_base_spec_repeatable("Patient", "name"));
+        assert!(is_base_spec_repeatable("Person", "name"));
+        assert!(is_base_spec_repeatable("Practitioner", "name"));
+        assert!(is_base_spec_repeatable("RelatedPerson", "name"));
+        assert!(!is_base_spec_repeatable("Organization", "name"));
+        assert!(!is_base_spec_repeatable("Location", "name"));
+
+        assert!(is_base_spec_repeatable("Organization", "address"));
+        assert!(is_base_spec_repeatable("Patient", "address"));
+        assert!(!is_base_spec_repeatable("Location", "address"));
+
+        assert!(is_base_spec_repeatable("PractitionerRole", "code"));
+        assert!(is_base_spec_repeatable("HealthcareService", "code"));
+
+        assert!(is_base_spec_repeatable("Provenance", "target"));
+        assert!(is_base_spec_repeatable("Provenance", "agent"));
+    }
+
+    #[test]
+    fn test_is_base_spec_repeatable_false() {
+        assert!(!is_base_spec_repeatable("Patient", "birthDate"));
+        assert!(!is_base_spec_repeatable("Patient", "gender"));
+        assert!(!is_base_spec_repeatable("Observation", "status"));
+    }
+
+    // ── get_field_name ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_field_name_direct_child() {
+        assert_eq!(
+            get_field_name("Patient.name", "Patient"),
+            Some("name".into())
+        );
+        assert_eq!(
+            get_field_name("Patient.birthDate", "Patient"),
+            Some("birthDate".into())
+        );
+    }
+
+    #[test]
+    fn test_get_field_name_strips_slice_notation() {
+        assert_eq!(
+            get_field_name("Patient.identifier:type", "Patient"),
+            Some("identifier".into())
+        );
+    }
+
+    #[test]
+    fn test_get_field_name_wrong_resource_type() {
+        assert_eq!(get_field_name("Patient.name", "Observation"), None);
+    }
+
+    #[test]
+    fn test_get_field_name_nested_path() {
+        assert_eq!(get_field_name("Patient.name.family", "Patient"), None);
+    }
+
+    #[test]
+    fn test_get_field_name_root() {
+        assert_eq!(get_field_name("Patient", "Patient"), Some("Patient".into()));
+    }
+
+    #[test]
+    fn test_get_field_name_no_dot_after_prefix() {
+        assert_eq!(get_field_name("PatientX", "Patient"), None);
+    }
+
+    // ── has_slices_for_path ────────────────────────────────────────────
+
+    #[test]
+    fn test_has_slices_for_path_true() {
+        let elements = vec![ElementDefinition {
+            id: "Patient.identifier:ABN".into(),
+            path: "Patient.identifier".into(),
+            slice_name: Some("ABN".into()),
+            ..Default::default()
+        }];
+        assert!(has_slices_for_path(&elements, "Patient.identifier"));
+    }
+
+    #[test]
+    fn test_has_slices_for_path_false() {
+        let elements = vec![ElementDefinition {
+            id: "Patient.name".into(),
+            path: "Patient.name".into(),
+            slice_name: None,
+            ..Default::default()
+        }];
+        assert!(!has_slices_for_path(&elements, "Patient.name"));
+    }
+
+    // ── reference_type_from_target ──────────────────────────────────────
+
+    #[test]
+    fn test_reference_type_from_target() {
+        assert_eq!(
+            reference_type_from_target("http://example.org/StructureDefinition/Practitioner"),
+            "Practitioner"
+        );
+        assert_eq!(
+            reference_type_from_target("http://example.org/StructureDefinition/PractitionerRole"),
+            "PractitionerRole"
+        );
+        assert_eq!(
+            reference_type_from_target("http://example.org/StructureDefinition/HealthcareService"),
+            "HealthcareService"
+        );
+        assert_eq!(
+            reference_type_from_target("http://example.org/StructureDefinition/Organization"),
+            "Organization"
+        );
+        assert_eq!(
+            reference_type_from_target("http://example.org/StructureDefinition/Location"),
+            "Location"
+        );
+        assert_eq!(
+            reference_type_from_target("http://example.org/StructureDefinition/Endpoint"),
+            "Endpoint"
+        );
+        assert_eq!(
+            reference_type_from_target("http://example.org/StructureDefinition/Provenance"),
+            "Provenance"
+        );
+        assert_eq!(
+            reference_type_from_target("http://example.org/StructureDefinition/Parameters"),
+            "Parameters"
+        );
+        assert_eq!(reference_type_from_target("Patient"), "Patient");
+        assert_eq!(reference_type_from_target(""), "");
+    }
+
+    #[test]
+    fn test_reference_type_from_target_strips_version() {
+        assert_eq!(
+            reference_type_from_target("http://example.org/StructureDefinition/Patient|1.0"),
+            "Patient"
+        );
+    }
+
+    // ── is_generic_identifier_system ───────────────────────────────────
+
+    #[test]
+    fn test_is_generic_identifier_system() {
+        assert!(is_generic_identifier_system(
+            "http://example.org/identifier"
+        ));
+        assert!(is_generic_identifier_system("urn:ietf:rfc:3986"));
+        assert!(!is_generic_identifier_system(
+            "http://hl7.org/fhir/sid/us-ssn"
+        ));
+        assert!(!is_generic_identifier_system(""));
+    }
+
+    // ── find_identifier_system ─────────────────────────────────────────
+
+    #[test]
+    fn test_find_identifier_system_from_snapshot() {
+        let profiles = vec![StructureDefinition {
+            url: "http://example.org/Profile/MyIdentifier".into(),
+            base_type: "Identifier".into(),
+            snapshot: Some(Snapshot {
+                element: vec![ElementDefinition {
+                    id: "Identifier.system".into(),
+                    path: "Identifier.system".into(),
+                    fixed_uri: Some("http://example.org/sys/my-id".into()),
+                    ..Default::default()
+                }],
+            }),
+            differential: None,
+            ..Default::default()
+        }];
+        let result = find_identifier_system("http://example.org/Profile/MyIdentifier", &profiles);
+        assert_eq!(result, Some("http://example.org/sys/my-id".into()));
+    }
+
+    #[test]
+    fn test_find_identifier_system_from_differential() {
+        let profiles = vec![StructureDefinition {
+            url: "http://example.org/Profile/MyIdentifier".into(),
+            base_type: "Identifier".into(),
+            snapshot: None,
+            differential: Some(Differential {
+                element: vec![ElementDefinition {
+                    id: "Identifier.system".into(),
+                    path: "Identifier.system".into(),
+                    pattern_uri: Some("http://example.org/sys/pattern".into()),
+                    ..Default::default()
+                }],
+            }),
+            ..Default::default()
+        }];
+        let result = find_identifier_system("http://example.org/Profile/MyIdentifier", &profiles);
+        assert_eq!(result, Some("http://example.org/sys/pattern".into()));
+    }
+
+    #[test]
+    fn test_find_identifier_system_not_found() {
+        let result = find_identifier_system("http://example.org/Profile/Nonexistent", &[]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_identifier_system_strips_version() {
+        let profiles = vec![StructureDefinition {
+            url: "http://example.org/Profile/MyIdentifier".into(),
+            base_type: "Identifier".into(),
+            snapshot: Some(Snapshot {
+                element: vec![ElementDefinition {
+                    id: "Identifier.system".into(),
+                    path: "Identifier.system".into(),
+                    fixed_uri: Some("http://example.org/sys/my-id".into()),
+                    ..Default::default()
+                }],
+            }),
+            differential: None,
+            ..Default::default()
+        }];
+        let result =
+            find_identifier_system("http://example.org/Profile/MyIdentifier|1.0", &profiles);
+        assert_eq!(result, Some("http://example.org/sys/my-id".into()));
+    }
+
+    // ── find_slice_system ──────────────────────────────────────────────
+
+    #[test]
+    fn test_find_slice_system_found() {
+        let elements = vec![ElementDefinition {
+            id: "Patient.identifier:ABN.system".into(),
+            path: "Patient.identifier:ABN.system".into(),
+            fixed_uri: Some("http://example.org/sys/abn".into()),
+            ..Default::default()
+        }];
+        let result = find_slice_system("ABN", &elements);
+        assert_eq!(result, Some("http://example.org/sys/abn".into()));
+    }
+
+    #[test]
+    fn test_find_slice_system_not_found() {
+        let elements = vec![];
+        let result = find_slice_system("ABN", &elements);
+        assert_eq!(result, None);
+    }
+
+    // ── find_identifier_type ─────────────────────────────────────────────
+
+    #[test]
+    fn test_find_identifier_type_found() {
+        let profiles = vec![StructureDefinition {
+            url: "http://example.org/Profile/MyIdentifier".into(),
+            base_type: "Identifier".into(),
+            snapshot: Some(Snapshot {
+                element: vec![ElementDefinition {
+                    id: "Identifier.type".into(),
+                    path: "Identifier.type".into(),
+                    pattern_codeable_concept: Some(json!({"coding": [{"code": "XX"}]})),
+                    ..Default::default()
+                }],
+            }),
+            differential: None,
+            ..Default::default()
+        }];
+        let result = find_identifier_type("http://example.org/Profile/MyIdentifier", &profiles);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_find_identifier_type_not_found() {
+        let result = find_identifier_type("http://example.org/Profile/Nonexistent", &[]);
+        assert_eq!(result, None);
+    }
+
+    // ── find_human_name_use ─────────────────────────────────────────────
+
+    #[test]
+    fn test_find_human_name_use_found() {
+        let elements = vec![ElementDefinition {
+            id: "Patient.name:official.use".into(),
+            path: "Patient.name:official.use".into(),
+            fixed_code: Some("official".into()),
+            ..Default::default()
+        }];
+        let result = find_human_name_use("official", &elements);
+        assert_eq!(result, Some("official".into()));
+    }
+
+    #[test]
+    fn test_find_human_name_use_not_found() {
+        let elements = vec![];
+        let result = find_human_name_use("official", &elements);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_human_name_use_pattern_code() {
+        let elements = vec![ElementDefinition {
+            id: "Patient.name:official.use".into(),
+            path: "Patient.name:official.use".into(),
+            pattern_code: Some("official".into()),
+            ..Default::default()
+        }];
+        let result = find_human_name_use("official", &elements);
+        assert_eq!(result, Some("official".into()));
+    }
+
+    // ── resolve_slice_type_code ─────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_slice_type_code_from_slice() {
+        let slice = ElementDefinition {
+            id: "Patient.identifier:ABN".into(),
+            path: "Patient.identifier".into(),
+            type_: vec![ElementDefinitionType {
+                code: "Identifier".into(),
+                profile: vec![],
+                target_profile: vec![],
+                versioning: None,
+            }],
+            ..Default::default()
+        };
+        let result = resolve_slice_type_code(&slice, &[]);
+        assert_eq!(result, Some("Identifier".into()));
+    }
+
+    #[test]
+    fn test_resolve_slice_type_code_from_base() {
+        let slice = ElementDefinition {
+            id: "Patient.identifier:ABN".into(),
+            path: "Patient.identifier".into(),
+            type_: vec![],
+            ..Default::default()
+        };
+        let elements = vec![ElementDefinition {
+            id: "Patient.identifier".into(),
+            path: "Patient.identifier".into(),
+            type_: vec![ElementDefinitionType {
+                code: "Identifier".into(),
+                profile: vec![],
+                target_profile: vec![],
+                versioning: None,
+            }],
+            ..Default::default()
+        }];
+        let result = resolve_slice_type_code(&slice, &elements);
+        assert_eq!(result, Some("Identifier".into()));
+    }
+
+    #[test]
+    fn test_resolve_slice_type_code_not_found() {
+        let slice = ElementDefinition {
+            id: "Patient.identifier:ABN".into(),
+            path: "Patient.identifier".into(),
+            type_: vec![],
+            ..Default::default()
+        };
+        let result = resolve_slice_type_code(&slice, &[]);
+        assert_eq!(result, None);
+    }
+
+    // ── direct_fixed_or_pattern_value ──────────────────────────────────
+
+    #[test]
+    fn test_direct_fixed_or_pattern_value_fixed_string() {
+        let el = ElementDefinition {
+            fixed_string: Some("hello".into()),
+            ..Default::default()
+        };
+        assert_eq!(direct_fixed_or_pattern_value(&el), Some(json!("hello")));
+    }
+
+    #[test]
+    fn test_direct_fixed_or_pattern_value_fixed_code() {
+        let el = ElementDefinition {
+            fixed_code: Some("active".into()),
+            ..Default::default()
+        };
+        assert_eq!(direct_fixed_or_pattern_value(&el), Some(json!("active")));
+    }
+
+    #[test]
+    fn test_direct_fixed_or_pattern_value_fixed_uri() {
+        let el = ElementDefinition {
+            fixed_uri: Some("http://example.org".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            direct_fixed_or_pattern_value(&el),
+            Some(json!("http://example.org"))
+        );
+    }
+
+    #[test]
+    fn test_direct_fixed_or_pattern_value_fixed_boolean() {
+        let el = ElementDefinition {
+            fixed_boolean: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(direct_fixed_or_pattern_value(&el), Some(json!(true)));
+    }
+
+    #[test]
+    fn test_direct_fixed_or_pattern_value_fixed_integer() {
+        let el = ElementDefinition {
+            fixed_integer: Some(42),
+            ..Default::default()
+        };
+        assert_eq!(direct_fixed_or_pattern_value(&el), Some(json!(42)));
+    }
+
+    #[test]
+    fn test_direct_fixed_or_pattern_value_pattern_string() {
+        let el = ElementDefinition {
+            pattern_string: Some("pattern".into()),
+            ..Default::default()
+        };
+        assert_eq!(direct_fixed_or_pattern_value(&el), Some(json!("pattern")));
+    }
+
+    #[test]
+    fn test_direct_fixed_or_pattern_value_pattern_boolean() {
+        let el = ElementDefinition {
+            pattern_boolean: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(direct_fixed_or_pattern_value(&el), Some(json!(false)));
+    }
+
+    #[test]
+    fn test_direct_fixed_or_pattern_value_none() {
+        let el = ElementDefinition::default();
+        assert_eq!(direct_fixed_or_pattern_value(&el), None);
+    }
+
+    // ── code_value_for_system ───────────────────────────────────────────
+
+    #[test]
+    fn test_code_value_for_system_days_of_week() {
+        assert_eq!(
+            code_value_for_system("http://hl7.org/fhir/days-of-week"),
+            json!("mon")
+        );
+    }
+
+    #[test]
+    fn test_code_value_for_system_gender() {
+        assert_eq!(
+            code_value_for_system("http://hl7.org/fhir/administrative-gender"),
+            json!("male")
+        );
+    }
+
+    #[test]
+    fn test_code_value_for_system_unknown() {
+        assert_eq!(
+            code_value_for_system("http://unknown.system"),
+            json!("active")
+        );
+    }
+}
