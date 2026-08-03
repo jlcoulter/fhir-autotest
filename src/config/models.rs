@@ -3,6 +3,19 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Benchmark mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BenchMode {
+    /// Fixed concurrency for a fixed duration (default).
+    #[default]
+    Steady,
+    /// Ramp concurrency upward until error rate or latency threshold is breached.
+    MaxThroughput,
+    /// Sustained load at fixed concurrency for an extended period.
+    Soak,
+}
+
 use anyhow::Context;
 
 /// HTTP method for uploading resources to the repository.
@@ -178,6 +191,14 @@ pub struct TestConfig {
     /// (e.g. for manual testing with curl). Use 0 for a random port.
     #[serde(default = "default_mock_port")]
     pub mock_port: u16,
+
+    /// Benchmark configuration for load/performance testing.
+    ///
+    /// When running `fhir-autotest-bench`, these settings control concurrency,
+    /// duration, ramp-up, and other benchmark parameters. They are read from
+    /// the `[bench]` section of the config file.
+    #[serde(default)]
+    pub bench: BenchConfig,
 }
 
 fn default_output() -> String {
@@ -406,6 +427,168 @@ pub struct DataGenerationConfig {
     /// `{output}/data/` for manual upload.
     #[serde(default)]
     pub generate_only: bool,
+}
+
+/// Benchmark configuration for load/performance testing.
+///
+/// These settings are read from the `[bench]` section of the config file
+/// and used by `fhir-autotest-bench` for concurrency, duration, ramp-up,
+/// and other benchmark parameters.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BenchConfig {
+    /// Number of concurrent virtual users (connections).
+    #[serde(default = "default_bench_concurrency")]
+    pub concurrency: usize,
+
+    /// Duration of the benchmark in seconds (0 = run all tests once).
+    #[serde(default = "default_bench_duration_secs")]
+    pub duration_secs: u64,
+
+    /// Ramp-up time in seconds — gradually increase concurrency over this period.
+    #[serde(default = "default_bench_ramp_up_secs")]
+    pub ramp_up_secs: u64,
+
+    /// Timeout per individual request in seconds.
+    #[serde(default = "default_bench_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+
+    /// Path to an existing test_plan.json. If absent, one is generated.
+    #[serde(default)]
+    pub test_plan: Option<String>,
+
+    /// Output directory for benchmark reports (default: ./bench-results).
+    #[serde(default = "default_bench_output")]
+    pub output: String,
+
+    /// Whether to skip the data-ensure step (assume data already exists).
+    #[serde(default)]
+    pub skip_data_ensure: bool,
+
+    /// Whether to skip cleanup after the benchmark.
+    #[serde(default)]
+    pub skip_cleanup: bool,
+
+    /// Filter test groups by resource type (e.g. ["Patient", "Observation"]).
+    /// Empty means all groups.
+    #[serde(default)]
+    pub filter_groups: Vec<String>,
+
+    /// Warm-up requests before recording measurements (number of requests).
+    #[serde(default = "default_bench_warmup")]
+    pub warmup_requests: usize,
+
+    /// Benchmark mode: "steady" (default), "max_throughput", or "soak".
+    #[serde(default)]
+    pub mode: BenchMode,
+
+    // ── Max-throughput mode fields ──────────────────────────────────────
+    /// Starting concurrency for max-throughput ramp.
+    #[serde(default = "default_bench_min_concurrency")]
+    pub min_concurrency: usize,
+
+    /// Maximum concurrency to try before giving up.
+    #[serde(default = "default_bench_max_concurrency")]
+    pub max_concurrency: usize,
+
+    /// Concurrency increment per step.
+    #[serde(default = "default_bench_step_size")]
+    pub step_size: usize,
+
+    /// Seconds to stabilize at each concurrency level.
+    #[serde(default = "default_bench_stabilization_secs")]
+    pub stabilization_secs: u64,
+
+    /// Stop when error rate exceeds this fraction (0.0–1.0).
+    #[serde(default = "default_bench_max_error_rate")]
+    pub max_error_rate: f64,
+
+    /// Stop when p95 latency exceeds this value in milliseconds.
+    #[serde(default = "default_bench_max_latency_p95_ms")]
+    pub max_latency_p95_ms: u64,
+
+    // ── Soak mode fields ──────────────────────────────────────────────
+    /// Duration in hours for soak mode (overrides duration_secs when mode=soak).
+    #[serde(default = "default_bench_soak_hours")]
+    pub soak_hours: u64,
+}
+
+fn default_bench_concurrency() -> usize {
+    10
+}
+fn default_bench_duration_secs() -> u64 {
+    30
+}
+fn default_bench_ramp_up_secs() -> u64 {
+    5
+}
+fn default_bench_request_timeout_secs() -> u64 {
+    30
+}
+fn default_bench_output() -> String {
+    "./bench-results".to_string()
+}
+fn default_bench_warmup() -> usize {
+    10
+}
+fn default_bench_min_concurrency() -> usize {
+    1
+}
+fn default_bench_max_concurrency() -> usize {
+    500
+}
+fn default_bench_step_size() -> usize {
+    10
+}
+fn default_bench_stabilization_secs() -> u64 {
+    10
+}
+fn default_bench_max_error_rate() -> f64 {
+    0.05
+}
+fn default_bench_max_latency_p95_ms() -> u64 {
+    1000
+}
+fn default_bench_soak_hours() -> u64 {
+    4
+}
+
+impl BenchConfig {
+    pub fn request_timeout(&self) -> Duration {
+        Duration::from_secs(self.request_timeout_secs)
+    }
+
+    pub fn duration(&self) -> Duration {
+        Duration::from_secs(self.duration_secs)
+    }
+
+    pub fn ramp_up(&self) -> Duration {
+        Duration::from_secs(self.ramp_up_secs)
+    }
+}
+
+impl Default for BenchConfig {
+    fn default() -> Self {
+        Self {
+            concurrency: default_bench_concurrency(),
+            duration_secs: default_bench_duration_secs(),
+            ramp_up_secs: default_bench_ramp_up_secs(),
+            request_timeout_secs: default_bench_request_timeout_secs(),
+            test_plan: None,
+            output: default_bench_output(),
+            skip_data_ensure: false,
+            skip_cleanup: false,
+            filter_groups: Vec::new(),
+            warmup_requests: default_bench_warmup(),
+            mode: BenchMode::default(),
+            min_concurrency: default_bench_min_concurrency(),
+            max_concurrency: default_bench_max_concurrency(),
+            step_size: default_bench_step_size(),
+            stabilization_secs: default_bench_stabilization_secs(),
+            max_error_rate: default_bench_max_error_rate(),
+            max_latency_p95_ms: default_bench_max_latency_p95_ms(),
+            soak_hours: default_bench_soak_hours(),
+        }
+    }
 }
 
 impl TestConfig {

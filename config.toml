@@ -132,6 +132,34 @@ counts.HealthcareService = 100
 counts.Endpoint = 500
 counts.Provenance = 100
 
+# ── Benchmark (optional) ─────────────────────────────────────────────────────
+#
+# Settings for fhir-autotest-bench (performance/load testing).
+# All fields have defaults — uncomment to override.
+#
+[bench]
+mode = "soak"              # "steady", "max_throughput", or "soak"
+concurrency = 50
+# duration_secs = 30
+# ramp_up_secs = 5
+# request_timeout_secs = 30
+# output = "./bench-results"
+# skip_data_ensure = false
+# skip_cleanup = false
+# filter_groups = []
+# warmup_requests = 10
+# test_plan = "./output/test_plan.json"
+#
+# # Max-throughput mode settings
+# min_concurrency = 1
+# max_concurrency = 500
+# step_size = 10
+# stabilization_secs = 10
+# max_error_rate = 0.05
+# max_latency_p95_ms = 200
+#
+# # Soak mode settings
+soak_hours = 1
 # ── Fuzzer (optional) ──────────────────────────────────────────────────────
 #
 # Settings for fhir-autotest-fuzz. All fields have CLI flag equivalents

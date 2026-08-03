@@ -18,7 +18,7 @@ use std::path::Path;
 
 /// Shared context produced by [`prepare_plan_context`], containing all the
 /// parsed and resolved data needed to generate a test plan and resources.
-pub(crate) struct PlanContext {
+pub struct PlanContext {
     pub pkg: IgPackage,
     pub cs: CapabilityStatement,
     pub profiles: Vec<StructureDefinition>,
@@ -33,10 +33,7 @@ pub(crate) struct PlanContext {
 /// This is the shared setup used by `run_generate`, `run_dry_run`, and
 /// `Orchestrator::run` — each caller then generates resources and produces
 /// output in its own way.
-pub(crate) async fn prepare_plan_context(
-    package_path: &str,
-    config: &TestConfig,
-) -> Result<PlanContext> {
+pub async fn prepare_plan_context(package_path: &str, config: &TestConfig) -> Result<PlanContext> {
     tracing::debug!("Preparing plan context for package: {}", package_path);
     let pkg = parse_package(package_path)?;
     let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
@@ -471,6 +468,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let cs = select_capability_statement(&pkg, &config).unwrap();
@@ -512,6 +510,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let cs = select_capability_statement(&pkg, &config).unwrap();
@@ -550,6 +549,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let cs = select_capability_statement(&pkg, &config).unwrap();
@@ -581,6 +581,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -639,6 +640,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let cs = select_capability_statement(&pkg, &config).unwrap();
@@ -673,6 +675,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -720,6 +723,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -765,6 +769,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -812,6 +817,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -869,6 +875,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
