@@ -1,11 +1,13 @@
 pub mod boundary;
 pub mod cardinality;
 pub mod encoding;
+pub mod search_param;
 pub mod type_mismatch;
 
 pub use boundary::BoundaryMutator;
 pub use cardinality::CardinalityMutator;
 pub use encoding::EncodingMutator;
+pub use search_param::SearchParamMutator;
 pub use type_mismatch::TypeMismatchMutator;
 
 use fhir_autotest::model::profile::StructureDefinition;

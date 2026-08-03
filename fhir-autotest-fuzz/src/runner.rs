@@ -22,7 +22,7 @@ pub struct FuzzResult {
     pub reason: Option<String>,
     /// Round-trip time in milliseconds.
     pub duration_ms: u64,
-    /// Size of the request body in bytes.
+    /// Size of the request body in bytes (0 for GET).
     pub body_size: usize,
 }
 
@@ -32,7 +32,7 @@ impl FuzzResult {
     }
 }
 
-/// Sends fuzzed FHIR resources to the target server and records responses.
+/// Sends fuzzed FHIR requests to the target server and records responses.
 pub struct FuzzRunner {
     client: reqwest::Client,
     base_url: String,
@@ -56,6 +56,7 @@ impl FuzzRunner {
         }
     }
 
+    /// Send a fuzzed POST (create) request with a mutated body.
     pub async fn send_fuzzed(
         &self,
         resource_type: &str,
@@ -86,6 +87,88 @@ impl FuzzRunner {
         let response = self.client.post(&url).json(body).send().await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
+        self.classify_response(response, mutator_name, resource_type, iteration, "POST", url, body_size, duration_ms).await
+    }
+
+    /// Send a fuzzed PUT (update) request with a mutated body.
+    pub async fn send_fuzzed_put(
+        &self,
+        resource_type: &str,
+        id: &str,
+        body: &serde_json::Value,
+        mutator_name: &str,
+        iteration: usize,
+    ) -> FuzzResult {
+        let url = format!("{}/{}/{}", self.base_url, resource_type, id);
+        let body_bytes = serde_json::to_vec(body).unwrap_or_default();
+        let body_size = body_bytes.len();
+
+        if self.dry_run {
+            return FuzzResult {
+                mutator: mutator_name.to_string(),
+                resource_type: resource_type.to_string(),
+                iteration,
+                method: "PUT".to_string(),
+                url: url.clone(),
+                status_code: 0,
+                is_anomaly: false,
+                reason: None,
+                duration_ms: 0,
+                body_size,
+            };
+        }
+
+        let start = Instant::now();
+        let response = self.client.put(&url).json(body).send().await;
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        self.classify_response(response, mutator_name, resource_type, iteration, "PUT", url, body_size, duration_ms).await
+    }
+
+    /// Send a fuzzed GET (search) request with fuzzed query parameters.
+    pub async fn send_fuzzed_search(
+        &self,
+        resource_type: &str,
+        query_string: &str,
+        mutator_name: &str,
+        iteration: usize,
+    ) -> FuzzResult {
+        let url = format!("{}/{}{}", self.base_url, resource_type, query_string);
+
+        if self.dry_run {
+            return FuzzResult {
+                mutator: mutator_name.to_string(),
+                resource_type: resource_type.to_string(),
+                iteration,
+                method: "GET".to_string(),
+                url: url.clone(),
+                status_code: 0,
+                is_anomaly: false,
+                reason: None,
+                duration_ms: 0,
+                body_size: 0,
+            };
+        }
+
+        let start = Instant::now();
+        let response = self.client.get(&url).send().await;
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        self.classify_response(response, mutator_name, resource_type, iteration, "GET", url, 0, duration_ms).await
+    }
+
+    /// Classify a response: extract status, detect anomalies, check body for leaks.
+    async fn classify_response(
+        &self,
+        response: Result<reqwest::Response, reqwest::Error>,
+        mutator_name: &str,
+        resource_type: &str,
+        iteration: usize,
+        method: &str,
+        url: String,
+        body_size: usize,
+        duration_ms: u64,
+    ) -> FuzzResult {
         match response {
             Ok(resp) => {
                 let status = resp.status().as_u16();
@@ -93,7 +176,7 @@ impl FuzzRunner {
                     mutator: mutator_name.to_string(),
                     resource_type: resource_type.to_string(),
                     iteration,
-                    method: "POST".to_string(),
+                    method: method.to_string(),
                     url,
                     status_code: status,
                     is_anomaly: false,
@@ -124,7 +207,7 @@ impl FuzzRunner {
                 mutator: mutator_name.to_string(),
                 resource_type: resource_type.to_string(),
                 iteration,
-                method: "POST".to_string(),
+                method: method.to_string(),
                 url,
                 status_code: 0,
                 is_anomaly: true,

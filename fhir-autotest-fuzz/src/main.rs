@@ -28,7 +28,7 @@ struct Cli {
     iterations: usize,
 
     /// Comma-separated list of mutation categories to apply.
-    /// Options: boundary, type_mismatch, cardinality, encoding, all
+    /// Options: boundary, type_mismatch, cardinality, encoding, search_param, all
     #[arg(long, default_value = "all")]
     mutations: String,
 
@@ -117,19 +117,27 @@ async fn main() -> anyhow::Result<()> {
 
     // Parse mutation categories
     let categories: Vec<&str> = if cli.mutations == "all" {
-        vec!["boundary", "type_mismatch", "cardinality", "encoding"]
+        vec![
+            "boundary",
+            "type_mismatch",
+            "cardinality",
+            "encoding",
+            "search_param",
+        ]
     } else {
         cli.mutations.split(',').map(|s| s.trim()).collect()
     };
 
-    // Parse the IG package to get profiles and structure definitions
+    // Parse the IG package to get profiles, structure definitions, and capability statement
     println!("Parsing IG package: {}", package);
     let pkg = fhir_autotest::parse_package(&package)?;
     let profiles = &pkg.structure_definitions;
+    let capability_statement = pkg.capability_statements.first();
 
     println!(
-        "Loaded {} StructureDefinitions from package",
-        profiles.len()
+        "Loaded {} StructureDefinitions, {} CapabilityStatements from package",
+        profiles.len(),
+        pkg.capability_statements.len()
     );
 
     // Build the fuzzer
@@ -157,6 +165,9 @@ async fn main() -> anyhow::Result<()> {
             "encoding" => fuzzer.register_mutator(Box::new(
                 fhir_autotest_fuzz::mutators::EncodingMutator,
             )),
+            "search_param" => {
+                // search_param is handled directly by the orchestrator, not as a body mutator
+            }
             other => {
                 anyhow::bail!("Unknown mutation category: {}", other);
             }
@@ -171,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
         target_url
     );
 
-    let report = fuzzer.run(profiles).await?;
+    let report = fuzzer.run(profiles, capability_statement).await?;
 
     // Print summary
     println!("\n=== Fuzz Results ===");
