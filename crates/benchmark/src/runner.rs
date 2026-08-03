@@ -609,3 +609,318 @@ fn format_duration(us: u64) -> String {
         format!("{}μs", us)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fhir_autotest::config::models::{DataGenerationConfig, OverrideConfig, ServerConfig};
+    use fhir_autotest::generate::model::*;
+    use fhir_autotest::mock_server::start_mock_server;
+
+    /// Build a minimal test plan with Patient and Observation groups.
+    fn test_plan() -> TestPlan {
+        TestPlan {
+            name: "test".to_string(),
+            ig_url: None,
+            creation_order: vec!["Patient".to_string(), "Observation".to_string()],
+            test_groups: vec![
+                TestGroup {
+                    resource_type: "Patient".to_string(),
+                    profile_url: None,
+                    tests: vec![
+                        TestCase {
+                            name: "read-patient".to_string(),
+                            kind: TestCaseKind::Interaction,
+                            interaction: Interaction::Read,
+                            resource_type: "Patient".to_string(),
+                            profile_url: None,
+                            request: HttpRequest {
+                                method: "GET".to_string(),
+                                url: "/Patient/{id}".to_string(),
+                                headers: HashMap::new(),
+                                body: None,
+                            },
+                            validation: ValidationSpec {
+                                expected_status: 200,
+                                profile_url: None,
+                                required_elements: vec![],
+                                forbidden_elements: vec![],
+                                response_assertion: None,
+                            },
+                        },
+                        TestCase {
+                            name: "search-patient".to_string(),
+                            kind: TestCaseKind::SearchSingle {
+                                param_name: "name".to_string(),
+                                param_type: "string".to_string(),
+                            },
+                            interaction: Interaction::SearchType,
+                            resource_type: "Patient".to_string(),
+                            profile_url: None,
+                            request: HttpRequest {
+                                method: "GET".to_string(),
+                                url: "/Patient?name=test".to_string(),
+                                headers: HashMap::new(),
+                                body: None,
+                            },
+                            validation: ValidationSpec {
+                                expected_status: 200,
+                                profile_url: None,
+                                required_elements: vec![],
+                                forbidden_elements: vec![],
+                                response_assertion: None,
+                            },
+                        },
+                    ],
+                },
+                TestGroup {
+                    resource_type: "Observation".to_string(),
+                    profile_url: None,
+                    tests: vec![
+                        TestCase {
+                            name: "read-observation".to_string(),
+                            kind: TestCaseKind::Interaction,
+                            interaction: Interaction::Read,
+                            resource_type: "Observation".to_string(),
+                            profile_url: None,
+                            request: HttpRequest {
+                                method: "GET".to_string(),
+                                url: "/Observation/{id}".to_string(),
+                                headers: HashMap::new(),
+                                body: None,
+                            },
+                            validation: ValidationSpec {
+                                expected_status: 200,
+                                profile_url: None,
+                                required_elements: vec![],
+                                forbidden_elements: vec![],
+                                response_assertion: None,
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    /// Create a BenchRunner configured against a mock server with a given plan.
+    async fn runner_with_plan(
+        plan: TestPlan,
+        bench_config: BenchConfig,
+    ) -> (BenchRunner, String) {
+        let addr = start_mock_server(0).await.unwrap();
+        let mock_url = format!("http://{}/fhir", addr);
+
+        let test_config = TestConfig {
+            package: None,
+            output: "./bench-test-output".to_string(),
+            server: ServerConfig {
+                base_url: mock_url.clone(),
+                headers: HashMap::new(),
+                tls_verify: true,
+                tls_ca_cert: None,
+            },
+            repository: None,
+            overrides: OverrideConfig::default(),
+            data_generation: DataGenerationConfig::default(),
+            mock: false,
+            mock_port: 0,
+            dry_run: false,
+        };
+
+        let write_endpoint = test_config.write_endpoint();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let runner = BenchRunner {
+            bench_config,
+            test_config,
+            plan,
+            client,
+            uploaded_ids: HashMap::new(),
+            upload_order: Vec::new(),
+            write_endpoint,
+        };
+
+        (runner, mock_url)
+    }
+
+    #[tokio::test]
+    async fn runner_one_shot_executes_all_tests() {
+        let plan = test_plan();
+        let cfg = BenchConfig {
+            duration_secs: 0,
+            concurrency: 2,
+            warmup_requests: 0,
+            output: "./bench-test-output".to_string(),
+            skip_data_ensure: true,
+            skip_cleanup: true,
+            ..BenchConfig::default()
+        };
+
+        let (runner, _url) = runner_with_plan(plan, cfg).await;
+        let report = runner.run().await.unwrap();
+
+        // 3 tests total (2 Patient + 1 Observation)
+        assert_eq!(report.total_requests, 3);
+        // All should pass against the mock server (returns 200 for everything)
+        assert_eq!(report.passed, 3);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.groups.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn runner_one_shot_with_filter() {
+        let plan = test_plan();
+        let cfg = BenchConfig {
+            duration_secs: 0,
+            concurrency: 1,
+            warmup_requests: 0,
+            output: "./bench-test-output".to_string(),
+            skip_data_ensure: true,
+            skip_cleanup: true,
+            filter_groups: vec!["Patient".to_string()],
+            ..BenchConfig::default()
+        };
+
+        let (runner, _url) = runner_with_plan(plan, cfg).await;
+        let report = runner.run().await.unwrap();
+
+        // Only Patient tests (2)
+        assert_eq!(report.total_requests, 2);
+        assert_eq!(report.groups.len(), 1);
+        assert_eq!(report.groups[0].group, "Patient");
+    }
+
+    #[tokio::test]
+    async fn runner_duration_mode_produces_samples() {
+        let plan = test_plan();
+        let cfg = BenchConfig {
+            duration_secs: 2,
+            concurrency: 3,
+            warmup_requests: 0,
+            output: "./bench-test-output".to_string(),
+            skip_data_ensure: true,
+            skip_cleanup: true,
+            ..BenchConfig::default()
+        };
+
+        let (runner, _url) = runner_with_plan(plan, cfg).await;
+        let report = runner.run().await.unwrap();
+
+        // Should have collected samples over 2 seconds
+        assert!(report.total_requests > 0, "should have at least 1 request");
+        assert!(report.duration_secs >= 1.5, "should run for ~2s");
+        assert_eq!(report.concurrency, 3);
+    }
+
+    #[tokio::test]
+    async fn runner_reports_are_written() {
+        let plan = test_plan();
+        let output_dir = "./bench-test-output";
+        let cfg = BenchConfig {
+            duration_secs: 0,
+            concurrency: 1,
+            warmup_requests: 0,
+            output: output_dir.to_string(),
+            skip_data_ensure: true,
+            skip_cleanup: true,
+            ..BenchConfig::default()
+        };
+
+        let (runner, _url) = runner_with_plan(plan, cfg).await;
+        runner.run().await.unwrap();
+
+        let out = Path::new(output_dir);
+        assert!(out.join("summary.json").exists());
+        assert!(out.join("full_results.json").exists());
+        assert!(out.join("report.txt").exists());
+        assert!(out.join("report.html").exists());
+
+        // Cleanup
+        std::fs::remove_dir_all(out).ok();
+    }
+
+    #[tokio::test]
+    async fn runner_empty_filter_bails() {
+        let plan = test_plan();
+        let cfg = BenchConfig {
+            duration_secs: 0,
+            concurrency: 1,
+            warmup_requests: 0,
+            output: "./bench-test-output".to_string(),
+            skip_data_ensure: true,
+            skip_cleanup: true,
+            filter_groups: vec!["NonExistent".to_string()],
+            ..BenchConfig::default()
+        };
+
+        let (runner, _url) = runner_with_plan(plan, cfg).await;
+        let result = runner.run().await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No test groups match"));
+    }
+
+    #[tokio::test]
+    async fn runner_cleanup_skipped_when_no_ids() {
+        let plan = test_plan();
+        let cfg = BenchConfig {
+            duration_secs: 0,
+            concurrency: 1,
+            warmup_requests: 0,
+            output: "./bench-test-output".to_string(),
+            skip_data_ensure: true,
+            skip_cleanup: false, // cleanup enabled but no IDs uploaded
+            ..BenchConfig::default()
+        };
+
+        let (runner, _url) = runner_with_plan(plan, cfg).await;
+        let report = runner.run().await.unwrap();
+        assert_eq!(report.total_requests, 3);
+    }
+
+    #[tokio::test]
+    async fn runner_mock_server_mode() {
+        // Test that BenchRunner::new with mock=true starts a mock server
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tgz_data = fhir_autotest::test_helpers::create_test_ig_package();
+        let tgz_path = temp_dir.path().join("test_ig.tgz");
+        std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+        let config_path = temp_dir.path().join("config.toml");
+        let config_content = format!(
+            r#"
+package = "{}"
+output = "{}"
+[server]
+base_url = "http://localhost:9999/fhir"
+"#,
+            tgz_path.to_str().unwrap().replace('\\', "/"),
+            temp_dir.path().join("output").to_str().unwrap().replace('\\', "/"),
+        );
+        std::fs::write(&config_path, &config_content).unwrap();
+
+        let cfg = BenchConfig {
+            config_path: config_path.to_str().unwrap().to_string(),
+            duration_secs: 0,
+            concurrency: 1,
+            warmup_requests: 0,
+            output: temp_dir.path().join("bench-out").to_str().unwrap().to_string(),
+            skip_data_ensure: true,
+            skip_cleanup: true,
+            mock: true,
+            mock_port: 0,
+            ..BenchConfig::default()
+        };
+
+        let runner = BenchRunner::new(cfg).await.unwrap();
+        let report = runner.run().await.unwrap();
+
+        assert!(report.total_requests > 0, "mock server should serve requests");
+    }
+}
