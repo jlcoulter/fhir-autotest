@@ -1,5 +1,6 @@
 pub mod bulk_data;
 pub mod conformance;
+pub mod custom_tests;
 pub mod dependency_resolver;
 pub mod hcpd;
 pub mod locality;

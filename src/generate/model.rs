@@ -422,6 +422,8 @@ pub enum TestCaseKind {
     Negative { description: String },
     /// Conformance test: verifies responder obligations from the CapabilityStatement
     Conformance { description: String },
+    /// Custom test defined by the user in config
+    Custom { description: String },
 }
 
 /// An HTTP request template for a test case.

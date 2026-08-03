@@ -181,3 +181,92 @@ soak_hours = 1
 #
 # Concurrency level (default: 4).
 # concurrency = 4
+
+# ── Custom Tests (optional) ────────────────────────────────────────────────
+#
+# Define your own tests alongside the auto-generated ones. The tool generates
+# resources from IG profiles, creates them on the server, substitutes real IDs
+# and field values into URLs, runs the tests, and cleans up.
+#
+# Three sections:
+#   overrides  — override values used in auto-generated tests
+#   skip       — skip auto-generated tests by name (substring match)
+#   test       — simple single-request tests
+#   sequence   — multi-step tests with state passing between steps
+#
+# URL templates:
+#   {base_url}              — the server's base URL
+#   {Patient.id}            — server-assigned ID of a created Patient resource
+#   {Patient.name.family}   — field value extracted from the generated resource
+#   {steps.prac.id}         — ID from a sequence step saved as "prac"
+#   {steps.prac.name.family} — field from a sequence step response
+#
+# Example:
+#
+# [custom_tests]
+#
+# # Override values used in auto-generated tests
+# overrides = [
+#   { param = "identifier", value = "http://example.com/mrn|KNOWN-001" },
+# ]
+#
+# # Skip auto-generated tests that don't apply
+# skip = ["SearchModifier:name:contains"]
+#
+# # Simple single-request tests
+# [[custom_tests.test]]
+# name = "Read a Patient"
+# method = "GET"
+# url = "/Patient/{Patient.id}"
+#
+# [[custom_tests.test]]
+# name = "Search by name"
+# method = "GET"
+# url = "/Patient?name={Patient.name.family}"
+# assert = { expected_status = 200, bundle_type = "searchset" }
+#
+# [[custom_tests.test]]
+# name = "Create a Patient"
+# method = "POST"
+# url = "/Patient"
+# body = "auto"
+# assert = { expected_status = 201 }
+#
+# [[custom_tests.test]]
+# name = "Delete a Patient"
+# method = "DELETE"
+# url = "/Patient/{Patient.id}"
+# assert = { expected_status = 204 }
+#
+# # Multi-step sequence: create → update → verify
+# [[custom_tests.sequence]]
+# name = "Propagation test"
+#
+#   [[custom_tests.sequence.step]]
+#   action = "create"
+#   resource = "Practitioner"
+#   body_overrides = { name = [{ family = "Test" }] }
+#   save_as = "prac"
+#
+#   [[custom_tests.sequence.step]]
+#   action = "read"
+#   resource = "Practitioner"
+#   id = "{steps.prac.id}"
+#   assert = { expected_status = 200 }
+#
+# Available assert fields:
+#   expected_status      — HTTP status code (default: 200)
+#   bundle_type          — "searchset", "history", "batch", "transaction"
+#   min_entries          — minimum Bundle entries
+#   max_entries          — maximum Bundle entries
+#   bundle_total_present — true/false
+#   summary_mode         — "count", "text", "data", "true"
+#   outcome_severity     — "error", "warning", "information"
+#   accept_statuses      — alternative acceptable status codes
+#   field_values         — map of field path → expected value
+#   absent_fields        — fields that must be absent
+#   required_fields      — fields that must be present
+#   sort_by              — { field = "birthdate", direction = "asc" }
+#   resource_types       — expected resource types in Bundle
+#   response_contains_key — top-level key that must exist
+#   response_resource_types — allowed resourceType values
