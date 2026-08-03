@@ -2,7 +2,7 @@ use crate::config::BenchConfig;
 use crate::report::{BenchReport, BenchSample};
 use anyhow::Result;
 use chrono::Utc;
-use fhir_autotest::config::models::TestConfig;
+use fhir_autotest::config::models::{TestConfig, WriteEndpoint};
 use fhir_autotest::generate::model::TestPlan;
 use rand::Rng;
 use rand::SeedableRng;
@@ -18,6 +18,12 @@ pub struct BenchRunner {
     test_config: TestConfig,
     plan: TestPlan,
     client: reqwest::Client,
+    /// IDs uploaded during data ensure, keyed by resource type.
+    uploaded_ids: HashMap<String, Vec<String>>,
+    /// Order in which resources were uploaded (for reverse-order cleanup).
+    upload_order: Vec<String>,
+    /// The write endpoint used for upload (reused for cleanup).
+    write_endpoint: WriteEndpoint,
 }
 
 impl BenchRunner {
@@ -67,9 +73,11 @@ impl BenchRunner {
         let client = client_builder.build()?;
 
         // 4. Ensure data exists (generate + upload if needed)
-        if !bench_config.skip_data_ensure {
-            ensure_data_exists(&test_config).await?;
-        }
+        let (uploaded_ids, upload_order, write_endpoint) = if !bench_config.skip_data_ensure {
+            ensure_data_exists(&test_config).await?
+        } else {
+            (HashMap::new(), Vec::new(), test_config.write_endpoint())
+        };
 
         // 5. Load or generate the test plan
         let plan = load_or_generate_plan(&test_config, &bench_config).await?;
@@ -79,6 +87,9 @@ impl BenchRunner {
             test_config,
             plan,
             client,
+            uploaded_ids,
+            upload_order,
+            write_endpoint,
         })
     }
 
@@ -298,17 +309,50 @@ impl BenchRunner {
             format_duration(report.latency_p99_us));
         println!("  Report:     {}/", output_dir.display());
 
+        // 6. Cleanup: delete uploaded resources
+        if !self.bench_config.skip_cleanup && !self.uploaded_ids.is_empty() {
+            let concurrency = match &self.write_endpoint {
+                WriteEndpoint::Repository { concurrency, .. }
+                | WriteEndpoint::Server { concurrency, .. } => *concurrency,
+            };
+            let write_url = match &self.write_endpoint {
+                WriteEndpoint::Repository { base_url, .. }
+                | WriteEndpoint::Server { base_url, .. } => base_url.as_str(),
+            };
+            println!(
+                "\n── Cleanup: deleting {} resource types from {} ──",
+                self.uploaded_ids.len(),
+                write_url,
+            );
+            if let Err(e) = fhir_autotest::runner::bulk_loader::delete_all_resources(
+                &self.uploaded_ids,
+                &self.upload_order,
+                &self.write_endpoint,
+                concurrency,
+            )
+            .await
+            {
+                tracing::warn!("Cleanup encountered errors: {:#}", e);
+                println!("  Cleanup completed with errors (see logs)");
+            } else {
+                println!("  Cleanup complete");
+            }
+        }
+
         Ok(report)
     }
 }
 
 /// Ensure data exists: generate resources and upload them if needed.
-async fn ensure_data_exists(test_config: &TestConfig) -> Result<()> {
+/// Returns (uploaded_ids, upload_order, write_endpoint) for cleanup.
+async fn ensure_data_exists(
+    test_config: &TestConfig,
+) -> Result<(HashMap<String, Vec<String>>, Vec<String>, WriteEndpoint)> {
     let has_bulk_data = !test_config.data_generation.counts.is_empty();
 
     if !has_bulk_data {
         tracing::info!("No bulk data configured — skipping data ensure step");
-        return Ok(());
+        return Ok((HashMap::new(), Vec::new(), test_config.write_endpoint()));
     }
 
     // Check if data already exists by looking for NDJSON files
@@ -318,8 +362,6 @@ async fn ensure_data_exists(test_config: &TestConfig) -> Result<()> {
 
     if combined_path.exists() {
         tracing::info!("Bulk data already exists at {}", data_dir.display());
-        // Check if we need to upload (data exists but may not be on server)
-        // For now, we always re-upload to ensure data is present
     }
 
     // Run the generate + upload pipeline from fhir-autotest
@@ -360,7 +402,7 @@ async fn ensure_data_exists(test_config: &TestConfig) -> Result<()> {
 
     if test_config.data_generation.generate_only {
         tracing::info!("generate_only = true: NDJSON files left in {}/data/", test_config.output);
-        return Ok(());
+        return Ok((HashMap::new(), Vec::new(), test_config.write_endpoint()));
     }
 
     // Upload the bulk data
@@ -375,7 +417,7 @@ async fn ensure_data_exists(test_config: &TestConfig) -> Result<()> {
     };
 
     tracing::info!("Uploading bulk data...");
-    let _uploaded_ids = fhir_autotest::runner::bulk_loader::upload_ndjson_files(
+    let uploaded_ids = fhir_autotest::runner::bulk_loader::upload_ndjson_files(
         &data_dir,
         &upload_order,
         &write_endpoint,
@@ -384,7 +426,7 @@ async fn ensure_data_exists(test_config: &TestConfig) -> Result<()> {
     .await?;
 
     tracing::info!("Bulk data upload complete");
-    Ok(())
+    Ok((uploaded_ids, upload_order, write_endpoint))
 }
 
 /// Load an existing test plan or generate a new one.
