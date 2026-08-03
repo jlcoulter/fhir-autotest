@@ -185,95 +185,174 @@ impl BenchRunner {
         }
 
         // Main benchmark loop
-        tracing::info!("Benchmark running for {}s...", bench_cfg.duration_secs);
+        let is_oneshot = bench_cfg.duration_secs == 0;
+        if is_oneshot {
+            tracing::info!(
+                "Benchmark running in one-shot mode: {} test cases across {} workers",
+                all_tests.len(),
+                bench_cfg.concurrency,
+            );
+        } else {
+            tracing::info!(
+                "Benchmark running for {}s with {} workers...",
+                bench_cfg.duration_secs,
+                bench_cfg.concurrency,
+            );
+        }
         let mut handles = Vec::new();
         let concurrency = bench_cfg.concurrency;
 
-        // Spawn workers that continuously send requests
-        for worker_id in 0..concurrency {
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let client = self.client.clone();
-            let base_url = base_url.clone();
-            let tests = all_tests.clone();
-            let samples = samples.clone();
-            let start = start;
-            let duration = duration;
-            let ramp_up = ramp_up;
-            let worker_id = worker_id;
-
-            let handle = tokio::spawn(async move {
-                let _permit = permit;
-                let mut rng = rand::rngs::StdRng::seed_from_u64(worker_id as u64);
-
-                loop {
-                    let elapsed = start.elapsed();
-                    if elapsed >= duration {
-                        break;
-                    }
-
-                    // Ramp-up: gradually increase effective concurrency
-                    if ramp_up > Duration::ZERO {
-                        let ramp_progress = elapsed.as_secs_f64() / ramp_up.as_secs_f64();
-                        let effective_workers = (worker_id as f64 + 1.0) / concurrency as f64;
-                        if effective_workers > ramp_progress.min(1.0) {
-                            tokio::time::sleep(Duration::from_millis(50)).await;
-                            continue;
-                        }
-                    }
-
-                    // Pick a random test case
-                    let idx = rng.random_range(0..tests.len());
-                    let (group_name, test) = &tests[idx];
-
-                    let url = format!("{}{}", base_url, test.request.url);
-                    let request_start = Instant::now();
-
-                    let result = match test.request.method.as_str() {
-                        "GET" => client.get(&url).send().await,
-                        "POST" => {
-                            let body = test.request.body.as_ref().map(|b| serde_json::to_vec(b));
-                            match body {
-                                Some(Ok(bytes)) => client.post(&url).body(bytes).send().await,
-                                _ => client.post(&url).send().await,
-                            }
-                        }
-                        "PUT" => {
-                            let body = test.request.body.as_ref().map(|b| serde_json::to_vec(b));
-                            match body {
-                                Some(Ok(bytes)) => client.put(&url).body(bytes).send().await,
-                                _ => client.put(&url).send().await,
-                            }
-                        }
-                        "DELETE" => client.delete(&url).send().await,
-                        _ => client.get(&url).send().await,
-                    };
-
-                    let latency_us = request_start.elapsed().as_micros() as u64;
-                    let (status_code, passed) = match &result {
-                        Ok(resp) => {
-                            let sc = resp.status().as_u16();
-                            let ok = sc >= 200 && sc < 500; // 5xx is a failure
-                            (sc, ok)
-                        }
-                        Err(_) => (0, false),
-                    };
-
-                    let sample = BenchSample {
-                        test_group: group_name.clone(),
-                        test_name: test.name.clone(),
-                        request_method: test.request.method.clone(),
-                        request_url: url,
-                        status_code,
-                        latency_us,
-                        passed,
-                        timestamp: Utc::now(),
-                    };
-
-                    samples.lock().unwrap().push(sample);
+        if is_oneshot {
+            // One-shot mode: distribute all test cases across workers, each runs once
+            let chunk_size = (all_tests.len() + concurrency - 1) / concurrency;
+            for worker_id in 0..concurrency {
+                let start_idx = worker_id * chunk_size;
+                let end_idx = std::cmp::min(start_idx + chunk_size, all_tests.len());
+                if start_idx >= all_tests.len() {
+                    break;
                 }
-            });
+                let worker_tests: Vec<_> = all_tests[start_idx..end_idx].to_vec();
+                let client = self.client.clone();
+                let base_url = base_url.clone();
+                let samples = samples.clone();
 
-            handles.push(handle);
+                let handle = tokio::spawn(async move {
+                    for (group_name, test) in &worker_tests {
+                        let url = format!("{}{}", base_url, test.request.url);
+                        let request_start = Instant::now();
+
+                        let result = match test.request.method.as_str() {
+                            "GET" => client.get(&url).send().await,
+                            "POST" => {
+                                let body = test.request.body.as_ref().map(|b| serde_json::to_vec(b));
+                                match body {
+                                    Some(Ok(bytes)) => client.post(&url).body(bytes).send().await,
+                                    _ => client.post(&url).send().await,
+                                }
+                            }
+                            "PUT" => {
+                                let body = test.request.body.as_ref().map(|b| serde_json::to_vec(b));
+                                match body {
+                                    Some(Ok(bytes)) => client.put(&url).body(bytes).send().await,
+                                    _ => client.put(&url).send().await,
+                                }
+                            }
+                            "DELETE" => client.delete(&url).send().await,
+                            _ => client.get(&url).send().await,
+                        };
+
+                        let latency_us = request_start.elapsed().as_micros() as u64;
+                        let (status_code, passed) = match &result {
+                            Ok(resp) => {
+                                let sc = resp.status().as_u16();
+                                let ok = sc >= 200 && sc < 500;
+                                (sc, ok)
+                            }
+                            Err(_) => (0, false),
+                        };
+
+                        let sample = BenchSample {
+                            test_group: group_name.clone(),
+                            test_name: test.name.clone(),
+                            request_method: test.request.method.clone(),
+                            request_url: url,
+                            status_code,
+                            latency_us,
+                            passed,
+                            timestamp: Utc::now(),
+                        };
+                        samples.lock().unwrap().push(sample);
+                    }
+                });
+                handles.push(handle);
+            }
+        } else {
+            // Duration mode: spawn workers that continuously send requests
+            for worker_id in 0..concurrency {
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                let client = self.client.clone();
+                let base_url = base_url.clone();
+                let tests = all_tests.clone();
+                let samples = samples.clone();
+                let start = start;
+                let duration = duration;
+                let ramp_up = ramp_up;
+                let worker_id = worker_id;
+
+                let handle = tokio::spawn(async move {
+                    let _permit = permit;
+                    let mut rng = rand::rngs::StdRng::seed_from_u64(worker_id as u64);
+
+                    loop {
+                        let elapsed = start.elapsed();
+                        if elapsed >= duration {
+                            break;
+                        }
+
+                        // Ramp-up: gradually increase effective concurrency
+                        if ramp_up > Duration::ZERO {
+                            let ramp_progress = elapsed.as_secs_f64() / ramp_up.as_secs_f64();
+                            let effective_workers = (worker_id as f64 + 1.0) / concurrency as f64;
+                            if effective_workers > ramp_progress.min(1.0) {
+                                tokio::time::sleep(Duration::from_millis(50)).await;
+                                continue;
+                            }
+                        }
+
+                        // Pick a random test case
+                        let idx = rng.random_range(0..tests.len());
+                        let (group_name, test) = &tests[idx];
+
+                        let url = format!("{}{}", base_url, test.request.url);
+                        let request_start = Instant::now();
+
+                        let result = match test.request.method.as_str() {
+                            "GET" => client.get(&url).send().await,
+                            "POST" => {
+                                let body = test.request.body.as_ref().map(|b| serde_json::to_vec(b));
+                                match body {
+                                    Some(Ok(bytes)) => client.post(&url).body(bytes).send().await,
+                                    _ => client.post(&url).send().await,
+                                }
+                            }
+                            "PUT" => {
+                                let body = test.request.body.as_ref().map(|b| serde_json::to_vec(b));
+                                match body {
+                                    Some(Ok(bytes)) => client.put(&url).body(bytes).send().await,
+                                    _ => client.put(&url).send().await,
+                                }
+                            }
+                            "DELETE" => client.delete(&url).send().await,
+                            _ => client.get(&url).send().await,
+                        };
+
+                        let latency_us = request_start.elapsed().as_micros() as u64;
+                        let (status_code, passed) = match &result {
+                            Ok(resp) => {
+                                let sc = resp.status().as_u16();
+                                let ok = sc >= 200 && sc < 500; // 5xx is a failure
+                                (sc, ok)
+                            }
+                            Err(_) => (0, false),
+                        };
+
+                        let sample = BenchSample {
+                            test_group: group_name.clone(),
+                            test_name: test.name.clone(),
+                            request_method: test.request.method.clone(),
+                            request_url: url,
+                            status_code,
+                            latency_us,
+                            passed,
+                            timestamp: Utc::now(),
+                        };
+
+                        samples.lock().unwrap().push(sample);
+                    }
+                });
+
+                handles.push(handle);
+            }
         }
 
         // Wait for all workers to finish
