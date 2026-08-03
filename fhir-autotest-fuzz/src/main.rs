@@ -5,22 +5,23 @@ use clap::Parser;
 #[command(about = "FHIR REST API fuzzer — context-aware mutation testing for FHIR servers")]
 #[command(version)]
 struct Cli {
-    /// Path to the IG package (.tgz) whose profiles drive mutation generation.
+    /// Path to the IG package (.tgz). Overrides `package` in config file.
     #[arg(short, long)]
-    package: String,
+    package: Option<String>,
 
-    /// Base URL of the FHIR server to fuzz.
-    /// Required unless --mock is used.
+    /// Base URL of the FHIR server to fuzz. Overrides `server.base_url` in config file.
+    /// Required unless --mock is used or config has a server URL.
     #[arg(short, long)]
     target: Option<String>,
 
-    /// Path to a config file (TOML). Overrides individual flags when set.
-    #[arg(short, long)]
-    config: Option<String>,
+    /// Path to config file (TOML). Defaults to ./config.toml.
+    /// Fields: package, server.base_url, mock, mock_port, output, dry_run.
+    #[arg(short, long, default_value = "./config.toml")]
+    config: String,
 
-    /// Output directory for fuzz results (default: ./fuzz-output).
-    #[arg(short, long, default_value = "./fuzz-output")]
-    output: String,
+    /// Output directory for fuzz results. Overrides `output` in config file.
+    #[arg(short, long)]
+    output: Option<String>,
 
     /// Number of fuzz iterations per resource type (default: 100).
     #[arg(short, long, default_value_t = 100)]
@@ -40,14 +41,17 @@ struct Cli {
     concurrency: usize,
 
     /// Dry-run: print what would be sent without executing.
+    /// Overrides `dry_run` in config file.
     #[arg(long)]
     dry_run: bool,
 
-    /// Use the built-in mock FHIR server instead of --target.
+    /// Use the built-in mock FHIR server instead of --target or config's server URL.
+    /// Overrides `mock` in config file.
     #[arg(long)]
     mock: bool,
 
     /// Port for the mock server (default: 0 = random).
+    /// Overrides `mock_port` in config file.
     #[arg(long, default_value_t = 0)]
     mock_port: u16,
 }
@@ -63,17 +67,53 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    // Load config file — provides defaults for package, target, mock, output, dry_run
+    let config = fhir_autotest::TestConfig::load(&cli.config).ok();
+
+    // Resolve package path: CLI flag wins, then config file
+    let package = cli
+        .package
+        .or_else(|| config.as_ref().and_then(|c| c.package.clone()))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No IG package specified. Set 'package' in config file or use --package."
+            )
+        })?;
+
+    // Resolve mock mode: CLI --mock wins, then config.mock
+    let use_mock = cli.mock || config.as_ref().map(|c| c.mock).unwrap_or(false);
+
+    // Resolve mock port: CLI --mock-port wins, then config.mock_port, then 0
+    let mock_port = if cli.mock_port != 0 {
+        cli.mock_port
+    } else {
+        config.as_ref().map(|c| c.mock_port).unwrap_or(0)
+    };
+
     // Resolve target URL
-    let target_url: String = if cli.mock {
-        let addr = fhir_autotest::mock_server::start_mock_server(cli.mock_port).await?;
+    let target_url: String = if use_mock {
+        let addr = fhir_autotest::mock_server::start_mock_server(mock_port).await?;
         let url = format!("http://{}/fhir", addr);
         println!("Mock FHIR server running at {}", url);
         url
     } else if let Some(target) = cli.target {
         target
+    } else if let Some(cfg) = &config {
+        cfg.server.base_url.clone()
     } else {
-        anyhow::bail!("Either --target <URL> or --mock is required");
+        anyhow::bail!(
+            "No target server. Provide --target <URL>, --mock, or set server.base_url in config."
+        );
     };
+
+    // Resolve output directory: CLI flag wins, then config.output, then default
+    let output = cli
+        .output
+        .or_else(|| config.as_ref().map(|c| c.output.clone()))
+        .unwrap_or_else(|| "./fuzz-output".to_string());
+
+    // Resolve dry-run: CLI --dry-run wins, then config.dry_run
+    let dry_run = cli.dry_run || config.as_ref().map(|c| c.dry_run).unwrap_or(false);
 
     // Parse mutation categories
     let categories: Vec<&str> = if cli.mutations == "all" {
@@ -83,8 +123,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Parse the IG package to get profiles and structure definitions
-    println!("Parsing IG package: {}", cli.package);
-    let pkg = fhir_autotest::parse_package(&cli.package)?;
+    println!("Parsing IG package: {}", package);
+    let pkg = fhir_autotest::parse_package(&package)?;
     let profiles = &pkg.structure_definitions;
 
     println!(
@@ -95,11 +135,11 @@ async fn main() -> anyhow::Result<()> {
     // Build the fuzzer
     let mut fuzzer = fhir_autotest_fuzz::Fuzzer::new(
         &target_url,
-        &cli.output,
+        &output,
         cli.iterations,
         cli.seed,
         cli.concurrency,
-        cli.dry_run,
+        dry_run,
     );
 
     // Register mutation strategies
@@ -138,7 +178,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Total requests: {}", report.total);
     println!("Anomalies found: {}", report.anomalies);
     println!("Categories: {}", report.categories_used.join(", "));
-    println!("Output: {}", cli.output);
+    println!("Output: {}", output);
 
     Ok(())
 }
