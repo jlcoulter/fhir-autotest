@@ -145,3 +145,70 @@ impl Default for BenchConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bench_config_defaults() {
+        let cfg = BenchConfig::default();
+        assert_eq!(cfg.config_path, "./config.toml");
+        assert_eq!(cfg.concurrency, 10);
+        assert_eq!(cfg.duration_secs, 30);
+        assert_eq!(cfg.ramp_up_secs, 5);
+        assert_eq!(cfg.request_timeout_secs, 30);
+        assert_eq!(cfg.output, "./bench-results");
+        assert!(cfg.test_plan.is_none());
+        assert!(!cfg.skip_data_ensure);
+        assert!(!cfg.skip_cleanup);
+        assert!(cfg.filter_groups.is_empty());
+        assert_eq!(cfg.warmup_requests, 10);
+        assert!(!cfg.mock);
+        assert_eq!(cfg.mock_port, 0);
+    }
+
+    #[test]
+    fn bench_config_duration_methods() {
+        let cfg = BenchConfig::default();
+        assert_eq!(cfg.duration(), Duration::from_secs(30));
+        assert_eq!(cfg.ramp_up(), Duration::from_secs(5));
+        assert_eq!(cfg.request_timeout(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn bench_config_load_from_toml() {
+        let toml = r#"
+concurrency = 20
+duration_secs = 60
+ramp_up_secs = 10
+output = "./custom-bench"
+filter_groups = ["Patient", "Observation"]
+mock = true
+mock_port = 9999
+"#;
+        let cfg: BenchConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.concurrency, 20);
+        assert_eq!(cfg.duration_secs, 60);
+        assert_eq!(cfg.ramp_up_secs, 10);
+        assert_eq!(cfg.output, "./custom-bench");
+        assert_eq!(cfg.filter_groups, vec!["Patient", "Observation"]);
+        assert!(cfg.mock);
+        assert_eq!(cfg.mock_port, 9999);
+        // Defaults for unset fields
+        assert_eq!(cfg.config_path, "./config.toml");
+        assert_eq!(cfg.warmup_requests, 10);
+    }
+
+    #[test]
+    fn bench_config_partial_toml_uses_defaults() {
+        let toml = r#"
+concurrency = 5
+"#;
+        let cfg: BenchConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.concurrency, 5);
+        assert_eq!(cfg.duration_secs, 30); // default
+        assert_eq!(cfg.ramp_up_secs, 5);    // default
+        assert!(!cfg.mock);                 // default
+    }
+}

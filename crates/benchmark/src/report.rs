@@ -310,3 +310,142 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(us: u64, passed: bool, group: &str) -> BenchSample {
+        BenchSample {
+            test_group: group.to_string(),
+            test_name: "test-read".to_string(),
+            request_method: "GET".to_string(),
+            request_url: format!("http://fhir/Patient/{}", us),
+            status_code: if passed { 200 } else { 500 },
+            latency_us: us,
+            passed,
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn report_from_empty_samples() {
+        let report = BenchReport::from_samples(vec![], Duration::from_secs(10), 5);
+        assert_eq!(report.total_requests, 0);
+        assert_eq!(report.passed, 0);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.concurrency, 5);
+        assert_eq!(report.duration_secs, 10.0);
+        assert!(report.groups.is_empty());
+    }
+
+    #[test]
+    fn report_all_passed() {
+        let samples = vec![
+            sample(100, true, "Patient"),
+            sample(200, true, "Patient"),
+            sample(150, true, "Observation"),
+        ];
+        let report = BenchReport::from_samples(samples, Duration::from_secs(10), 1);
+        assert_eq!(report.total_requests, 3);
+        assert_eq!(report.passed, 3);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.groups.len(), 2);
+    }
+
+    #[test]
+    fn report_some_failed() {
+        let samples = vec![
+            sample(100, true, "Patient"),
+            sample(200, false, "Patient"),
+            sample(150, true, "Observation"),
+        ];
+        let report = BenchReport::from_samples(samples, Duration::from_secs(10), 1);
+        assert_eq!(report.total_requests, 3);
+        assert_eq!(report.passed, 2);
+        assert_eq!(report.failed, 1);
+    }
+
+    #[test]
+    fn report_latency_percentiles() {
+        let samples: Vec<_> = (1..=100)
+            .map(|i| sample(i * 10, true, "Patient"))
+            .collect();
+        let report = BenchReport::from_samples(samples, Duration::from_secs(10), 1);
+        // P50 should be around 500, P90 around 900, P99 around 990
+        assert!(report.latency_p50_us >= 400 && report.latency_p50_us <= 600);
+        assert!(report.latency_p90_us >= 800 && report.latency_p90_us <= 1000);
+        assert!(report.latency_p99_us >= 900 && report.latency_p99_us <= 1000);
+        assert_eq!(report.latency_min_us, 10);
+        assert_eq!(report.latency_max_us, 1000);
+    }
+
+    #[test]
+    fn report_per_group_stats() {
+        let samples = vec![
+            sample(100, true, "Patient"),
+            sample(200, true, "Patient"),
+            sample(300, false, "Observation"),
+        ];
+        let report = BenchReport::from_samples(samples, Duration::from_secs(10), 1);
+        let patient = report.groups.iter().find(|g| g.group == "Patient").unwrap();
+        assert_eq!(patient.total, 2);
+        assert_eq!(patient.passed, 2);
+        assert_eq!(patient.failed, 0);
+
+        let obs = report.groups.iter().find(|g| g.group == "Observation").unwrap();
+        assert_eq!(obs.total, 1);
+        assert_eq!(obs.passed, 0);
+        assert_eq!(obs.failed, 1);
+    }
+
+    #[test]
+    fn report_throughput_calculation() {
+        let samples = vec![sample(100, true, "Patient")];
+        let report = BenchReport::from_samples(samples, Duration::from_secs(2), 1);
+        // 1 request / 2 seconds = 0.5 req/s
+        assert!((report.throughput_req_per_sec - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn report_write_creates_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let samples = vec![sample(100, true, "Patient")];
+        let report = BenchReport::from_samples(samples, Duration::from_secs(1), 1);
+        report.write(dir.path()).unwrap();
+
+        assert!(dir.path().join("summary.json").exists());
+        assert!(dir.path().join("full_results.json").exists());
+        assert!(dir.path().join("report.txt").exists());
+        assert!(dir.path().join("report.html").exists());
+    }
+
+    #[test]
+    fn report_summary_omits_samples() {
+        let dir = tempfile::tempdir().unwrap();
+        let samples = vec![sample(100, true, "Patient")];
+        let report = BenchReport::from_samples(samples, Duration::from_secs(1), 1);
+        report.write(dir.path()).unwrap();
+
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("summary.json")).unwrap())
+                .unwrap();
+        // Summary should not contain raw samples
+        assert!(summary.get("samples").map_or(true, |v| v.as_array().map_or(true, |a| a.is_empty())));
+    }
+
+    #[test]
+    fn format_duration_us_various_units() {
+        assert_eq!(format_duration_us(500), "500μs");
+        assert_eq!(format_duration_us(1500), "1.5ms");
+        assert_eq!(format_duration_us(1_000_000), "1.00s");
+        assert_eq!(format_duration_us(2_500_000), "2.50s");
+    }
+
+    #[test]
+    fn html_escape_special_chars() {
+        assert_eq!(html_escape("Patient & Observation"), "Patient &amp; Observation");
+        assert_eq!(html_escape("<script>"), "&lt;script&gt;");
+        assert_eq!(html_escape("say \"hi\""), "say &quot;hi&quot;");
+    }
+}
