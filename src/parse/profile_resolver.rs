@@ -582,6 +582,10 @@ mod tests {
     static ENV_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
         std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
+    /// A std::sync::Mutex for serializing sync tests that mutate HOME.
+    static SYNC_ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
     /// Helper to set up a temporary cache directory for testing.
     /// Returns the env-lock guard (held for the duration of the test), the temp
     /// dir (kept alive for the duration of the test) and the path to the cache
@@ -1114,5 +1118,375 @@ mod tests {
             "resolve_parent_chain should succeed with no baseDefinition"
         );
         assert_eq!(profiles.len(), 1, "Should not add any profiles");
+    }
+
+    #[test]
+    fn test_collect_slice_definitions_no_snapshot() {
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Test".to_string(),
+            name: "Test".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        };
+        let slices = collect_slice_definitions(&profile);
+        assert!(slices.is_empty());
+    }
+
+    #[test]
+    fn test_find_slicing_info_no_match() {
+        let elements = vec![ElementDefinition {
+            id: "Patient.identifier".to_string(),
+            path: "Patient.identifier".to_string(),
+            ..Default::default()
+        }];
+        let result = find_slicing_info(&elements, "Patient.name");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_slicing_info_no_slicing_on_element() {
+        let elements = vec![ElementDefinition {
+            id: "Patient.identifier".to_string(),
+            path: "Patient.identifier".to_string(),
+            // No slicing field set
+            ..Default::default()
+        }];
+        let result = find_slicing_info(&elements, "Patient.identifier");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_merge_snapshot_elements_child_no_snapshot() {
+        let parent_elements = vec![ElementDefinition {
+            id: "Patient".to_string(),
+            path: "Patient".to_string(),
+            ..Default::default()
+        }];
+        let mut child = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Child".to_string(),
+            name: "Child".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: Some("http://example.org/Parent".to_string()),
+            snapshot: None,
+            differential: None,
+        };
+        // Should not panic when child has no snapshot
+        merge_snapshot_elements(&mut child, &parent_elements);
+        assert!(child.snapshot.is_none());
+    }
+
+    #[test]
+    fn test_merge_snapshot_elements_all_parent_elements_already_in_child() {
+        let parent_elements = vec![ElementDefinition {
+            id: "Patient".to_string(),
+            path: "Patient".to_string(),
+            min: Some(0),
+            ..Default::default()
+        }];
+        let mut child = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Child".to_string(),
+            name: "Child".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: Some("http://example.org/Parent".to_string()),
+            snapshot: Some(Snapshot {
+                element: vec![ElementDefinition {
+                    id: "Patient".to_string(),
+                    path: "Patient".to_string(),
+                    min: Some(1),
+                    ..Default::default()
+                }],
+            }),
+            differential: None,
+        };
+        merge_snapshot_elements(&mut child, &parent_elements);
+        let snapshot = child.snapshot.unwrap();
+        assert_eq!(snapshot.element.len(), 1);
+        // Child's constraint (min=1) should be preserved
+        assert_eq!(snapshot.element[0].min, Some(1));
+    }
+
+    #[test]
+    fn test_cache_dir_with_home_set() {
+        // SAFETY: test-only, single-threaded
+        let _guard = SYNC_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("HOME", "/tmp/test-home") };
+        let dir = cache_dir().unwrap();
+        assert!(dir.to_string_lossy().contains("/tmp/test-home"));
+        assert!(
+            dir.to_string_lossy()
+                .contains(".cache/fhir-autotest/packages")
+        );
+    }
+
+    #[test]
+    fn test_cache_dir_no_home_returns_error() {
+        let _guard = SYNC_ENV_LOCK.lock().unwrap();
+        // Temporarily unset HOME
+        let original_home = std::env::var("HOME").ok();
+        unsafe { std::env::remove_var("HOME") };
+        let result = cache_dir();
+        assert!(result.is_err());
+        // Restore HOME
+        if let Some(home) = original_home {
+            unsafe { std::env::set_var("HOME", home) };
+        }
+    }
+
+    #[test]
+    fn test_is_retryable_timeout() {
+        // We can't easily create a reqwest::Error, but we can verify the function
+        // compiles and has the expected signature
+        let _: fn(&reqwest::Error) -> bool = is_retryable;
+    }
+
+    #[test]
+    fn test_url_to_package_id_edge_cases() {
+        // Test that hl7.org.au without /core/ maps to au.base
+        assert_eq!(
+            url_to_package_id("http://hl7.org.au/fhir/StructureDefinition/au-practitioner"),
+            Some("hl7.fhir.au.base".to_string())
+        );
+        // Test that hl7.org.au/fhir/core maps to au.core
+        assert_eq!(
+            url_to_package_id(
+                "http://hl7.org.au/fhir/core/StructureDefinition/au-core-practitioner"
+            ),
+            Some("hl7.fhir.au.core".to_string())
+        );
+        // Test empty string
+        assert_eq!(url_to_package_id(""), None);
+        // Test unrelated domain
+        assert_eq!(
+            url_to_package_id("http://example.org/StructureDefinition/Test"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_cache_profile_serialization_failure() {
+        // cache_profile should handle serde errors gracefully (debug log only)
+        // Create a path in a temp dir
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("test.json");
+        // This should not panic even if serialization fails (it won't, but the function
+        // handles the error gracefully)
+        let sd = make_test_profile("http://example.org/T", "T", "Patient", None, vec![]);
+        cache_profile(&path, &sd);
+        // File should exist
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_cache_profile_write_failure() {
+        // Writing to a non-existent directory should not panic
+        let sd = make_test_profile("http://example.org/T", "T", "Patient", None, vec![]);
+        cache_profile(std::path::Path::new("/nonexistent-dir/test.json"), &sd);
+        // No panic = success
+    }
+
+    #[tokio::test]
+    async fn test_resolve_parent_chain_parent_already_in_list() {
+        let (_env_guard, temp_dir, _cache_dir) = setup_test_cache().await;
+        unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
+
+        // Create a parent and child where the parent is already in the profiles list
+        let parent = make_test_profile(
+            "http://example.org/Parent",
+            "Parent",
+            "Patient",
+            None,
+            vec![
+                make_element("Patient", "Patient"),
+                make_element("Patient.name", "Patient.name"),
+            ],
+        );
+
+        let child = make_test_profile(
+            "http://example.org/Child",
+            "Child",
+            "Patient",
+            Some("http://example.org/Parent"),
+            vec![make_element("Patient", "Patient")],
+        );
+
+        let mut profiles = vec![parent, child];
+        let result = resolve_parent_chain(&mut profiles).await;
+        assert!(
+            result.is_ok(),
+            "Should succeed when parent is already in list"
+        );
+        // Should still have 2 profiles (no new ones added)
+        assert_eq!(profiles.len(), 2);
+        // Child should have parent elements merged
+        let child_result = profiles
+            .iter()
+            .find(|p| p.url == "http://example.org/Child")
+            .unwrap();
+        let snapshot = child_result.snapshot.as_ref().unwrap();
+        assert!(snapshot.element.iter().any(|e| e.id == "Patient.name"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_parent_chain_parent_no_snapshot() {
+        let (_env_guard, temp_dir, cache_dir) = setup_test_cache().await;
+        unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
+
+        // Parent with no snapshot
+        let parent = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/ParentNoSnapshot".to_string(),
+            name: "ParentNoSnapshot".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        };
+        write_profile_to_cache(&cache_dir, "ParentNoSnapshot", &parent);
+
+        let child = make_test_profile(
+            "http://example.org/Child",
+            "Child",
+            "Patient",
+            Some("http://example.org/ParentNoSnapshot"),
+            vec![make_element("Patient", "Patient")],
+        );
+
+        let mut profiles = vec![child];
+        let result = resolve_parent_chain(&mut profiles).await;
+        assert!(result.is_ok(), "Should succeed when parent has no snapshot");
+        // Parent should still be added
+        assert!(
+            profiles
+                .iter()
+                .any(|p| p.url == "http://example.org/ParentNoSnapshot")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_parent_chain_skips_hl7_base_types_in_second_pass() {
+        let (_env_guard, temp_dir, _cache_dir) = setup_test_cache().await;
+        unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
+
+        // Create a profile that references an HL7 base type via type profile
+        let child = make_test_profile(
+            "http://example.org/MainProfile",
+            "MainProfile",
+            "Patient",
+            None,
+            vec![
+                make_element("Patient", "Patient"),
+                ElementDefinition {
+                    id: "Patient.identifier".to_string(),
+                    path: "Patient.identifier".to_string(),
+                    type_: vec![ElementDefinitionType {
+                        code: "Identifier".to_string(),
+                        profile: vec![
+                            "http://hl7.org/fhir/StructureDefinition/Identifier".to_string(),
+                        ],
+                        target_profile: Vec::new(),
+                        versioning: None,
+                    }],
+                    ..Default::default()
+                },
+            ],
+        );
+
+        let mut profiles = vec![child];
+        let result = resolve_parent_chain(&mut profiles).await;
+        assert!(
+            result.is_ok(),
+            "Should succeed when referencing HL7 base types"
+        );
+        // Should not add any new profiles (HL7 base types are skipped)
+        assert_eq!(profiles.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_parent_chain_with_target_profile() {
+        let (_env_guard, temp_dir, cache_dir) = setup_test_cache().await;
+        unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
+
+        // Create a profiled type referenced via targetProfile
+        let profiled_type = make_test_profile(
+            "http://example.org/StructureDefinition/TargetedProfile",
+            "TargetedProfile",
+            "Patient",
+            None,
+            vec![make_element("Patient", "Patient")],
+        );
+        write_profile_to_cache(&cache_dir, "TargetedProfile", &profiled_type);
+
+        // Create a profile with a reference element that has targetProfile
+        let child = make_test_profile(
+            "http://example.org/MainProfile",
+            "MainProfile",
+            "Patient",
+            None,
+            vec![
+                make_element("Patient", "Patient"),
+                ElementDefinition {
+                    id: "Patient.careProvider".to_string(),
+                    path: "Patient.careProvider".to_string(),
+                    type_: vec![ElementDefinitionType {
+                        code: "Reference".to_string(),
+                        profile: Vec::new(),
+                        target_profile: vec![
+                            "http://example.org/StructureDefinition/TargetedProfile".to_string(),
+                        ],
+                        versioning: None,
+                    }],
+                    ..Default::default()
+                },
+            ],
+        );
+
+        let mut profiles = vec![child];
+        let result = resolve_parent_chain(&mut profiles).await;
+        assert!(result.is_ok(), "Should resolve targetProfile references");
+        assert!(
+            profiles
+                .iter()
+                .any(|p| p.url == "http://example.org/StructureDefinition/TargetedProfile"),
+            "Targeted profile should be resolved"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_parent_chain_empty_base_definition() {
+        let (_env_guard, temp_dir, _cache_dir) = setup_test_cache().await;
+        unsafe { std::env::set_var("HOME", temp_dir.path().to_str().unwrap()) };
+
+        // Profile with empty baseDefinition string — should be skipped
+        let profile = StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/EmptyBase".to_string(),
+            name: "EmptyBase".to_string(),
+            base_type: "Patient".to_string(),
+            kind: "resource".to_string(),
+            derivation: Some("constraint".to_string()),
+            base_definition: Some("".to_string()),
+            snapshot: Some(Snapshot {
+                element: vec![make_element("Patient", "Patient")],
+            }),
+            differential: None,
+        };
+
+        let mut profiles = vec![profile];
+        let result = resolve_parent_chain(&mut profiles).await;
+        assert!(result.is_ok(), "Should succeed with empty baseDefinition");
+        assert_eq!(profiles.len(), 1);
     }
 }

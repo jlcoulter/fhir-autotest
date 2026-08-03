@@ -484,3 +484,381 @@ impl TestPlan {
         self.test_groups.iter().map(|g| g.tests.len()).sum()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── ResponseAssertion ──────────────────────────────────────────────
+
+    #[test]
+    fn response_assertion_none_has_all_defaults() {
+        let a = ResponseAssertion::none();
+        assert!(a.bundle_type.is_none());
+        assert!(a.min_entries.is_none());
+        assert!(a.max_entries.is_none());
+        assert!(a.resource_types.is_empty());
+        assert!(a.field_values.is_empty());
+        assert!(a.include_types.is_empty());
+        assert!(a.include_requires_distinct_from.is_none());
+        assert!(a.sort_by.is_none());
+        assert!(a.absent_fields.is_empty());
+        assert!(a.outcome_severity.is_none());
+        assert!(a.required_fields.is_empty());
+        assert!(a.response_contains_key.is_none());
+        assert!(a.response_resource_types.is_empty());
+        assert!(a.bundle_total_present.is_none());
+        assert!(a.summary_mode.is_none());
+        assert!(a.accept_statuses.is_empty());
+        assert!(a.required_bindings.is_empty());
+        assert!(a.slice_assertions.is_empty());
+        assert!(a.required_extensions.is_empty());
+        assert!(a.type_constraints.is_empty());
+        assert!(a.reference_targets.is_empty());
+        assert!(a.operation_output_params.is_empty());
+    }
+
+    // ── Interaction ────────────────────────────────────────────────────
+
+    #[test]
+    fn interaction_from_code_all_variants() {
+        assert_eq!(Interaction::from_code("read"), Some(Interaction::Read));
+        assert_eq!(Interaction::from_code("vread"), Some(Interaction::Vread));
+        assert_eq!(Interaction::from_code("update"), Some(Interaction::Update));
+        assert_eq!(Interaction::from_code("patch"), Some(Interaction::Patch));
+        assert_eq!(Interaction::from_code("delete"), Some(Interaction::Delete));
+        assert_eq!(Interaction::from_code("create"), Some(Interaction::Create));
+        assert_eq!(
+            Interaction::from_code("search-type"),
+            Some(Interaction::SearchType)
+        );
+        assert_eq!(
+            Interaction::from_code("history-instance"),
+            Some(Interaction::HistoryInstance)
+        );
+        assert_eq!(
+            Interaction::from_code("history-type"),
+            Some(Interaction::HistoryType)
+        );
+    }
+
+    #[test]
+    fn interaction_from_code_unknown_becomes_operation() {
+        let result = Interaction::from_code("my-custom-op");
+        assert!(result.is_some());
+        match result.unwrap() {
+            Interaction::Operation(name) => assert_eq!(name, "my-custom-op"),
+            other => panic!("Expected Operation variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn interaction_http_method_get_variants() {
+        assert_eq!(Interaction::Read.http_method(), "GET");
+        assert_eq!(Interaction::Vread.http_method(), "GET");
+        assert_eq!(Interaction::SearchType.http_method(), "GET");
+        assert_eq!(Interaction::HistoryInstance.http_method(), "GET");
+        assert_eq!(Interaction::HistoryType.http_method(), "GET");
+    }
+
+    #[test]
+    fn interaction_http_method_mutate_variants() {
+        assert_eq!(Interaction::Create.http_method(), "POST");
+        assert_eq!(Interaction::Update.http_method(), "PUT");
+        assert_eq!(Interaction::Patch.http_method(), "PATCH");
+        assert_eq!(Interaction::Delete.http_method(), "DELETE");
+        assert_eq!(
+            Interaction::Operation("export".into()).http_method(),
+            "POST"
+        );
+    }
+
+    #[test]
+    fn interaction_label_operation() {
+        assert_eq!(
+            Interaction::Operation("export".into()).label(),
+            "operation-export"
+        );
+        assert_eq!(
+            Interaction::Operation("patient-everything".into()).label(),
+            "operation-patient-everything"
+        );
+    }
+
+    #[test]
+    fn interaction_label_non_operation() {
+        assert_eq!(Interaction::Read.label(), "read");
+        assert_eq!(Interaction::Vread.label(), "vread");
+        assert_eq!(Interaction::Create.label(), "create");
+        assert_eq!(Interaction::Update.label(), "update");
+        assert_eq!(Interaction::Delete.label(), "delete");
+        assert_eq!(Interaction::Patch.label(), "patch");
+        assert_eq!(Interaction::SearchType.label(), "searchtype");
+        assert_eq!(Interaction::HistoryInstance.label(), "historyinstance");
+        assert_eq!(Interaction::HistoryType.label(), "historytype");
+    }
+
+    // ── SearchModifier ─────────────────────────────────────────────────
+
+    #[test]
+    fn search_modifier_applicable_to_string() {
+        let mods = SearchModifier::applicable_to("string");
+        assert!(mods.contains(&SearchModifier::Missing));
+        assert!(mods.contains(&SearchModifier::Exact));
+        assert!(mods.contains(&SearchModifier::Contains));
+        assert_eq!(mods.len(), 3);
+    }
+
+    #[test]
+    fn search_modifier_applicable_to_token() {
+        let mods = SearchModifier::applicable_to("token");
+        assert!(mods.contains(&SearchModifier::Missing));
+        assert!(mods.contains(&SearchModifier::Not));
+        assert!(mods.contains(&SearchModifier::Text));
+        assert_eq!(mods.len(), 3);
+    }
+
+    #[test]
+    fn search_modifier_applicable_to_reference() {
+        let mods = SearchModifier::applicable_to("reference");
+        assert!(mods.contains(&SearchModifier::Missing));
+        assert_eq!(mods.len(), 1);
+    }
+
+    #[test]
+    fn search_modifier_applicable_to_uri() {
+        let mods = SearchModifier::applicable_to("uri");
+        assert!(mods.contains(&SearchModifier::Missing));
+        assert_eq!(mods.len(), 1);
+    }
+
+    #[test]
+    fn search_modifier_applicable_to_unknown() {
+        let mods = SearchModifier::applicable_to("number");
+        assert!(mods.contains(&SearchModifier::Missing));
+        assert_eq!(mods.len(), 1);
+    }
+
+    #[test]
+    fn search_modifier_suffix_values() {
+        assert_eq!(SearchModifier::Exact.suffix(), ":exact");
+        assert_eq!(SearchModifier::Contains.suffix(), ":contains");
+        assert_eq!(SearchModifier::Missing.suffix(), ":missing");
+        assert_eq!(SearchModifier::Not.suffix(), ":not");
+        assert_eq!(SearchModifier::Above.suffix(), ":above");
+        assert_eq!(SearchModifier::Below.suffix(), ":below");
+        assert_eq!(SearchModifier::Text.suffix(), ":text");
+        assert_eq!(SearchModifier::In.suffix(), ":in");
+        assert_eq!(SearchModifier::NotIn.suffix(), ":not-in");
+        assert_eq!(SearchModifier::BelowType.suffix(), ":below");
+        assert_eq!(SearchModifier::AboveType.suffix(), ":above");
+    }
+
+    #[test]
+    fn search_modifier_parse_all() {
+        assert_eq!(
+            SearchModifier::parse_modifier("exact"),
+            Some(SearchModifier::Exact)
+        );
+        assert_eq!(
+            SearchModifier::parse_modifier("contains"),
+            Some(SearchModifier::Contains)
+        );
+        assert_eq!(
+            SearchModifier::parse_modifier("missing"),
+            Some(SearchModifier::Missing)
+        );
+        assert_eq!(
+            SearchModifier::parse_modifier("not"),
+            Some(SearchModifier::Not)
+        );
+        assert_eq!(
+            SearchModifier::parse_modifier("above"),
+            Some(SearchModifier::Above)
+        );
+        assert_eq!(
+            SearchModifier::parse_modifier("below"),
+            Some(SearchModifier::Below)
+        );
+        assert_eq!(
+            SearchModifier::parse_modifier("text"),
+            Some(SearchModifier::Text)
+        );
+        assert_eq!(
+            SearchModifier::parse_modifier("in"),
+            Some(SearchModifier::In)
+        );
+        assert_eq!(
+            SearchModifier::parse_modifier("not-in"),
+            Some(SearchModifier::NotIn)
+        );
+        assert_eq!(SearchModifier::parse_modifier("unknown"), None);
+    }
+
+    // ── SearchPrefix ───────────────────────────────────────────────────
+
+    #[test]
+    fn search_prefix_applicable_to_number() {
+        let prefixes = SearchPrefix::applicable_to("number");
+        assert!(prefixes.contains(&SearchPrefix::Eq));
+        assert!(prefixes.contains(&SearchPrefix::Ne));
+        assert!(prefixes.contains(&SearchPrefix::Gt));
+        assert!(prefixes.contains(&SearchPrefix::Lt));
+        assert!(prefixes.contains(&SearchPrefix::Ge));
+        assert!(prefixes.contains(&SearchPrefix::Le));
+        assert!(!prefixes.contains(&SearchPrefix::Sa));
+        assert!(!prefixes.contains(&SearchPrefix::Eb));
+        assert!(!prefixes.contains(&SearchPrefix::Ap));
+        assert_eq!(prefixes.len(), 6);
+    }
+
+    #[test]
+    fn search_prefix_applicable_to_quantity() {
+        let prefixes = SearchPrefix::applicable_to("quantity");
+        assert_eq!(prefixes.len(), 6);
+        assert!(prefixes.contains(&SearchPrefix::Eq));
+    }
+
+    #[test]
+    fn search_prefix_applicable_to_date() {
+        let prefixes = SearchPrefix::applicable_to("date");
+        assert_eq!(prefixes.len(), 9);
+        assert!(prefixes.contains(&SearchPrefix::Sa));
+        assert!(prefixes.contains(&SearchPrefix::Eb));
+        assert!(prefixes.contains(&SearchPrefix::Ap));
+    }
+
+    #[test]
+    fn search_prefix_applicable_to_date_time() {
+        let prefixes = SearchPrefix::applicable_to("dateTime");
+        assert_eq!(prefixes.len(), 9);
+    }
+
+    #[test]
+    fn search_prefix_applicable_to_unknown() {
+        let prefixes = SearchPrefix::applicable_to("string");
+        assert!(prefixes.is_empty());
+    }
+
+    #[test]
+    fn search_prefix_str_values() {
+        assert_eq!(SearchPrefix::Eq.prefix_str(), "eq");
+        assert_eq!(SearchPrefix::Ne.prefix_str(), "ne");
+        assert_eq!(SearchPrefix::Gt.prefix_str(), "gt");
+        assert_eq!(SearchPrefix::Lt.prefix_str(), "lt");
+        assert_eq!(SearchPrefix::Ge.prefix_str(), "ge");
+        assert_eq!(SearchPrefix::Le.prefix_str(), "le");
+        assert_eq!(SearchPrefix::Sa.prefix_str(), "sa");
+        assert_eq!(SearchPrefix::Eb.prefix_str(), "eb");
+        assert_eq!(SearchPrefix::Ap.prefix_str(), "ap");
+    }
+
+    #[test]
+    fn search_prefix_parse_all() {
+        assert_eq!(SearchPrefix::parse_prefix("eq"), Some(SearchPrefix::Eq));
+        assert_eq!(SearchPrefix::parse_prefix("ne"), Some(SearchPrefix::Ne));
+        assert_eq!(SearchPrefix::parse_prefix("gt"), Some(SearchPrefix::Gt));
+        assert_eq!(SearchPrefix::parse_prefix("lt"), Some(SearchPrefix::Lt));
+        assert_eq!(SearchPrefix::parse_prefix("ge"), Some(SearchPrefix::Ge));
+        assert_eq!(SearchPrefix::parse_prefix("le"), Some(SearchPrefix::Le));
+        assert_eq!(SearchPrefix::parse_prefix("sa"), Some(SearchPrefix::Sa));
+        assert_eq!(SearchPrefix::parse_prefix("eb"), Some(SearchPrefix::Eb));
+        assert_eq!(SearchPrefix::parse_prefix("ap"), Some(SearchPrefix::Ap));
+        assert_eq!(SearchPrefix::parse_prefix("xx"), None);
+    }
+
+    // ── TestPlan ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_plan_total_tests_empty() {
+        let plan = TestPlan {
+            name: "empty".into(),
+            ig_url: None,
+            test_groups: vec![],
+            creation_order: vec![],
+        };
+        assert_eq!(plan.total_tests(), 0);
+    }
+
+    #[test]
+    fn test_plan_total_tests_multiple_groups() {
+        let plan = TestPlan {
+            name: "multi".into(),
+            ig_url: None,
+            test_groups: vec![
+                TestGroup {
+                    resource_type: "Patient".into(),
+                    profile_url: None,
+                    tests: vec![TestCase {
+                        name: "t1".into(),
+                        kind: TestCaseKind::Interaction,
+                        interaction: Interaction::Read,
+                        resource_type: "Patient".into(),
+                        profile_url: None,
+                        request: HttpRequest {
+                            method: "GET".into(),
+                            url: "/Patient/{id}".into(),
+                            headers: HashMap::new(),
+                            body: None,
+                        },
+                        validation: ValidationSpec {
+                            expected_status: 200,
+                            profile_url: None,
+                            required_elements: vec![],
+                            forbidden_elements: vec![],
+                            response_assertion: None,
+                        },
+                    }],
+                },
+                TestGroup {
+                    resource_type: "Observation".into(),
+                    profile_url: None,
+                    tests: vec![
+                        TestCase {
+                            name: "t2".into(),
+                            kind: TestCaseKind::Interaction,
+                            interaction: Interaction::Read,
+                            resource_type: "Observation".into(),
+                            profile_url: None,
+                            request: HttpRequest {
+                                method: "GET".into(),
+                                url: "/Observation/{id}".into(),
+                                headers: HashMap::new(),
+                                body: None,
+                            },
+                            validation: ValidationSpec {
+                                expected_status: 200,
+                                profile_url: None,
+                                required_elements: vec![],
+                                forbidden_elements: vec![],
+                                response_assertion: None,
+                            },
+                        },
+                        TestCase {
+                            name: "t3".into(),
+                            kind: TestCaseKind::Interaction,
+                            interaction: Interaction::Create,
+                            resource_type: "Observation".into(),
+                            profile_url: None,
+                            request: HttpRequest {
+                                method: "POST".into(),
+                                url: "/Observation".into(),
+                                headers: HashMap::new(),
+                                body: None,
+                            },
+                            validation: ValidationSpec {
+                                expected_status: 201,
+                                profile_url: None,
+                                required_elements: vec![],
+                                forbidden_elements: vec![],
+                                response_assertion: None,
+                            },
+                        },
+                    ],
+                },
+            ],
+            creation_order: vec![],
+        };
+        assert_eq!(plan.total_tests(), 3);
+    }
+}

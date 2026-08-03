@@ -1404,4 +1404,1278 @@ mod tests {
         let value = json!({"a": 1});
         assert_eq!(resolve_json_path(&value, ""), Some(value));
     }
+
+    // ── Tests for assert_max_entries ───────────────────────────────────
+
+    #[test]
+    fn assert_max_entries_pass() {
+        let assertion = ResponseAssertion {
+            max_entries: Some(3),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "1"}},
+                {"resource": {"resourceType": "Patient", "id": "2"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_max_entries_fail() {
+        let assertion = ResponseAssertion {
+            max_entries: Some(1),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "1"}},
+                {"resource": {"resourceType": "Patient", "id": "2"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("at most 1")));
+    }
+
+    // ── Tests for assert_bundle_total_present ──────────────────────────
+
+    #[test]
+    fn assert_bundle_total_present_true_when_present() {
+        let assertion = ResponseAssertion {
+            bundle_total_present: Some(true),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "total": 5,
+            "entry": []
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_bundle_total_present_true_when_missing() {
+        let assertion = ResponseAssertion {
+            bundle_total_present: Some(true),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": []
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("should have a 'total'")));
+    }
+
+    #[test]
+    fn assert_bundle_total_present_false_when_present() {
+        let assertion = ResponseAssertion {
+            bundle_total_present: Some(false),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "total": 5,
+            "entry": []
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("should NOT have a 'total'"))
+        );
+    }
+
+    #[test]
+    fn assert_bundle_total_present_false_when_missing() {
+        let assertion = ResponseAssertion {
+            bundle_total_present: Some(false),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": []
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_bundle_total_present_no_body() {
+        let assertion = ResponseAssertion {
+            bundle_total_present: Some(true),
+            ..ResponseAssertion::none()
+        };
+        let errors = assert_response(&assertion, 200, &None);
+        assert!(errors.iter().any(|e| e.contains("No response body")));
+    }
+
+    // ── Tests for assert_summary_mode ──────────────────────────────────
+
+    #[test]
+    fn assert_summary_mode_count_pass() {
+        let assertion = ResponseAssertion {
+            summary_mode: Some("count".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "total": 5,
+            "entry": []
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_summary_mode_count_fail() {
+        let assertion = ResponseAssertion {
+            summary_mode: Some("count".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [{"resource": {"resourceType": "Patient", "id": "1"}}]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("should have no entries")));
+    }
+
+    #[test]
+    fn assert_summary_mode_text_pass() {
+        let assertion = ResponseAssertion {
+            summary_mode: Some("text".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "1", "text": {"status": "generated"}}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_summary_mode_text_fail() {
+        let assertion = ResponseAssertion {
+            summary_mode: Some("text".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("should have 'text' field"))
+        );
+    }
+
+    #[test]
+    fn assert_summary_mode_data_pass() {
+        let assertion = ResponseAssertion {
+            summary_mode: Some("data".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_summary_mode_data_fail() {
+        let assertion = ResponseAssertion {
+            summary_mode: Some("data".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "1", "text": {"status": "generated"}}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("should NOT have 'text' field"))
+        );
+    }
+
+    #[test]
+    fn assert_summary_mode_no_body() {
+        let assertion = ResponseAssertion {
+            summary_mode: Some("count".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let errors = assert_response(&assertion, 200, &None);
+        assert!(errors.iter().any(|e| e.contains("No response body")));
+    }
+
+    #[test]
+    fn assert_summary_mode_unknown_mode_does_nothing() {
+        let assertion = ResponseAssertion {
+            summary_mode: Some("invalid".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [{"resource": {"resourceType": "Patient", "id": "1"}}]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors for unknown mode");
+    }
+
+    // ── Tests for assert_operation_output_params ────────────────────────
+
+    #[test]
+    fn assert_operation_output_params_found() {
+        let assertion = ResponseAssertion {
+            operation_output_params: vec!["return".to_string(), "issues".to_string()],
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Parameters",
+            "parameter": [
+                {"name": "return", "valueString": "ok"},
+                {"name": "issues", "valueString": "none"}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_operation_output_params_missing() {
+        let assertion = ResponseAssertion {
+            operation_output_params: vec!["return".to_string(), "nonexistent".to_string()],
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Parameters",
+            "parameter": [
+                {"name": "return", "valueString": "ok"}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("nonexistent")));
+    }
+
+    #[test]
+    fn assert_operation_output_params_no_parameter_array() {
+        let assertion = ResponseAssertion {
+            operation_output_params: vec!["return".to_string()],
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "OperationOutcome",
+            "issue": []
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("no 'parameter' array")));
+    }
+
+    #[test]
+    fn assert_operation_output_params_no_body() {
+        let assertion = ResponseAssertion {
+            operation_output_params: vec!["return".to_string()],
+            ..ResponseAssertion::none()
+        };
+        let errors = assert_response(&assertion, 200, &None);
+        assert!(errors.iter().any(|e| e.contains("No response body")));
+    }
+
+    // ── Tests for assert_required_bindings ─────────────────────────────
+
+    #[test]
+    fn assert_required_bindings_field_present() {
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "Patient".to_string(),
+            vec![(
+                "gender".to_string(),
+                "http://hl7.org/fhir/ValueSet/administrative-gender".to_string(),
+            )],
+        );
+        let assertion = ResponseAssertion {
+            required_bindings: bindings,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "gender": "male", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_required_bindings_field_missing() {
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "Patient".to_string(),
+            vec![(
+                "gender".to_string(),
+                "http://hl7.org/fhir/ValueSet/administrative-gender".to_string(),
+            )],
+        );
+        let assertion = ResponseAssertion {
+            required_bindings: bindings,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "name": [{"family": "T"}], "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("gender") && e.contains("required binding"))
+        );
+    }
+
+    #[test]
+    fn assert_required_bindings_no_matching_entries() {
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "Patient".to_string(),
+            vec![(
+                "gender".to_string(),
+                "http://hl7.org/fhir/ValueSet/administrative-gender".to_string(),
+            )],
+        );
+        let assertion = ResponseAssertion {
+            required_bindings: bindings,
+            ..ResponseAssertion::none()
+        };
+        // Bundle with no Patient entries — should not error
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Observation", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for no matching entries"
+        );
+    }
+
+    // ── Tests for assert_slice_assertions ──────────────────────────────
+
+    #[test]
+    fn assert_slice_assertions_discriminator_present() {
+        let mut slices = HashMap::new();
+        slices.insert(
+            "Patient".to_string(),
+            vec![(
+                "identifier".to_string(),
+                "slice-1".to_string(),
+                "use".to_string(),
+                "value".to_string(),
+            )],
+        );
+        let assertion = ResponseAssertion {
+            slice_assertions: slices,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {
+                    "resourceType": "Patient",
+                    "id": "1",
+                    "identifier": [{"use": "usual", "system": "http://example.org", "value": "123"}]
+                }}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_slice_assertions_discriminator_missing() {
+        let mut slices = HashMap::new();
+        slices.insert(
+            "Patient".to_string(),
+            vec![(
+                "identifier".to_string(),
+                "slice-1".to_string(),
+                "nonexistent".to_string(),
+                "value".to_string(),
+            )],
+        );
+        let assertion = ResponseAssertion {
+            slice_assertions: slices,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {
+                    "resourceType": "Patient",
+                    "id": "1",
+                    "identifier": [{"use": "usual", "system": "http://example.org", "value": "123"}]
+                }}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("missing discriminator")));
+    }
+
+    #[test]
+    fn assert_slice_assertions_no_matching_entries() {
+        let mut slices = HashMap::new();
+        slices.insert(
+            "Patient".to_string(),
+            vec![(
+                "identifier".to_string(),
+                "slice-1".to_string(),
+                "use".to_string(),
+                "value".to_string(),
+            )],
+        );
+        let assertion = ResponseAssertion {
+            slice_assertions: slices,
+            ..ResponseAssertion::none()
+        };
+        // Bundle with no Patient entries — should not error
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Observation", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for no matching entries"
+        );
+    }
+
+    // ── Tests for assert_required_extensions ────────────────────────────
+
+    #[test]
+    fn assert_required_extensions_found() {
+        let mut extensions = HashMap::new();
+        extensions.insert(
+            "Patient".to_string(),
+            vec!["http://example.org/fhir/StructureDefinition/test-extension".to_string()],
+        );
+        let assertion = ResponseAssertion {
+            required_extensions: extensions,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {
+                    "resourceType": "Patient",
+                    "id": "1",
+                    "extension": [{"url": "http://example.org/fhir/StructureDefinition/test-extension", "valueString": "test"}]
+                }}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_required_extensions_missing() {
+        let mut extensions = HashMap::new();
+        extensions.insert(
+            "Patient".to_string(),
+            vec!["http://example.org/fhir/StructureDefinition/missing-ext".to_string()],
+        );
+        let assertion = ResponseAssertion {
+            required_extensions: extensions,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {
+                    "resourceType": "Patient",
+                    "id": "1",
+                    "extension": [{"url": "http://example.org/fhir/StructureDefinition/other-ext", "valueString": "test"}]
+                }}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("missing-ext")));
+    }
+
+    #[test]
+    fn assert_required_extensions_no_extension_array() {
+        // When there's no extension array, the check is silently skipped
+        // (the code only validates extensions when the array exists)
+        let mut extensions = HashMap::new();
+        extensions.insert(
+            "Patient".to_string(),
+            vec!["http://example.org/fhir/StructureDefinition/test-ext".to_string()],
+        );
+        let assertion = ResponseAssertion {
+            required_extensions: extensions,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        // No extension array means the check is skipped — no error
+        assert!(
+            errors.is_empty(),
+            "Expected no errors when no extension array present"
+        );
+    }
+
+    #[test]
+    fn assert_required_extensions_no_matching_entries() {
+        let mut extensions = HashMap::new();
+        extensions.insert(
+            "Patient".to_string(),
+            vec!["http://example.org/fhir/StructureDefinition/test-ext".to_string()],
+        );
+        let assertion = ResponseAssertion {
+            required_extensions: extensions,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Observation", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for no matching entries"
+        );
+    }
+
+    // ── Tests for assert_type_constraints ────────────────────────────────
+
+    #[test]
+    fn assert_type_constraints_allowed_type() {
+        let mut constraints = HashMap::new();
+        constraints.insert(
+            "Patient".to_string(),
+            vec![(
+                "value[x]".to_string(),
+                vec!["String".to_string(), "CodeableConcept".to_string()],
+            )],
+        );
+        let assertion = ResponseAssertion {
+            type_constraints: constraints,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {
+                    "resourceType": "Patient",
+                    "id": "1",
+                    "valueString": "hello"
+                }}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_type_constraints_disallowed_type() {
+        let mut constraints = HashMap::new();
+        constraints.insert(
+            "Patient".to_string(),
+            vec![("value[x]".to_string(), vec!["String".to_string()])],
+        );
+        let assertion = ResponseAssertion {
+            type_constraints: constraints,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {
+                    "resourceType": "Patient",
+                    "id": "1",
+                    "valueInteger": 42
+                }}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("not in allowed types")));
+    }
+
+    #[test]
+    fn assert_type_constraints_null_value() {
+        let mut constraints = HashMap::new();
+        constraints.insert(
+            "Patient".to_string(),
+            vec![("value[x]".to_string(), vec!["String".to_string()])],
+        );
+        let assertion = ResponseAssertion {
+            type_constraints: constraints,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {
+                    "resourceType": "Patient",
+                    "id": "1",
+                    "valueString": null
+                }}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("null value")));
+    }
+
+    #[test]
+    fn assert_type_constraints_no_matching_entries() {
+        let mut constraints = HashMap::new();
+        constraints.insert(
+            "Patient".to_string(),
+            vec![("value[x]".to_string(), vec!["String".to_string()])],
+        );
+        let assertion = ResponseAssertion {
+            type_constraints: constraints,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Observation", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for no matching entries"
+        );
+    }
+
+    // ── Tests for assert_reference_targets ──────────────────────────────
+
+    #[test]
+    fn assert_reference_targets_profile_match() {
+        let mut targets = HashMap::new();
+        targets.insert(
+            "Patient".to_string(),
+            vec![(
+                "generalPractitioner.reference".to_string(),
+                "http://example.org/fhir/StructureDefinition/MyPractitioner".to_string(),
+            )],
+        );
+        let assertion = ResponseAssertion {
+            reference_targets: targets,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "1", "generalPractitioner": {"reference": "Practitioner/prac-1"}}},
+                {"fullUrl": "http://example.org/Practitioner/prac-1", "resource": {"resourceType": "Practitioner", "id": "prac-1", "meta": {"profile": ["http://example.org/fhir/StructureDefinition/MyPractitioner"]}}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn assert_reference_targets_profile_mismatch() {
+        let mut targets = HashMap::new();
+        targets.insert(
+            "Patient".to_string(),
+            vec![(
+                "generalPractitioner.reference".to_string(),
+                "http://example.org/fhir/StructureDefinition/ExpectedProfile".to_string(),
+            )],
+        );
+        let assertion = ResponseAssertion {
+            reference_targets: targets,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "1", "generalPractitioner": {"reference": "Practitioner/prac-1"}}},
+                {"fullUrl": "http://example.org/Practitioner/prac-1", "resource": {"resourceType": "Practitioner", "id": "prac-1", "meta": {"profile": ["http://other.org/Profile"]}}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("without target profile")));
+    }
+
+    #[test]
+    fn assert_reference_targets_no_meta_profile() {
+        let mut targets = HashMap::new();
+        targets.insert(
+            "Patient".to_string(),
+            vec![(
+                "generalPractitioner.reference".to_string(),
+                "http://example.org/fhir/StructureDefinition/ExpectedProfile".to_string(),
+            )],
+        );
+        let assertion = ResponseAssertion {
+            reference_targets: targets,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "1", "generalPractitioner": {"reference": "Practitioner/prac-1"}}},
+                {"fullUrl": "http://example.org/Practitioner/prac-1", "resource": {"resourceType": "Practitioner", "id": "prac-1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("no meta.profile")));
+    }
+
+    #[test]
+    fn assert_reference_targets_no_matching_entries() {
+        let mut targets = HashMap::new();
+        targets.insert(
+            "Patient".to_string(),
+            vec![(
+                "generalPractitioner.reference".to_string(),
+                "http://example.org/fhir/StructureDefinition/ExpectedProfile".to_string(),
+            )],
+        );
+        let assertion = ResponseAssertion {
+            reference_targets: targets,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Observation", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for no matching entries"
+        );
+    }
+
+    // ── Additional edge case tests ──────────────────────────────────────
+
+    #[test]
+    fn assert_bundle_type_no_body() {
+        let assertion = ResponseAssertion {
+            bundle_type: Some("searchset".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let errors = assert_response(&assertion, 200, &None);
+        assert!(errors.iter().any(|e| e.contains("No response body")));
+    }
+
+    #[test]
+    fn assert_bundle_type_no_resource_type() {
+        let assertion = ResponseAssertion {
+            bundle_type: Some("searchset".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({"type": "searchset"});
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("no resourceType")));
+    }
+
+    #[test]
+    fn assert_bundle_type_no_type_field() {
+        let assertion = ResponseAssertion {
+            bundle_type: Some("searchset".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({"resourceType": "Bundle"});
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("no 'type' field")));
+    }
+
+    #[test]
+    fn assert_bundle_type_wrong_resource_type() {
+        let assertion = ResponseAssertion {
+            bundle_type: Some("searchset".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({"resourceType": "Patient", "id": "1"});
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("Expected Bundle")));
+    }
+
+    #[test]
+    fn assert_outcome_severity_no_body() {
+        let assertion = ResponseAssertion {
+            outcome_severity: Some("error".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let errors = assert_response(&assertion, 404, &None);
+        assert!(errors.iter().any(|e| e.contains("No response body")));
+    }
+
+    #[test]
+    fn assert_outcome_severity_bundle_acceptable() {
+        // Bundle response for negative test — should not error
+        let assertion = ResponseAssertion {
+            outcome_severity: Some("error".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": []
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors.is_empty(),
+            "Bundle should be acceptable for negative tests"
+        );
+    }
+
+    #[test]
+    fn assert_outcome_severity_wrong_resource_type() {
+        let assertion = ResponseAssertion {
+            outcome_severity: Some("error".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({"resourceType": "Patient", "id": "1"});
+        let errors = assert_response(&assertion, 404, &Some(body));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Expected OperationOutcome"))
+        );
+    }
+
+    #[test]
+    fn assert_outcome_severity_no_issue_array() {
+        let assertion = ResponseAssertion {
+            outcome_severity: Some("error".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({"resourceType": "OperationOutcome"});
+        let errors = assert_response(&assertion, 400, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("no 'issue' array")));
+    }
+
+    #[test]
+    fn assert_outcome_severity_empty_issue_array() {
+        let assertion = ResponseAssertion {
+            outcome_severity: Some("error".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({"resourceType": "OperationOutcome", "issue": []});
+        let errors = assert_response(&assertion, 400, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("empty 'issue' array")));
+    }
+
+    #[test]
+    fn assert_response_contains_key_no_body() {
+        let assertion = ResponseAssertion {
+            response_contains_key: Some("parameter".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let errors = assert_response(&assertion, 200, &None);
+        // When body is None, the let-else pattern means the check is skipped
+        assert!(errors.is_empty(), "No body should skip key check");
+    }
+
+    #[test]
+    fn assert_response_resource_types_no_body() {
+        let assertion = ResponseAssertion {
+            response_resource_types: vec!["Parameters".to_string()],
+            ..ResponseAssertion::none()
+        };
+        let errors = assert_response(&assertion, 200, &None);
+        assert!(errors.iter().any(|e| e.contains("No response body")));
+    }
+
+    #[test]
+    fn assert_response_resource_types_no_resource_type() {
+        let assertion = ResponseAssertion {
+            response_resource_types: vec!["Parameters".to_string()],
+            ..ResponseAssertion::none()
+        };
+        let body = json!({"parameter": []});
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("no resourceType")));
+    }
+
+    #[test]
+    fn assert_field_values_no_matching_entries() {
+        let mut field_values = HashMap::new();
+        let mut patient_fields = HashMap::new();
+        patient_fields.insert("name.family".to_string(), serde_json::json!("Smith"));
+        field_values.insert("Patient".to_string(), patient_fields);
+        let assertion = ResponseAssertion {
+            field_values,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Observation", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Expected at least one Patient"))
+        );
+    }
+
+    #[test]
+    fn assert_field_values_field_not_found() {
+        let mut field_values = HashMap::new();
+        let mut patient_fields = HashMap::new();
+        patient_fields.insert("nonexistent.field".to_string(), serde_json::json!("value"));
+        field_values.insert("Patient".to_string(), patient_fields);
+        let assertion = ResponseAssertion {
+            field_values,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "1", "name": [{"family": "Smith"}]}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("not found")));
+    }
+
+    #[test]
+    fn assert_required_fields_no_entry_array_with_total_gt_0() {
+        let mut required = HashMap::new();
+        required.insert("Patient".to_string(), vec!["name".to_string()]);
+        let assertion = ResponseAssertion {
+            required_fields: required,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "total": 5
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("Bundle with entries")));
+    }
+
+    #[test]
+    fn assert_required_fields_no_matching_with_total_gt_0() {
+        let mut required = HashMap::new();
+        required.insert("Patient".to_string(), vec!["name".to_string()]);
+        let assertion = ResponseAssertion {
+            required_fields: required,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "total": 3,
+            "entry": [
+                {"resource": {"resourceType": "Observation", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Expected at least one Patient"))
+        );
+    }
+
+    #[test]
+    fn assert_sort_single_entry_no_error() {
+        // Single entry should not trigger sort check
+        let assertion = ResponseAssertion {
+            sort_by: Some(SortAssertion {
+                field: "birthDate".to_string(),
+                direction: "asc".to_string(),
+                additional_fields: Vec::new(),
+            }),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "birthDate": "2000-01-01", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors.is_empty(),
+            "Single entry should not trigger sort check"
+        );
+    }
+
+    #[test]
+    fn assert_sort_numeric_ascending() {
+        let assertion = ResponseAssertion {
+            sort_by: Some(SortAssertion {
+                field: "id".to_string(),
+                direction: "asc".to_string(),
+                additional_fields: Vec::new(),
+            }),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "1"}},
+                {"resource": {"resourceType": "Patient", "id": "2"}},
+                {"resource": {"resourceType": "Patient", "id": "3"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for numeric ascending sort"
+        );
+    }
+
+    #[test]
+    fn assert_sort_numeric_descending() {
+        let assertion = ResponseAssertion {
+            sort_by: Some(SortAssertion {
+                field: "id".to_string(),
+                direction: "desc".to_string(),
+                additional_fields: Vec::new(),
+            }),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "id": "3"}},
+                {"resource": {"resourceType": "Patient", "id": "2"}},
+                {"resource": {"resourceType": "Patient", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for numeric descending sort"
+        );
+    }
+
+    #[test]
+    fn assert_sort_unknown_direction_does_nothing() {
+        let assertion = ResponseAssertion {
+            sort_by: Some(SortAssertion {
+                field: "birthDate".to_string(),
+                direction: "unknown".to_string(),
+                additional_fields: Vec::new(),
+            }),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "entry": [
+                {"resource": {"resourceType": "Patient", "birthDate": "2001-01-01", "id": "3"}},
+                {"resource": {"resourceType": "Patient", "birthDate": "2000-01-01", "id": "1"}}
+            ]
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(
+            errors.is_empty(),
+            "Unknown direction should not trigger sort check"
+        );
+    }
+
+    #[test]
+    fn assert_absent_fields_no_entry_array() {
+        // Bundle with no entry array — should not error
+        let assertion = ResponseAssertion {
+            absent_fields: vec!["text".to_string()],
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset",
+            "total": 0
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.is_empty(), "No entry array should not error");
+    }
+
+    #[test]
+    fn resolve_json_path_value_x_not_found() {
+        let value = json!({"id": "123"});
+        assert_eq!(resolve_json_path(&value, "value[x]"), None);
+    }
+
+    #[test]
+    fn resolve_json_path_array_fallback() {
+        // First element doesn't have the path, second does
+        let value = json!({
+            "identifier": [
+                {"system": "http://example.org", "value": "first"},
+                {"type": {"coding": [{"code": "SEC"}]}}
+            ]
+        });
+        assert_eq!(
+            resolve_json_path(&value, "identifier.type.coding.code"),
+            Some(serde_json::json!("SEC"))
+        );
+    }
+
+    #[test]
+    fn resolve_json_path_array_not_found() {
+        let value = json!({"identifier": [{"system": "http://example.org"}]});
+        assert_eq!(resolve_json_path(&value, "identifier.type"), None);
+    }
+
+    #[test]
+    fn resolve_json_path_non_object() {
+        let value = json!("just a string");
+        assert_eq!(resolve_json_path(&value, "anything"), None);
+    }
+
+    #[test]
+    fn compare_values_both_none() {
+        assert_eq!(compare_values(&None, &None), 0);
+    }
+
+    #[test]
+    fn compare_values_none_vs_some() {
+        assert_eq!(compare_values(&None, &Some(serde_json::json!("a"))), -1);
+        assert_eq!(compare_values(&Some(serde_json::json!("a")), &None), 1);
+    }
+
+    #[test]
+    fn compare_values_strings() {
+        assert_eq!(
+            compare_values(&Some(serde_json::json!("a")), &Some(serde_json::json!("b"))),
+            -1
+        );
+        assert_eq!(
+            compare_values(&Some(serde_json::json!("b")), &Some(serde_json::json!("a"))),
+            1
+        );
+        assert_eq!(
+            compare_values(&Some(serde_json::json!("a")), &Some(serde_json::json!("a"))),
+            0
+        );
+    }
+
+    #[test]
+    fn compare_values_numbers() {
+        assert_eq!(
+            compare_values(&Some(serde_json::json!(1.0)), &Some(serde_json::json!(2.0))),
+            -1
+        );
+        assert_eq!(
+            compare_values(&Some(serde_json::json!(2.0)), &Some(serde_json::json!(1.0))),
+            1
+        );
+    }
+
+    #[test]
+    fn compare_values_mixed_types() {
+        // String vs number — should return 0 (can't compare)
+        assert_eq!(
+            compare_values(&Some(serde_json::json!("a")), &Some(serde_json::json!(1.0))),
+            0
+        );
+    }
+
+    #[test]
+    fn assert_bundle_type_operation_outcome_acceptable() {
+        // OperationOutcome is acceptable when checking bundle type
+        let assertion = ResponseAssertion {
+            bundle_type: Some("searchset".to_string()),
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "OperationOutcome",
+            "issue": [{"severity": "error", "code": "not-found"}]
+        });
+        let errors = assert_response(&assertion, 404, &Some(body));
+        assert!(errors.is_empty(), "OperationOutcome should be acceptable");
+    }
+
+    #[test]
+    fn assert_empty_bundle_no_entry_errors_when_requires_entries_and_no_total() {
+        // Bundle with no entry array, no total, but requires entries
+        let mut required = HashMap::new();
+        required.insert("Patient".to_string(), vec!["name".to_string()]);
+        let assertion = ResponseAssertion {
+            min_entries: Some(1),
+            required_fields: required,
+            ..ResponseAssertion::none()
+        };
+        let body = json!({
+            "resourceType": "Bundle",
+            "type": "searchset"
+        });
+        let errors = assert_response(&assertion, 200, &Some(body));
+        assert!(errors.iter().any(|e| e.contains("no 'entry' array")));
+    }
 }

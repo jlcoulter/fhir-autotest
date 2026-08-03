@@ -261,4 +261,100 @@ mod tests {
                 if chain_param == "organization" && target_param == "name"
         ));
     }
+
+    // ── New combo tests ────────────────────────────────────────────────
+
+    #[test]
+    fn build_chained_search_modifier_test_produces_modifier_url() {
+        let test = build_chained_search_modifier_test(
+            "Patient",
+            "organization",
+            "name",
+            &SearchModifier::Exact,
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.request.method, "GET");
+        assert!(
+            test.request.url.contains("?organization.name:exact="),
+            "URL should contain ?organization.name:exact=, got {}",
+            test.request.url
+        );
+        assert_eq!(test.name, "patient_search_chain_organization_name_exact");
+        assert!(matches!(
+            test.kind,
+            TestCaseKind::SearchChainedModifier { ref chain_param, ref target_param, ref modifier }
+                if chain_param == "organization" && target_param == "name" && modifier == &SearchModifier::Exact
+        ));
+        assert_eq!(test.validation.expected_status, 0);
+    }
+
+    #[test]
+    fn build_chained_search_modifier_test_contains() {
+        let test = build_chained_search_modifier_test(
+            "Patient",
+            "organization",
+            "name",
+            &SearchModifier::Contains,
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(
+            test.request.url.contains("?organization.name:contains="),
+            "URL should contain :contains=, got {}",
+            test.request.url
+        );
+        assert_eq!(test.name, "patient_search_chain_organization_name_contains");
+    }
+
+    #[test]
+    fn build_chained_search_multi_hop_test_produces_multi_hop_url() {
+        let chain_params = vec!["subject".to_string(), "managingOrganization".to_string()];
+        let test = build_chained_search_multi_hop_test(
+            "Observation",
+            &chain_params,
+            "name",
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(test.request.method, "GET");
+        assert!(
+            test.request
+                .url
+                .contains("?subject.managingOrganization.name="),
+            "URL should contain ?subject.managingOrganization.name=, got {}",
+            test.request.url
+        );
+        assert_eq!(
+            test.name,
+            "observation_search_chain_subject_managingOrganization_name"
+        );
+        assert!(matches!(
+            test.kind,
+            TestCaseKind::SearchChainedMultiHop { ref chain_params, ref target_param }
+                if chain_params.len() == 2 && target_param == "name"
+        ));
+        assert_eq!(test.validation.expected_status, 0);
+    }
+
+    #[test]
+    fn build_chained_search_multi_hop_test_single_chain() {
+        let chain_params = vec!["subject".to_string()];
+        let test = build_chained_search_multi_hop_test(
+            "Observation",
+            &chain_params,
+            "name",
+            &None,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(
+            test.request.url.contains("?subject.name="),
+            "URL should contain ?subject.name=, got {}",
+            test.request.url
+        );
+    }
 }

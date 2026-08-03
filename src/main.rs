@@ -140,3 +140,129 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn cli_defaults() {
+        let cli = Cli::parse_from(["fhir-autotest"]);
+        assert_eq!(cli.config, "./config.toml");
+        assert!(cli.package.is_none());
+        assert!(cli.output.is_none());
+        assert!(!cli.dry_run);
+        assert!(!cli.generate);
+        assert!(!cli.mock);
+        assert_eq!(cli.mock_port, 0);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn cli_with_package() {
+        let cli = Cli::parse_from(["fhir-autotest", "--package", "test-ig.tgz"]);
+        assert_eq!(cli.package.as_deref(), Some("test-ig.tgz"));
+    }
+
+    #[test]
+    fn cli_with_output() {
+        let cli = Cli::parse_from(["fhir-autotest", "--output", "/tmp/output"]);
+        assert_eq!(cli.output.as_deref(), Some("/tmp/output"));
+    }
+
+    #[test]
+    fn cli_with_dry_run() {
+        let cli = Cli::parse_from(["fhir-autotest", "--dry-run"]);
+        assert!(cli.dry_run);
+    }
+
+    #[test]
+    fn cli_with_generate() {
+        let cli = Cli::parse_from(["fhir-autotest", "--generate"]);
+        assert!(cli.generate);
+    }
+
+    #[test]
+    fn cli_with_mock() {
+        let cli = Cli::parse_from(["fhir-autotest", "--mock"]);
+        assert!(cli.mock);
+    }
+
+    #[test]
+    fn cli_with_mock_port() {
+        let cli = Cli::parse_from(["fhir-autotest", "--mock", "--mock-port", "8080"]);
+        assert!(cli.mock);
+        assert_eq!(cli.mock_port, 8080);
+    }
+
+    #[test]
+    fn cli_with_config() {
+        let cli = Cli::parse_from(["fhir-autotest", "--config", "/path/to/config.toml"]);
+        assert_eq!(cli.config, "/path/to/config.toml");
+    }
+
+    #[test]
+    fn cli_with_validate_subcommand() {
+        let cli = Cli::parse_from([
+            "fhir-autotest",
+            "validate",
+            "--resource",
+            "test-resource.json",
+        ]);
+        assert!(cli.command.is_some());
+        match cli.command.unwrap() {
+            Commands::Validate { resource, profile } => {
+                assert_eq!(resource, "test-resource.json");
+                assert!(profile.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn cli_with_validate_subcommand_and_profile() {
+        let cli = Cli::parse_from([
+            "fhir-autotest",
+            "validate",
+            "--resource",
+            "test-resource.json",
+            "--profile",
+            "http://example.org/StructureDefinition/Test",
+        ]);
+        assert!(cli.command.is_some());
+        match cli.command.unwrap() {
+            Commands::Validate { resource, profile } => {
+                assert_eq!(resource, "test-resource.json");
+                assert_eq!(
+                    profile.as_deref(),
+                    Some("http://example.org/StructureDefinition/Test")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cli_all_flags() {
+        let cli = Cli::parse_from([
+            "fhir-autotest",
+            "--config",
+            "my-config.toml",
+            "--package",
+            "my-ig.tgz",
+            "--output",
+            "/tmp/results",
+            "--dry-run",
+            "--generate",
+            "--mock",
+            "--mock-port",
+            "9090",
+        ]);
+        assert_eq!(cli.config, "my-config.toml");
+        assert_eq!(cli.package.as_deref(), Some("my-ig.tgz"));
+        assert_eq!(cli.output.as_deref(), Some("/tmp/results"));
+        assert!(cli.dry_run);
+        assert!(cli.generate);
+        assert!(cli.mock);
+        assert_eq!(cli.mock_port, 9090);
+    }
+}
