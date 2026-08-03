@@ -22,11 +22,27 @@ pub struct BenchRunner {
 
 impl BenchRunner {
     /// Create a new runner, loading configs and ensuring data/plan exist.
-    pub async fn new(bench_config: BenchConfig) -> Result<Self> {
+    pub async fn new(mut bench_config: BenchConfig) -> Result<Self> {
         // 1. Load the project's TestConfig
-        let test_config = TestConfig::load(&bench_config.config_path)?;
+        let mut test_config = TestConfig::load(&bench_config.config_path)?;
 
-        // 2. Build an HTTP client with the server's TLS settings and headers
+        // 2. If mock mode is enabled, start the mock server and redirect
+        if bench_config.mock || test_config.mock {
+            let port = if bench_config.mock_port != 0 {
+                bench_config.mock_port
+            } else {
+                test_config.mock_port
+            };
+            let addr = fhir_autotest::mock_server::start_mock_server(port).await?;
+            let mock_url = format!("http://{}/fhir", addr);
+            println!("Mock FHIR server running at {}", mock_url);
+            test_config.server.base_url = mock_url.clone();
+            test_config.repository = None;
+            // Also update the bench config so the report reflects the mock URL
+            bench_config.mock = true;
+        }
+
+        // 3. Build an HTTP client with the server's TLS settings and headers
         let tls = fhir_autotest::config::models::TlsConfig::from_server(&test_config.server);
         let mut client_builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(bench_config.request_timeout_secs))
@@ -50,12 +66,12 @@ impl BenchRunner {
         client_builder = client_builder.default_headers(default_headers);
         let client = client_builder.build()?;
 
-        // 3. Ensure data exists (generate + upload if needed)
+        // 4. Ensure data exists (generate + upload if needed)
         if !bench_config.skip_data_ensure {
             ensure_data_exists(&test_config).await?;
         }
 
-        // 4. Load or generate the test plan
+        // 5. Load or generate the test plan
         let plan = load_or_generate_plan(&test_config, &bench_config).await?;
 
         Ok(Self {

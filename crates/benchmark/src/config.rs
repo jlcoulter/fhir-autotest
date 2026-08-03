@@ -49,6 +49,14 @@ pub struct BenchConfig {
     /// Warm-up requests before recording measurements (number of requests).
     #[serde(default = "default_warmup")]
     pub warmup_requests: usize,
+
+    /// Use a built-in mock FHIR server instead of the configured server.
+    #[serde(default)]
+    pub mock: bool,
+
+    /// Port for the mock server (default: 0 = random available port).
+    #[serde(default = "default_mock_port")]
+    pub mock_port: u16,
 }
 
 fn default_config_path() -> String {
@@ -77,6 +85,10 @@ fn default_output() -> String {
 
 fn default_warmup() -> usize {
     10
+}
+
+fn default_mock_port() -> u16 {
+    0
 }
 
 impl BenchConfig {
@@ -128,6 +140,8 @@ impl Default for BenchConfig {
             skip_cleanup: false,
             filter_groups: Vec::new(),
             warmup_requests: default_warmup(),
+            mock: false,
+            mock_port: 0,
         }
     }
 }

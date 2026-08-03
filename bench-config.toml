@@ -38,3 +38,12 @@
 
 # Number of warm-up requests before recording measurements
 # warmup_requests = 10
+
+# Use a built-in mock FHIR server instead of the configured server.
+# Starts an in-process mock server that handles CRUD and basic search.
+# Useful for development and CI where no real FHIR server is available.
+# mock = false
+
+# Port for the mock server (default: 0 = random available port).
+# Only used when mock is true.
+# mock_port = 0

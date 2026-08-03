@@ -8,7 +8,7 @@ use fhir_autotest_bench::BenchRunner;
 #[command(version)]
 struct Cli {
     /// Path to the benchmark config TOML file.
-    #[arg(short, long, default_value = "./bench-config.toml")]
+    #[arg(long, default_value = "./bench-config.toml")]
     config: String,
 
     /// Override: path to the project's config.toml.
@@ -50,6 +50,14 @@ struct Cli {
     /// Number of warm-up requests before recording.
     #[arg(long)]
     warmup: Option<usize>,
+
+    /// Use a built-in mock FHIR server instead of the configured server.
+    #[arg(long)]
+    mock: bool,
+
+    /// Port for the mock server (default: 0 = random available port).
+    #[arg(long)]
+    mock_port: Option<u16>,
 }
 
 #[tokio::main]
@@ -104,6 +112,12 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(w) = cli.warmup {
         bench_config.warmup_requests = w;
+    }
+    if cli.mock {
+        bench_config.mock = true;
+    }
+    if let Some(p) = cli.mock_port {
+        bench_config.mock_port = p;
     }
 
     tracing::info!(

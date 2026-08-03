@@ -5,6 +5,7 @@ dist/
 
 # Output
 output/
+bench-results/
 package/
 results/
 *.zip
