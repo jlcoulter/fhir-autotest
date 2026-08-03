@@ -95,7 +95,7 @@ pub fn generate_supplement_resource(
 /// `"reference": "ResourceType/resourcetype-1"` so supplement resources always
 /// point to the predictable IDs used by other supplement resources.
 /// The abstract `Resource` base type is mapped to `Organization` as a concrete fallback.
-fn normalize_supplement_references(value: &mut serde_json::Value) {
+pub(crate) fn normalize_supplement_references(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(obj) => {
             if let Some(ref_val) = obj.get_mut("reference")

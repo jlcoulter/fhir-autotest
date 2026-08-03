@@ -69,7 +69,7 @@ pub fn generate_update_ndjson(ids: &IdStore, output_dir: &Path) -> Result<()> {
 /// to find mutable leaf values (strings, numbers, booleans) and picking
 /// 1–2 at random. Skips `resourceType`, `id`, `meta`, and reference fields
 /// to keep the resource structurally valid.
-fn apply_random_updates(
+pub(crate) fn apply_random_updates(
     resource: &mut serde_json::Value,
     _resource_type: &str,
     rng: &mut rand::rngs::ThreadRng,
@@ -115,7 +115,7 @@ type MutatorFn = fn(&mut serde_json::Value, &str, &mut rand::rngs::ThreadRng);
 /// - Array indices (we mutate individual elements, not the array itself)
 ///
 /// Returns a list of (dotted path, appropriate mutator) pairs.
-fn discover_mutable_paths(resource: &serde_json::Value) -> Vec<(String, MutatorFn)> {
+pub(crate) fn discover_mutable_paths(resource: &serde_json::Value) -> Vec<(String, MutatorFn)> {
     let mut candidates: Vec<(String, MutatorFn)> = Vec::new();
     let mut prefix = String::new();
     walk_for_mutables(resource, &mut prefix, &mut candidates);
@@ -123,7 +123,7 @@ fn discover_mutable_paths(resource: &serde_json::Value) -> Vec<(String, MutatorF
 }
 
 /// Recursive walker that collects leaf-value paths.
-fn walk_for_mutables(
+pub(crate) fn walk_for_mutables(
     value: &serde_json::Value,
     prefix: &mut String,
     candidates: &mut Vec<(String, MutatorFn)>,
@@ -180,7 +180,7 @@ fn walk_for_mutables(
 }
 
 /// Check if a field is a FHIR reference (has `reference` key with a value like "ResourceType/id").
-fn is_reference_field(key: &str, val: &serde_json::Value) -> bool {
+pub(crate) fn is_reference_field(key: &str, val: &serde_json::Value) -> bool {
     if key == "reference"
         && let Some(s) = val.as_str()
         && s.contains('/')
@@ -194,7 +194,10 @@ fn is_reference_field(key: &str, val: &serde_json::Value) -> bool {
 }
 
 /// Get a reference to a value at a dotted path (e.g. `address[0].city`).
-fn get_at_path<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+pub(crate) fn get_at_path<'a>(
+    value: &'a serde_json::Value,
+    path: &str,
+) -> Option<&'a serde_json::Value> {
     let parts = path.split('.');
     let mut current = value;
     for part in parts {
@@ -211,7 +214,7 @@ fn get_at_path<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde
 }
 
 /// Set a value at a dotted path (e.g. `address[0].city`).
-fn set_at_path(value: &mut serde_json::Value, path: &str, new_val: serde_json::Value) {
+pub(crate) fn set_at_path(value: &mut serde_json::Value, path: &str, new_val: serde_json::Value) {
     let parts: Vec<&str> = path.split('.').collect();
     // Navigate to the parent of the target, then set.
     let mut current = value;
@@ -240,12 +243,20 @@ fn set_at_path(value: &mut serde_json::Value, path: &str, new_val: serde_json::V
 
 // ── Mutator functions ─────────────────────────────────────────────────────
 
-fn mutate_string(value: &mut serde_json::Value, path: &str, _rng: &mut rand::rngs::ThreadRng) {
+pub(crate) fn mutate_string(
+    value: &mut serde_json::Value,
+    path: &str,
+    _rng: &mut rand::rngs::ThreadRng,
+) {
     let new_val = serde_json::Value::String(fake::faker::lorem::en::Word().fake());
     set_at_path(value, path, new_val);
 }
 
-fn mutate_number(value: &mut serde_json::Value, path: &str, rng: &mut rand::rngs::ThreadRng) {
+pub(crate) fn mutate_number(
+    value: &mut serde_json::Value,
+    path: &str,
+    rng: &mut rand::rngs::ThreadRng,
+) {
     let current = get_at_path(value, path)
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
@@ -257,7 +268,11 @@ fn mutate_number(value: &mut serde_json::Value, path: &str, rng: &mut rand::rngs
     set_at_path(value, path, serde_json::json!(rounded));
 }
 
-fn mutate_bool(value: &mut serde_json::Value, path: &str, _rng: &mut rand::rngs::ThreadRng) {
+pub(crate) fn mutate_bool(
+    value: &mut serde_json::Value,
+    path: &str,
+    _rng: &mut rand::rngs::ThreadRng,
+) {
     let current = get_at_path(value, path)
         .and_then(|v| v.as_bool())
         .unwrap_or(true);

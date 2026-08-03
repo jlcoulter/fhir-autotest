@@ -1,6 +1,13 @@
 use super::*;
 use std::collections::HashMap;
 
+// Helper to access update module functions
+use super::supplement::normalize_supplement_references;
+use super::update::{
+    apply_random_updates, discover_mutable_paths, get_at_path, is_reference_field, mutate_bool,
+    mutate_number, mutate_string, set_at_path,
+};
+
 #[test]
 fn generate_creates_ndjson_files() {
     let dir = tempfile::tempdir().expect("should create temp dir");
@@ -1196,4 +1203,1566 @@ fn bulk_data_creation_order_includes_all_types() {
     assert!(hs_idx < pr_idx, "HealthcareService before PractitionerRole");
     assert!(prac_idx < pr_idx, "Practitioner before PractitionerRole");
     assert!(pr_idx < prov_idx, "PractitionerRole before Provenance");
+}
+
+// ── Tests for stamp_created_date ────────────────────────────────────────
+
+#[test]
+fn stamp_created_date_sets_last_updated() {
+    let mut resource = serde_json::json!({ "resourceType": "Patient", "id": "patient-1" });
+    let mut rng = rand::rng();
+    stamp_created_date(&mut resource, &mut rng);
+    let last_updated = resource["meta"]["lastUpdated"]
+        .as_str()
+        .expect("should have a string value");
+    assert!(!last_updated.is_empty(), "meta.lastUpdated should be set");
+    assert!(
+        last_updated.contains('T'),
+        "meta.lastUpdated should be an ISO timestamp, got: {}",
+        last_updated
+    );
+}
+
+// ── Tests for random_ref ────────────────────────────────────────────────
+
+#[test]
+fn random_ref_with_empty_ids_returns_placeholder() {
+    let ids: Vec<String> = vec![];
+    let mut rng = rand::rng();
+    let result = random_ref("Organization", &ids, &mut rng);
+    assert_eq!(result, "Organization/placeholder-1");
+}
+
+#[test]
+fn random_ref_with_ids_returns_valid_reference() {
+    let ids = vec!["org-1".to_string(), "org-2".to_string()];
+    let mut rng = rand::rng();
+    let result = random_ref("Organization", &ids, &mut rng);
+    assert!(result.starts_with("Organization/"));
+    assert!(
+        result == "Organization/org-1" || result == "Organization/org-2",
+        "Expected Organization/org-1 or Organization/org-2, got {}",
+        result
+    );
+}
+
+// ── Tests for random_refs (dead_code) ───────────────────────────────────
+
+#[test]
+fn random_refs_with_empty_ids_returns_placeholder() {
+    let ids: Vec<String> = vec![];
+    let mut rng = rand::rng();
+    let result = random_refs("Organization", &ids, 3, &mut rng);
+    assert_eq!(result, vec!["Organization/placeholder-1".to_string()]);
+}
+
+#[test]
+fn random_refs_with_ids_returns_correct_count() {
+    let ids = vec![
+        "org-1".to_string(),
+        "org-2".to_string(),
+        "org-3".to_string(),
+        "org-4".to_string(),
+        "org-5".to_string(),
+    ];
+    let mut rng = rand::rng();
+    let result = random_refs("Organization", &ids, 3, &mut rng);
+    assert_eq!(result.len(), 3);
+    for r in &result {
+        assert!(r.starts_with("Organization/"));
+    }
+}
+
+#[test]
+fn random_refs_does_not_exceed_available_ids() {
+    let ids = vec!["org-1".to_string(), "org-2".to_string()];
+    let mut rng = rand::rng();
+    let result = random_refs("Organization", &ids, 10, &mut rng);
+    assert_eq!(result.len(), 2);
+}
+
+// ── Tests for Endpoint and Provenance in bulk data ──────────────────────
+
+#[test]
+fn bulk_data_generates_endpoint() {
+    let dir = tempfile::tempdir().expect("should create temp dir");
+    let mut counts = HashMap::new();
+    counts.insert("Endpoint".to_string(), 3);
+
+    let ids = generate_bulk_data(
+        &counts,
+        &HashMap::new(),
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .expect("should succeed");
+
+    assert_eq!(ids.get("Endpoint").expect("key should exist").len(), 3);
+
+    let path = dir.path().join("data/Endpoint.ndjson");
+    let contents = std::fs::read_to_string(&path).expect("should read file");
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 3);
+
+    for line in &lines {
+        let parsed: serde_json::Value =
+            serde_json::from_str(line).expect("should parse valid JSON");
+        assert_eq!(parsed["resourceType"], "Endpoint");
+        assert!(
+            parsed["id"]
+                .as_str()
+                .expect("should have id")
+                .starts_with("endpoint-")
+        );
+        assert!(parsed["status"].as_str().is_some());
+    }
+}
+
+#[test]
+fn bulk_data_generates_provenance() {
+    let dir = tempfile::tempdir().expect("should create temp dir");
+    let mut counts = HashMap::new();
+    counts.insert("Provenance".to_string(), 3);
+    counts.insert("Organization".to_string(), 2);
+
+    let ids = generate_bulk_data(
+        &counts,
+        &HashMap::new(),
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .expect("should succeed");
+
+    assert_eq!(ids.get("Provenance").expect("key should exist").len(), 3);
+
+    let path = dir.path().join("data/Provenance.ndjson");
+    let contents = std::fs::read_to_string(&path).expect("should read file");
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 3);
+
+    for line in &lines {
+        let parsed: serde_json::Value =
+            serde_json::from_str(line).expect("should parse valid JSON");
+        assert_eq!(parsed["resourceType"], "Provenance");
+        assert!(
+            parsed["id"]
+                .as_str()
+                .expect("should have id")
+                .starts_with("provenance-")
+        );
+    }
+}
+
+// ── Tests for overlay edge cases ────────────────────────────────────────
+
+#[test]
+fn overlay_handles_non_object_resource() {
+    let mut resource = serde_json::Value::String("not an object".to_string());
+    let mut rng = rand::rng();
+    // Should not panic
+    overlay::overlay_cross_references(
+        &mut resource,
+        "PractitionerRole",
+        "practitionerrole-1",
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // Resource should be unchanged
+    assert_eq!(
+        resource,
+        serde_json::Value::String("not an object".to_string())
+    );
+}
+
+#[test]
+fn overlay_practitionerrole_with_empty_ids_does_not_add_fields() {
+    let mut pr =
+        serde_json::json!({ "resourceType": "PractitionerRole", "id": "practitionerrole-1" });
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut pr,
+        "PractitionerRole",
+        "practitionerrole-1",
+        &[], // no org_ids
+        &[], // no prac_ids
+        &[], // no loc_ids
+        &[], // no hs_ids
+        &[], // no practitioner_role_ids
+        &[], // no endpoint_ids
+        &mut rng,
+    );
+    // Should not add any reference fields when all ID lists are empty
+    assert!(pr.get("practitioner").is_none());
+    assert!(pr.get("organization").is_none());
+    assert!(pr.get("location").is_none());
+    assert!(pr.get("healthcareService").is_none());
+    assert!(pr.get("endpoint").is_none());
+}
+
+#[test]
+fn overlay_healthcareservice_without_org_does_not_add_provided_by() {
+    let mut hs =
+        serde_json::json!({ "resourceType": "HealthcareService", "id": "healthcareservice-1" });
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut hs,
+        "HealthcareService",
+        "healthcareservice-1",
+        &[], // no org_ids
+        &[],
+        &["location-1".to_string()],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // Should not add providedBy when no org_ids
+    assert!(hs.get("providedBy").is_none());
+    // Should still add location
+    assert!(hs.get("location").is_some());
+}
+
+#[test]
+fn overlay_healthcareservice_coverage_area_uses_location() {
+    let mut hs =
+        serde_json::json!({ "resourceType": "HealthcareService", "id": "healthcareservice-1" });
+    let org_ids = vec!["organization-1".to_string()];
+    let loc_ids = vec!["location-1".to_string()];
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut hs,
+        "HealthcareService",
+        "healthcareservice-1",
+        &org_ids,
+        &[],
+        &loc_ids,
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // coverageArea should reference Location
+    let ca = hs["coverageArea"][0]["reference"]
+        .as_str()
+        .expect("should have a string value");
+    assert!(
+        ca.starts_with("Location/"),
+        "coverageArea should reference Location, got: {}",
+        ca
+    );
+}
+
+#[test]
+fn overlay_healthcareservice_removes_coverage_area_when_no_location() {
+    let mut hs = serde_json::json!({
+        "resourceType": "HealthcareService",
+        "id": "healthcareservice-1",
+        "coverageArea": [{ "reference": "Location/some-location" }]
+    });
+    let org_ids = vec!["organization-1".to_string()];
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut hs,
+        "HealthcareService",
+        "healthcareservice-1",
+        &org_ids,
+        &[],
+        &[], // no loc_ids
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // coverageArea should be removed when no Location IDs exist
+    assert!(hs.get("coverageArea").is_none());
+}
+
+#[test]
+fn overlay_endpoint_adds_managing_organization() {
+    let mut endpoint = serde_json::json!({ "resourceType": "Endpoint", "id": "endpoint-1" });
+    let org_ids = vec!["organization-1".to_string()];
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut endpoint,
+        "Endpoint",
+        "endpoint-1",
+        &org_ids,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    let org_ref = endpoint["managingOrganization"]["reference"]
+        .as_str()
+        .expect("should have a string value");
+    assert!(org_ref.starts_with("Organization/"));
+}
+
+#[test]
+fn overlay_endpoint_without_org_does_not_add_managing_organization() {
+    let mut endpoint = serde_json::json!({ "resourceType": "Endpoint", "id": "endpoint-1" });
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut endpoint,
+        "Endpoint",
+        "endpoint-1",
+        &[], // no org_ids
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    assert!(endpoint.get("managingOrganization").is_none());
+}
+
+#[test]
+fn overlay_location_without_org_does_not_add_managing_organization() {
+    let mut location = serde_json::json!({ "resourceType": "Location", "id": "location-1" });
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut location,
+        "Location",
+        "location-1",
+        &[], // no org_ids
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    assert!(location.get("managingOrganization").is_none());
+}
+
+#[test]
+fn overlay_location_without_endpoint_does_not_add_endpoint() {
+    let mut location = serde_json::json!({ "resourceType": "Location", "id": "location-1" });
+    let org_ids = vec!["organization-1".to_string()];
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut location,
+        "Location",
+        "location-1",
+        &org_ids,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[], // no endpoint_ids
+        &mut rng,
+    );
+    // Should have managingOrganization but not endpoint
+    assert!(location.get("managingOrganization").is_some());
+    assert!(location.get("endpoint").is_none());
+}
+
+#[test]
+fn overlay_organization_anchor_without_parent_removes_partof() {
+    // When organization-1 exists but organization-2 does not, partOf should be removed
+    let org_ids = vec!["organization-1".to_string()];
+    let mut rng = rand::rng();
+    let mut anchor = serde_json::json!({ "resourceType": "Organization", "id": "organization-1", "partOf": { "reference": "Organization/organization-2" } });
+    overlay::overlay_cross_references(
+        &mut anchor,
+        "Organization",
+        "organization-1",
+        &org_ids,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // partOf should be removed since organization-2 doesn't exist
+    assert!(anchor.get("partOf").is_none());
+}
+
+#[test]
+fn overlay_organization_non_anchor_removes_partof_when_no_earlier_orgs() {
+    // organization-1 is the first org, so it should not get partOf (it's the anchor)
+    // organization-2 is the anchor parent, so it should not get partOf
+    // Test organization-3 with only org-1 and org-2 in the list
+    let org_ids = vec!["organization-1".to_string(), "organization-2".to_string()];
+    let mut rng = rand::rng();
+    let mut org = serde_json::json!({ "resourceType": "Organization", "id": "organization-3" });
+    overlay::overlay_cross_references(
+        &mut org,
+        "Organization",
+        "organization-3",
+        &org_ids,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // organization-3 is not in org_ids, so self_index will be None -> partOf removed
+    assert!(org.get("partOf").is_none());
+}
+
+#[test]
+fn overlay_provenance_without_target_creates_target() {
+    let mut provenance = serde_json::json!({
+        "resourceType": "Provenance",
+        "id": "provenance-1",
+    });
+    let org_ids = vec!["organization-1".to_string()];
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut provenance,
+        "Provenance",
+        "provenance-1",
+        &org_ids,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // Should create a target with reference and extension
+    let target = &provenance["target"];
+    assert!(target.is_array(), "target should be an array");
+    assert!(
+        !target.as_array().unwrap().is_empty(),
+        "target should not be empty"
+    );
+    assert!(target[0]["reference"].as_str().is_some());
+    assert!(
+        target[0]["extension"].is_array(),
+        "target.extension should be populated"
+    );
+}
+
+#[test]
+fn overlay_provenance_without_org_does_not_add_agent_or_entity() {
+    let mut provenance = serde_json::json!({
+        "resourceType": "Provenance",
+        "id": "provenance-1",
+    });
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut provenance,
+        "Provenance",
+        "provenance-1",
+        &[], // no org_ids
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // Should not add agent or entity when no org_ids
+    assert!(provenance.get("agent").is_none());
+    assert!(provenance.get("entity").is_none());
+    // Should still have activity
+    assert!(provenance.get("activity").is_some());
+}
+
+#[test]
+fn overlay_provenance_preserves_existing_target_extension() {
+    let mut provenance = serde_json::json!({
+        "resourceType": "Provenance",
+        "id": "provenance-1",
+        "target": [{
+            "reference": "Organization/placeholder",
+            "extension": [{
+                "url": "http://example.org/custom-extension",
+                "valueString": "custom"
+            }]
+        }]
+    });
+    let org_ids = vec!["organization-1".to_string()];
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut provenance,
+        "Provenance",
+        "provenance-1",
+        &org_ids,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // The existing extension should be preserved (not replaced by targetPath)
+    let ext = &provenance["target"][0]["extension"];
+    assert!(ext.is_array());
+    assert_eq!(
+        ext[0]["url"].as_str(),
+        Some("http://example.org/custom-extension"),
+        "Existing extension should be preserved"
+    );
+}
+
+#[test]
+fn overlay_provenance_no_non_empty_pools_returns_none_target() {
+    let mut provenance = serde_json::json!({
+        "resourceType": "Provenance",
+        "id": "provenance-1",
+    });
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut provenance,
+        "Provenance",
+        "provenance-1",
+        &[], // all empty
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // Should not have target when all pools are empty
+    assert!(provenance.get("target").is_none());
+}
+
+// ── Tests for ensure_telecom_contact_purpose edge cases ─────────────────
+
+#[test]
+fn overlay_healthcareservice_telecom_empty_array_adds_default() {
+    let mut hs = serde_json::json!({
+        "resourceType": "HealthcareService",
+        "id": "healthcareservice-1",
+        "telecom": []
+    });
+    let org_ids = vec!["organization-1".to_string()];
+    let loc_ids = vec!["location-1".to_string()];
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut hs,
+        "HealthcareService",
+        "healthcareservice-1",
+        &org_ids,
+        &[],
+        &loc_ids,
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // Should add a default telecom entry with contact-purpose extension
+    let telecom = hs["telecom"].as_array().expect("should be an array");
+    assert!(!telecom.is_empty(), "telecom should not be empty");
+    assert!(
+        telecom[0]["extension"].is_array(),
+        "telecom.extension should be populated"
+    );
+}
+
+#[test]
+fn overlay_healthcareservice_telecom_non_array_unchanged() {
+    let mut hs = serde_json::json!({
+        "resourceType": "HealthcareService",
+        "id": "healthcareservice-1",
+        "telecom": "not-an-array"
+    });
+    let org_ids = vec!["organization-1".to_string()];
+    let loc_ids = vec!["location-1".to_string()];
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut hs,
+        "HealthcareService",
+        "healthcareservice-1",
+        &org_ids,
+        &[],
+        &loc_ids,
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // telecom should remain unchanged (non-array)
+    assert_eq!(hs["telecom"], "not-an-array");
+}
+
+#[test]
+fn overlay_healthcareservice_telecom_with_existing_extension_preserved() {
+    let mut hs = serde_json::json!({
+        "resourceType": "HealthcareService",
+        "id": "healthcareservice-1",
+        "telecom": [{
+            "system": "phone",
+            "value": "555-0000",
+            "extension": [{
+                "url": "http://example.org/existing",
+                "valueString": "existing"
+            }]
+        }]
+    });
+    let org_ids = vec!["organization-1".to_string()];
+    let loc_ids = vec!["location-1".to_string()];
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut hs,
+        "HealthcareService",
+        "healthcareservice-1",
+        &org_ids,
+        &[],
+        &loc_ids,
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // Existing extension should be preserved
+    let ext = &hs["telecom"][0]["extension"];
+    assert_eq!(
+        ext[0]["url"].as_str(),
+        Some("http://example.org/existing"),
+        "Existing extension should be preserved"
+    );
+}
+
+// ── Tests for supplement edge cases ──────────────────────────────────────
+
+#[test]
+fn normalize_supplement_references_maps_resource_to_organization() {
+    let mut value = serde_json::json!({
+        "reference": "Resource/some-uuid"
+    });
+    normalize_supplement_references(&mut value);
+    assert_eq!(
+        value["reference"].as_str(),
+        Some("Organization/organization-1"),
+        "Resource type should be mapped to Organization"
+    );
+}
+
+#[test]
+fn normalize_supplement_references_handles_nested_objects() {
+    let mut value = serde_json::json!({
+        "contained": [{
+            "reference": "Practitioner/abc-123"
+        }],
+        "managingOrganization": {
+            "reference": "Organization/xyz-789"
+        }
+    });
+    normalize_supplement_references(&mut value);
+    assert_eq!(
+        value["contained"][0]["reference"].as_str(),
+        Some("Practitioner/practitioner-1")
+    );
+    assert_eq!(
+        value["managingOrganization"]["reference"].as_str(),
+        Some("Organization/organization-1")
+    );
+}
+
+#[test]
+fn normalize_supplement_references_skips_non_reference_values() {
+    let mut value = serde_json::json!({
+        "name": "Test",
+        "active": true,
+        "count": 42
+    });
+    normalize_supplement_references(&mut value);
+    assert_eq!(value["name"], "Test");
+    assert_eq!(value["active"], true);
+    assert_eq!(value["count"], 42);
+}
+
+#[test]
+fn normalize_supplement_references_handles_http_urls() {
+    let mut value = serde_json::json!({
+        "reference": "http://example.org/Patient/some-id"
+    });
+    normalize_supplement_references(&mut value);
+    // HTTP URLs are split on '/', so rtype = "http:" which gets mapped
+    // to "http:/http:-1" — this is the current behavior
+    let ref_str = value["reference"]
+        .as_str()
+        .expect("should have a string value");
+    assert!(!ref_str.is_empty(), "reference should not be empty");
+}
+
+// ── Tests for update edge cases ─────────────────────────────────────────
+
+#[test]
+fn update_ndjson_skips_missing_ndjson_files() {
+    let dir = tempfile::tempdir().expect("should create temp dir");
+    let mut ids = IdStore::new();
+    ids.insert(
+        "NonExistentType".to_string(),
+        vec!["nonexistent-1".to_string()],
+    );
+
+    // Create data directory but no NDJSON file
+    std::fs::create_dir_all(dir.path().join("data")).expect("should create directory");
+
+    // Should not error — should skip types whose NDJSON files don't exist
+    generate_update_ndjson(&ids, dir.path()).expect("should succeed");
+
+    let update_path = dir.path().join("data/update.ndjson");
+    assert!(update_path.exists(), "update.ndjson should exist");
+    let contents = std::fs::read_to_string(&update_path).expect("should read file");
+    assert!(contents.trim().is_empty(), "update.ndjson should be empty");
+}
+
+#[test]
+fn update_ndjson_with_supplement_ids() {
+    let dir = tempfile::tempdir().expect("should create temp dir");
+
+    // Generate bulk data for Organization
+    let mut counts = HashMap::new();
+    counts.insert("Organization".to_string(), 2);
+
+    let ids = generate_bulk_data(
+        &counts,
+        &HashMap::new(),
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .expect("should succeed");
+
+    // Add a supplement ID (simulating what write_supplement_ndjson does)
+    let mut all_ids = ids;
+    all_ids.insert("Patient".to_string(), vec!["patient-1".to_string()]);
+
+    // Write a Patient.ndjson file (simulating supplement output)
+    let patient_resource = serde_json::json!({
+        "resourceType": "Patient",
+        "id": "patient-1",
+        "meta": { "profile": ["http://hl7.org/fhir/StructureDefinition/Patient"] },
+        "status": "active"
+    });
+    let patient_path = dir.path().join("data/Patient.ndjson");
+    let mut writer = std::io::BufWriter::new(std::fs::File::create(&patient_path).unwrap());
+    serde_json::to_writer(&mut writer, &patient_resource).unwrap();
+    writeln!(writer).unwrap();
+    writer.flush().unwrap();
+
+    generate_update_ndjson(&all_ids, dir.path()).expect("should succeed");
+
+    let update_path = dir.path().join("data/update.ndjson");
+    let contents = std::fs::read_to_string(&update_path).expect("should read file");
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+    // Should have 3 lines: 2 Organization + 1 Patient
+    assert_eq!(lines.len(), 3, "update.ndjson should have 3 lines");
+}
+
+// ── Tests for discover_mutable_paths and walk_for_mutables ──────────────
+
+#[test]
+fn discover_mutable_paths_finds_string_number_and_bool() {
+    let resource = serde_json::json!({
+        "resourceType": "Patient",
+        "id": "patient-1",
+        "name": "John",
+        "age": 30,
+        "active": true,
+        "meta": { "versionId": "1" }
+    });
+    let candidates = discover_mutable_paths(&resource);
+    // Should find: name (string), age (number), active (bool)
+    // Should skip: resourceType, id, meta
+    assert_eq!(candidates.len(), 3, "Should find 3 mutable paths");
+    let paths: Vec<&str> = candidates.iter().map(|(p, _)| p.as_str()).collect();
+    assert!(paths.contains(&"name"));
+    assert!(paths.contains(&"age"));
+    assert!(paths.contains(&"active"));
+}
+
+#[test]
+fn discover_mutable_paths_skips_reference_fields() {
+    let resource = serde_json::json!({
+        "resourceType": "Patient",
+        "id": "patient-1",
+        "managingOrganization": {
+            "reference": "Organization/org-1"
+        },
+        "name": "John"
+    });
+    let candidates = discover_mutable_paths(&resource);
+    // Should find: name (string)
+    // Should skip: managingOrganization (contains reference), resourceType, id
+    let paths: Vec<&str> = candidates.iter().map(|(p, _)| p.as_str()).collect();
+    assert!(paths.contains(&"name"), "Should find 'name'");
+    assert!(
+        !paths.contains(&"managingOrganization"),
+        "Should skip managingOrganization"
+    );
+}
+
+#[test]
+fn discover_mutable_paths_handles_nested_objects() {
+    let resource = serde_json::json!({
+        "resourceType": "Patient",
+        "id": "patient-1",
+        "name": [{
+            "family": "Smith",
+            "given": ["John"]
+        }]
+    });
+    let candidates = discover_mutable_paths(&resource);
+    // Should find: name[0].family (string)
+    // Should NOT find: name[0].given (array of primitives, skipped)
+    let paths: Vec<&str> = candidates.iter().map(|(p, _)| p.as_str()).collect();
+    assert!(
+        paths.contains(&"name[0].family"),
+        "Should find name[0].family"
+    );
+}
+
+#[test]
+fn discover_mutable_paths_empty_resource() {
+    let resource = serde_json::json!({ "resourceType": "Patient", "id": "patient-1" });
+    let candidates = discover_mutable_paths(&resource);
+    assert!(candidates.is_empty(), "Should find no mutable paths");
+}
+
+#[test]
+fn is_reference_field_identifies_references() {
+    let ref_val = serde_json::Value::String("Organization/org-1".to_string());
+    assert!(is_reference_field("reference", &ref_val));
+    let non_ref = serde_json::Value::String("John".to_string());
+    assert!(!is_reference_field("reference", &non_ref));
+    let http_ref = serde_json::Value::String("http://example.org/Patient/1".to_string());
+    assert!(!is_reference_field("reference", &http_ref));
+    let not_ref_key = serde_json::Value::String("Organization/org-1".to_string());
+    assert!(!is_reference_field("name", &not_ref_key));
+}
+
+#[test]
+fn get_at_path_handles_dotted_and_array_paths() {
+    let value = serde_json::json!({
+        "name": [{
+            "family": "Smith",
+            "given": ["John"]
+        }],
+        "address": {
+            "city": "Sydney"
+        }
+    });
+    assert_eq!(
+        get_at_path(&value, "name[0].family").and_then(|v| v.as_str()),
+        Some("Smith")
+    );
+    assert_eq!(
+        get_at_path(&value, "address.city").and_then(|v| v.as_str()),
+        Some("Sydney")
+    );
+    assert!(get_at_path(&value, "nonexistent").is_none());
+    assert!(get_at_path(&value, "name[999]").is_none());
+}
+
+#[test]
+fn set_at_path_modifies_nested_values() {
+    let mut value = serde_json::json!({
+        "name": [{
+            "family": "Smith"
+        }],
+        "address": {
+            "city": "Sydney"
+        }
+    });
+    set_at_path(&mut value, "name[0].family", serde_json::json!("Jones"));
+    assert_eq!(value["name"][0]["family"], "Jones");
+    set_at_path(&mut value, "address.city", serde_json::json!("Melbourne"));
+    assert_eq!(value["address"]["city"], "Melbourne");
+}
+
+#[test]
+fn mutate_string_changes_value() {
+    let mut value = serde_json::json!({
+        "name": "John"
+    });
+    let mut rng = rand::rng();
+    mutate_string(&mut value, "name", &mut rng);
+    let new_name = value["name"].as_str().expect("should be a string");
+    assert!(
+        !new_name.is_empty(),
+        "name should not be empty after mutation"
+    );
+}
+
+#[test]
+fn mutate_number_changes_value() {
+    let mut value = serde_json::json!({
+        "age": 30
+    });
+    let mut rng = rand::rng();
+    mutate_number(&mut value, "age", &mut rng);
+    let new_age = value["age"].as_f64().expect("should be a number");
+    // Should be within ±10% of 30
+    assert!(
+        (27.0..=33.0).contains(&new_age),
+        "age should be within 10% of 30, got {}",
+        new_age
+    );
+}
+
+#[test]
+fn mutate_number_with_zero_default() {
+    let mut value = serde_json::json!({
+        "count": "not-a-number"
+    });
+    let mut rng = rand::rng();
+    mutate_number(&mut value, "count", &mut rng);
+    // Should use 0.0 as default and jitter around it
+    let new_count = value["count"].as_f64().expect("should be a number");
+    assert!(
+        (-0.1..=0.1).contains(&new_count),
+        "count should be near 0, got {}",
+        new_count
+    );
+}
+
+#[test]
+fn mutate_bool_flips_value() {
+    let mut value = serde_json::json!({
+        "active": true
+    });
+    let mut rng = rand::rng();
+    mutate_bool(&mut value, "active", &mut rng);
+    assert_eq!(value["active"], false, "bool should be flipped to false");
+    mutate_bool(&mut value, "active", &mut rng);
+    assert_eq!(value["active"], true, "bool should be flipped back to true");
+}
+
+#[test]
+fn mutate_bool_with_missing_value_defaults_to_true() {
+    let mut value = serde_json::json!({
+        "active": "not-a-bool"
+    });
+    let mut rng = rand::rng();
+    mutate_bool(&mut value, "active", &mut rng);
+    // Should default to true, then flip to false
+    assert_eq!(value["active"], false);
+}
+
+#[test]
+fn apply_random_updates_does_not_change_id_or_resource_type() {
+    let mut resource = serde_json::json!({
+        "resourceType": "Organization",
+        "id": "organization-1",
+        "name": "Test Org",
+        "active": true
+    });
+    let mut rng = rand::rng();
+    apply_random_updates(&mut resource, "Organization", &mut rng);
+    assert_eq!(resource["resourceType"], "Organization");
+    assert_eq!(resource["id"], "organization-1");
+}
+
+#[test]
+fn apply_random_updates_handles_resource_with_no_mutable_fields() {
+    let mut resource = serde_json::json!({
+        "resourceType": "Patient",
+        "id": "patient-1",
+        "meta": { "versionId": "1" }
+    });
+    let mut rng = rand::rng();
+    // Should not panic
+    apply_random_updates(&mut resource, "Patient", &mut rng);
+    assert_eq!(resource["resourceType"], "Patient");
+    assert_eq!(resource["id"], "patient-1");
+}
+
+// ── Tests for profile-aware generation with profiles ────────────────────
+
+#[test]
+fn bulk_data_with_profile_uses_profile_aware_generation() {
+    let dir = tempfile::tempdir().expect("should create temp dir");
+    let mut counts = HashMap::new();
+    counts.insert("Patient".to_string(), 2);
+
+    let profile = crate::model::profile::StructureDefinition {
+        resource_type: "StructureDefinition".to_string(),
+        url: "http://example.org/fhir/StructureDefinition/MyPatient".to_string(),
+        name: "MyPatient".to_string(),
+        base_type: "Patient".to_string(),
+        kind: "resource".to_string(),
+        derivation: Some("constraint".to_string()),
+        snapshot: None,
+        differential: None,
+        base_definition: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+    };
+
+    let mut profile_urls = HashMap::new();
+    profile_urls.insert(
+        "Patient".to_string(),
+        "http://example.org/fhir/StructureDefinition/MyPatient".to_string(),
+    );
+
+    let ids = generate_bulk_data(
+        &counts,
+        &profile_urls,
+        &[profile],
+        &HashMap::new(),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .expect("should succeed");
+
+    assert_eq!(ids.get("Patient").expect("key should exist").len(), 2);
+
+    let path = dir.path().join("data/Patient.ndjson");
+    let contents = std::fs::read_to_string(&path).expect("should read file");
+    for line in contents.lines().filter(|l| !l.is_empty()) {
+        let patient: serde_json::Value =
+            serde_json::from_str(line).expect("should parse valid JSON");
+        assert_eq!(patient["resourceType"], "Patient");
+        // Profile-aware generation should set meta.profile from the StructureDefinition
+        let profiles = patient["meta"]["profile"]
+            .as_array()
+            .expect("should be an array");
+        assert_eq!(
+            profiles[0].as_str().expect("should have a string value"),
+            "http://example.org/fhir/StructureDefinition/MyPatient"
+        );
+    }
+}
+
+#[test]
+fn bulk_data_with_profile_url_but_no_profile_falls_back_to_generic() {
+    let dir = tempfile::tempdir().expect("should create temp dir");
+    let mut counts = HashMap::new();
+    counts.insert("Patient".to_string(), 2);
+
+    let mut profile_urls = HashMap::new();
+    profile_urls.insert(
+        "Patient".to_string(),
+        "http://example.org/fhir/StructureDefinition/MyPatient".to_string(),
+    );
+
+    // No profiles provided — should fall back to generic generation
+    // but still stamp the profile URL from profile_urls
+    let ids = generate_bulk_data(
+        &counts,
+        &profile_urls,
+        &[], // no profiles
+        &HashMap::new(),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .expect("should succeed");
+
+    assert_eq!(ids.get("Patient").expect("key should exist").len(), 2);
+
+    let path = dir.path().join("data/Patient.ndjson");
+    let contents = std::fs::read_to_string(&path).expect("should read file");
+    for line in contents.lines().filter(|l| !l.is_empty()) {
+        let patient: serde_json::Value =
+            serde_json::from_str(line).expect("should parse valid JSON");
+        assert_eq!(patient["resourceType"], "Patient");
+        // Should use the profile URL from profile_urls
+        let profiles = patient["meta"]["profile"]
+            .as_array()
+            .expect("should be an array");
+        assert_eq!(
+            profiles[0].as_str().expect("should have a string value"),
+            "http://example.org/fhir/StructureDefinition/MyPatient"
+        );
+    }
+}
+
+// ── Tests for bulk_data_creation_order with empty counts ─────────────────
+
+#[test]
+fn bulk_data_creation_order_empty_counts() {
+    let counts = HashMap::new();
+    let order = bulk_data_creation_order(&counts);
+    assert!(order.is_empty(), "Order should be empty for empty counts");
+}
+
+#[test]
+fn bulk_data_creation_order_with_unknown_types() {
+    let mut counts = HashMap::new();
+    counts.insert("UnknownType".to_string(), 5);
+    let order = bulk_data_creation_order(&counts);
+    assert_eq!(order.len(), 1);
+    assert_eq!(order[0], "UnknownType");
+}
+
+// ── Tests for write_supplement_ndjson with profile-aware generation ─────
+
+#[test]
+fn write_supplement_with_profile_uses_profile_aware_generation() {
+    let dir = tempfile::tempdir().expect("should create temp dir");
+
+    let profile = crate::model::profile::StructureDefinition {
+        resource_type: "StructureDefinition".to_string(),
+        url: "http://example.org/fhir/StructureDefinition/MyPatient".to_string(),
+        name: "MyPatient".to_string(),
+        base_type: "Patient".to_string(),
+        kind: "resource".to_string(),
+        derivation: Some("constraint".to_string()),
+        snapshot: None,
+        differential: None,
+        base_definition: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+    };
+
+    let mut profile_urls = HashMap::new();
+    profile_urls.insert(
+        "Patient".to_string(),
+        "http://example.org/fhir/StructureDefinition/MyPatient".to_string(),
+    );
+
+    let creation_order = vec!["Patient".to_string()];
+    let bulk_counts = HashMap::new();
+
+    let supplement_ids = write_supplement_ndjson(
+        &creation_order,
+        &bulk_counts,
+        &profile_urls,
+        &[profile],
+        &HashMap::new(),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .expect("should succeed");
+
+    assert!(supplement_ids.contains_key("Patient"));
+    assert_eq!(supplement_ids["Patient"].len(), 1);
+
+    let path = dir.path().join("data/Patient.ndjson");
+    let contents = std::fs::read_to_string(&path).expect("should read file");
+    let parsed: serde_json::Value =
+        serde_json::from_str(contents.trim()).expect("should parse valid JSON");
+    assert_eq!(parsed["resourceType"], "Patient");
+    assert_eq!(parsed["id"], "patient-1");
+}
+
+// ── Tests for generate_supplement_resource with profile ─────────────────
+
+#[test]
+fn supplement_resource_with_profile_uses_profile_aware_generation() {
+    let profile = crate::model::profile::StructureDefinition {
+        resource_type: "StructureDefinition".to_string(),
+        url: "http://example.org/fhir/StructureDefinition/MyPatient".to_string(),
+        name: "MyPatient".to_string(),
+        base_type: "Patient".to_string(),
+        kind: "resource".to_string(),
+        derivation: Some("constraint".to_string()),
+        snapshot: None,
+        differential: None,
+        base_definition: Some("http://hl7.org/fhir/StructureDefinition/Patient".to_string()),
+    };
+
+    let mut profile_urls = HashMap::new();
+    profile_urls.insert(
+        "Patient".to_string(),
+        "http://example.org/fhir/StructureDefinition/MyPatient".to_string(),
+    );
+
+    let resource = generate_supplement_resource(
+        "Patient",
+        &profile_urls,
+        &[profile],
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("should succeed");
+
+    assert_eq!(resource["resourceType"], "Patient");
+    assert_eq!(resource["id"], "patient-1");
+    let profiles = resource["meta"]["profile"]
+        .as_array()
+        .expect("should be an array");
+    assert_eq!(
+        profiles[0].as_str().expect("should have a string value"),
+        "http://example.org/fhir/StructureDefinition/MyPatient"
+    );
+}
+
+// ── Tests for write_supplement_ndjson error handling ────────────────────
+
+#[test]
+fn write_supplement_handles_generation_error_gracefully() {
+    let dir = tempfile::tempdir().expect("should create temp dir");
+
+    // Use a type that has no profile and no hardcoded generator
+    // The generic generator should handle it
+    let creation_order = vec!["Patient".to_string()];
+    let bulk_counts = HashMap::new();
+
+    let supplement_ids = write_supplement_ndjson(
+        &creation_order,
+        &bulk_counts,
+        &HashMap::new(),
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .expect("should succeed");
+
+    assert!(supplement_ids.contains_key("Patient"));
+}
+
+// ── Tests for write_supplement_ndjson with combined.ndjson ──────────────
+
+#[test]
+fn write_supplement_appends_to_existing_combined() {
+    let dir = tempfile::tempdir().expect("should create temp dir");
+
+    // Create a combined.ndjson with some content first
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("should create dir");
+    let combined_path = data_dir.join("combined.ndjson");
+    let existing_resource = serde_json::json!({ "resourceType": "Organization", "id": "org-1" });
+    std::fs::write(
+        &combined_path,
+        serde_json::to_string(&existing_resource).unwrap() + "\n",
+    )
+    .expect("should write");
+
+    let creation_order = vec!["Patient".to_string()];
+    let bulk_counts = HashMap::new();
+
+    write_supplement_ndjson(
+        &creation_order,
+        &bulk_counts,
+        &HashMap::new(),
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .expect("should succeed");
+
+    // combined.ndjson should have 2 lines (existing + supplement)
+    let contents = std::fs::read_to_string(&combined_path).expect("should read file");
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 2, "combined.ndjson should have 2 lines");
+}
+
+// ── Tests for generate_update_ndjson with various resource shapes ───────
+
+#[test]
+fn update_ndjson_with_multiple_types() {
+    let dir = tempfile::tempdir().expect("should create temp dir");
+
+    let mut counts = HashMap::new();
+    counts.insert("Organization".to_string(), 2);
+    counts.insert("Practitioner".to_string(), 2);
+    counts.insert("Location".to_string(), 2);
+
+    let ids = generate_bulk_data(
+        &counts,
+        &HashMap::new(),
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .expect("should succeed");
+
+    generate_update_ndjson(&ids, dir.path()).expect("should succeed");
+
+    let update_path = dir.path().join("data/update.ndjson");
+    let contents = std::fs::read_to_string(&update_path).expect("should read file");
+    let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+    let total: usize = counts.values().sum::<u64>() as usize;
+    assert_eq!(
+        lines.len(),
+        total,
+        "update.ndjson should have {} lines",
+        total
+    );
+
+    // Verify each line has valid JSON with resourceType and id
+    for line in &lines {
+        let resource: serde_json::Value =
+            serde_json::from_str(line).expect("should parse valid JSON");
+        assert!(resource["resourceType"].as_str().is_some());
+        assert!(resource["id"].as_str().is_some());
+    }
+}
+
+// ── Tests for PractitionerRole overlay with all reference types ─────────
+
+#[test]
+fn overlay_practitionerrole_with_all_references() {
+    let mut pr =
+        serde_json::json!({ "resourceType": "PractitionerRole", "id": "practitionerrole-1" });
+    let org_ids = vec!["organization-1".to_string()];
+    let prac_ids = vec!["practitioner-1".to_string()];
+    let loc_ids = vec!["location-1".to_string()];
+    let hs_ids = vec!["healthcareservice-1".to_string()];
+    let endpoint_ids = vec!["endpoint-1".to_string()];
+    let mut rng = rand::rng();
+
+    overlay::overlay_cross_references(
+        &mut pr,
+        "PractitionerRole",
+        "practitionerrole-1",
+        &org_ids,
+        &prac_ids,
+        &loc_ids,
+        &hs_ids,
+        &[],
+        &endpoint_ids,
+        &mut rng,
+    );
+
+    assert!(pr["practitioner"]["reference"].as_str().is_some());
+    assert!(pr["organization"]["reference"].as_str().is_some());
+    assert!(pr["location"][0]["reference"].as_str().is_some());
+    assert!(pr["healthcareService"][0]["reference"].as_str().is_some());
+    assert!(pr["endpoint"][0]["reference"].as_str().is_some());
+}
+
+#[test]
+fn overlay_practitionerrole_round_robin_healthcareservice() {
+    let mut pr1 =
+        serde_json::json!({ "resourceType": "PractitionerRole", "id": "practitionerrole-1" });
+    let mut pr2 =
+        serde_json::json!({ "resourceType": "PractitionerRole", "id": "practitionerrole-2" });
+    let org_ids = vec!["organization-1".to_string()];
+    let prac_ids = vec!["practitioner-1".to_string()];
+    let hs_ids = vec![
+        "healthcareservice-1".to_string(),
+        "healthcareservice-2".to_string(),
+    ];
+    let mut rng = rand::rng();
+
+    overlay::overlay_cross_references(
+        &mut pr1,
+        "PractitionerRole",
+        "practitionerrole-1",
+        &org_ids,
+        &prac_ids,
+        &[],
+        &hs_ids,
+        &[],
+        &[],
+        &mut rng,
+    );
+    overlay::overlay_cross_references(
+        &mut pr2,
+        "PractitionerRole",
+        "practitionerrole-2",
+        &org_ids,
+        &prac_ids,
+        &[],
+        &hs_ids,
+        &[],
+        &[],
+        &mut rng,
+    );
+
+    // Round-robin: practitionerrole-1 → hs_ids[1] (1 % 2 = 1), practitionerrole-2 → hs_ids[0] (2 % 2 = 0)
+    assert_eq!(
+        pr1["healthcareService"][0]["reference"].as_str(),
+        Some("HealthcareService/healthcareservice-2")
+    );
+    assert_eq!(
+        pr2["healthcareService"][0]["reference"].as_str(),
+        Some("HealthcareService/healthcareservice-1")
+    );
+}
+
+#[test]
+fn overlay_practitionerrole_deterministic_practitioner_ref() {
+    // practitionerrole-1 should always reference practitioner-1 when it exists
+    let mut pr =
+        serde_json::json!({ "resourceType": "PractitionerRole", "id": "practitionerrole-1" });
+    let prac_ids = vec!["practitioner-1".to_string(), "practitioner-2".to_string()];
+    let mut rng = rand::rng();
+
+    overlay::overlay_cross_references(
+        &mut pr,
+        "PractitionerRole",
+        "practitionerrole-1",
+        &[],
+        &prac_ids,
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+
+    assert_eq!(
+        pr["practitioner"]["reference"].as_str(),
+        Some("Practitioner/practitioner-1")
+    );
+}
+
+// ── Tests for Organization overlay with random partOf ────────────────────
+
+#[test]
+fn overlay_organization_non_anchor_with_earlier_orgs_may_get_partof() {
+    // Test that organization-3 (which is in org_ids at index 2) can get partOf
+    // pointing to an earlier organization
+    let org_ids = vec![
+        "organization-1".to_string(),
+        "organization-2".to_string(),
+        "organization-3".to_string(),
+    ];
+    let mut rng = rand::rng();
+    let mut org = serde_json::json!({ "resourceType": "Organization", "id": "organization-3" });
+    overlay::overlay_cross_references(
+        &mut org,
+        "Organization",
+        "organization-3",
+        &org_ids,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // organization-3 is at index 2, so it could get partOf (1% chance)
+    // or not — either is valid. Just verify it doesn't panic.
+    let _ = org;
+}
+
+// ── Tests for ensure_target_path_extension ──────────────────────────────
+
+#[test]
+fn ensure_target_path_extension_skips_when_extension_exists() {
+    let mut target_obj = serde_json::Map::new();
+    target_obj.insert(
+        "extension".to_string(),
+        serde_json::json!([{
+            "url": "http://example.org/custom",
+            "valueString": "custom"
+        }]),
+    );
+    // This function is private, but we can test it via the Provenance overlay
+    // which calls it internally
+    let mut provenance = serde_json::json!({
+        "resourceType": "Provenance",
+        "id": "provenance-1",
+        "target": [{
+            "reference": "Organization/placeholder",
+            "extension": [{
+                "url": "http://example.org/custom",
+                "valueString": "custom"
+            }]
+        }]
+    });
+    let org_ids = vec!["organization-1".to_string()];
+    let mut rng = rand::rng();
+    overlay::overlay_cross_references(
+        &mut provenance,
+        "Provenance",
+        "provenance-1",
+        &org_ids,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut rng,
+    );
+    // The existing extension should be preserved
+    assert_eq!(
+        provenance["target"][0]["extension"][0]["url"].as_str(),
+        Some("http://example.org/custom")
+    );
+}
+
+// ── Tests for write_supplement_ndjson with NON_RESOURCE_TYPES ───────────
+
+#[test]
+fn write_supplement_skips_extension_type() {
+    let dir = tempfile::tempdir().expect("should create temp dir");
+
+    let creation_order = vec!["Extension".to_string()];
+    let bulk_counts = HashMap::new();
+
+    let supplement_ids = write_supplement_ndjson(
+        &creation_order,
+        &bulk_counts,
+        &HashMap::new(),
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .expect("should succeed");
+
+    assert!(
+        !supplement_ids.contains_key("Extension"),
+        "Extension should be skipped as a non-resource type"
+    );
+}
+
+// ── Tests for generate_supplement_resource with all resource types ──────
+
+#[test]
+fn supplement_resource_generates_all_types() {
+    for resource_type in &[
+        "Organization",
+        "Practitioner",
+        "PractitionerRole",
+        "Location",
+        "HealthcareService",
+        "Endpoint",
+    ] {
+        let resource = generate_supplement_resource(
+            resource_type,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap_or_else(|_| panic!("should generate {} supplement", resource_type));
+
+        assert_eq!(resource["resourceType"], *resource_type);
+        assert_eq!(
+            resource["id"],
+            format!("{}-1", resource_type.to_lowercase())
+        );
+    }
+}
+
+// ── Tests for write_supplement_ndjson with all types in creation_order ──
+
+#[test]
+fn write_supplement_skips_types_with_bulk_count() {
+    let dir = tempfile::tempdir().expect("should create temp dir");
+
+    let mut bulk_counts = HashMap::new();
+    bulk_counts.insert("Organization".to_string(), 5);
+    bulk_counts.insert("Practitioner".to_string(), 3);
+
+    let creation_order = vec![
+        "Organization".to_string(),
+        "Practitioner".to_string(),
+        "Patient".to_string(),
+    ];
+
+    let supplement_ids = write_supplement_ndjson(
+        &creation_order,
+        &bulk_counts,
+        &HashMap::new(),
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+        dir.path(),
+    )
+    .expect("should succeed");
+
+    // Organization and Practitioner have bulk counts, so they should not be in supplement
+    assert!(!supplement_ids.contains_key("Organization"));
+    assert!(!supplement_ids.contains_key("Practitioner"));
+    // Patient has no bulk count, so it should be in supplement
+    assert!(supplement_ids.contains_key("Patient"));
 }

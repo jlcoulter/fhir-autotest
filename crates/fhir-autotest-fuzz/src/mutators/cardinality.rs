@@ -246,6 +246,22 @@ mod tests {
         }
     }
 
+    fn profile_without_snapshot() -> StructureDefinition {
+        StructureDefinition {
+            resource_type: "StructureDefinition".to_string(),
+            url: "http://example.org/Test".to_string(),
+            base_type: "Patient".to_string(),
+            name: "TestPatient".to_string(),
+            kind: "resource".to_string(),
+            derivation: None,
+            base_definition: None,
+            snapshot: None,
+            differential: None,
+        }
+    }
+
+    // ── Strategy 0: Remove required fields ───────────────────────────────
+
     #[test]
     fn remove_required_field() {
         let profile = test_profile();
@@ -266,6 +282,30 @@ mod tests {
     }
 
     #[test]
+    fn remove_required_field_no_snapshot() {
+        let profile = profile_without_snapshot();
+        let mut resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Smith"}],
+            "gender": "male"
+        });
+        // Should not panic when snapshot is None
+        apply_cardinality_mutations(&mut resource, &profile, 0);
+        assert_eq!(resource["name"][0]["family"], "Smith");
+    }
+
+    #[test]
+    fn remove_required_field_not_object() {
+        let profile = test_profile();
+        let mut resource = serde_json::json!("not_an_object");
+        // Should not panic when resource is not an object
+        apply_cardinality_mutations(&mut resource, &profile, 0);
+        assert_eq!(resource, "not_an_object");
+    }
+
+    // ── Strategy 1: Duplicate max=1 fields ──────────────────────────────
+
+    #[test]
     fn duplicate_max_one_field() {
         let profile = test_profile();
         let mut resource = serde_json::json!({
@@ -278,5 +318,157 @@ mod tests {
             resource["gender"].is_array(),
             "gender (max=1) should be wrapped in array"
         );
+        assert_eq!(resource["gender"][0], "male");
+        assert_eq!(resource["gender"][1], "male");
+    }
+
+    #[test]
+    fn duplicate_max_one_field_no_snapshot() {
+        let profile = profile_without_snapshot();
+        let mut resource = serde_json::json!({
+            "resourceType": "Patient",
+            "gender": "male"
+        });
+        // Should not panic when snapshot is None
+        apply_cardinality_mutations(&mut resource, &profile, 1);
+        assert_eq!(resource["gender"], "male");
+    }
+
+    #[test]
+    fn duplicate_max_one_field_not_object() {
+        let profile = test_profile();
+        let mut resource = serde_json::json!("not_an_object");
+        // Should not panic when resource is not an object
+        apply_cardinality_mutations(&mut resource, &profile, 1);
+        assert_eq!(resource, "not_an_object");
+    }
+
+    #[test]
+    fn duplicate_max_one_field_missing_key() {
+        let profile = test_profile();
+        let mut resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Smith"}]
+            // gender is missing
+        });
+        // Should not panic when the max=1 field is not present
+        apply_cardinality_mutations(&mut resource, &profile, 1);
+        assert!(resource.get("gender").is_none());
+    }
+
+    // ── Strategy 2: Add unexpected fields ────────────────────────────────
+
+    #[test]
+    fn add_unexpected_fields() {
+        let profile = test_profile();
+        let mut resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Smith"}]
+        });
+        apply_cardinality_mutations(&mut resource, &profile, 2);
+        assert_eq!(resource["x_fhir_unknown_field"], "unexpected");
+        assert_eq!(resource["x_fhir_nested_unknown"]["nested"], "value");
+        assert_eq!(resource["x_fhir_nested_unknown"]["deep"]["deeper"], "value");
+    }
+
+    #[test]
+    fn add_unexpected_fields_not_object() {
+        let profile = test_profile();
+        let mut resource = serde_json::json!("not_an_object");
+        // Should not panic when resource is not an object
+        apply_cardinality_mutations(&mut resource, &profile, 2);
+        assert_eq!(resource, "not_an_object");
+    }
+
+    // ── Strategy 3: Remove optional fields ───────────────────────────────
+
+    #[test]
+    fn remove_optional_fields() {
+        let profile = test_profile();
+        let mut resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Smith"}],
+            "gender": "male"
+        });
+        apply_cardinality_mutations(&mut resource, &profile, 3);
+        // "name" is required (min=1), should remain
+        assert!(
+            resource.get("name").is_some(),
+            "Required field 'name' should remain"
+        );
+        // "gender" is optional (min=0), should be removed
+        assert!(
+            resource.get("gender").is_none(),
+            "Optional field 'gender' should be removed"
+        );
+    }
+
+    #[test]
+    fn remove_optional_fields_no_snapshot() {
+        let profile = profile_without_snapshot();
+        let mut resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Smith"}],
+            "gender": "male"
+        });
+        // Should not panic when snapshot is None
+        apply_cardinality_mutations(&mut resource, &profile, 3);
+        assert_eq!(resource["name"][0]["family"], "Smith");
+        assert_eq!(resource["gender"], "male");
+    }
+
+    #[test]
+    fn remove_optional_fields_not_object() {
+        let profile = test_profile();
+        let mut resource = serde_json::json!("not_an_object");
+        // Should not panic when resource is not an object
+        apply_cardinality_mutations(&mut resource, &profile, 3);
+        assert_eq!(resource, "not_an_object");
+    }
+
+    // ── field_name_from_path ─────────────────────────────────────────────
+
+    #[test]
+    fn field_name_from_simple_path() {
+        assert_eq!(field_name_from_path("Patient.name"), "name");
+    }
+
+    #[test]
+    fn field_name_from_root_path() {
+        assert_eq!(field_name_from_path("Patient"), "Patient");
+    }
+
+    #[test]
+    fn field_name_from_deep_path() {
+        assert_eq!(field_name_from_path("Patient.name.given"), "given");
+    }
+
+    #[test]
+    fn field_name_from_empty_path() {
+        assert_eq!(field_name_from_path(""), "");
+    }
+
+    // ── Mutator trait ────────────────────────────────────────────────────
+
+    #[test]
+    fn cardinality_mutator_name() {
+        let m = CardinalityMutator;
+        assert_eq!(m.name(), "cardinality");
+    }
+
+    #[test]
+    fn cardinality_mutator_mutate_returns_clone() {
+        let m = CardinalityMutator;
+        let resource = serde_json::json!({
+            "resourceType": "Patient",
+            "name": [{"family": "Smith"}],
+            "gender": "male"
+        });
+        let profile = test_profile();
+        let result = m.mutate(&resource, &profile, 0);
+        // Required field "name" should be removed
+        assert!(result.get("name").is_none());
+        // Original should be unchanged
+        assert!(resource.get("name").is_some());
     }
 }
