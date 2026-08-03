@@ -1,5 +1,5 @@
 use clap::Parser;
-use fhir_autotest_bench::BenchConfig;
+use fhir_autotest::config::models::TestConfig;
 use fhir_autotest_bench::BenchRunner;
 
 #[derive(Parser)]
@@ -7,13 +7,9 @@ use fhir_autotest_bench::BenchRunner;
 #[command(about = "Performance and load testing for FHIR servers using fhir-autotest test plans")]
 #[command(version)]
 struct Cli {
-    /// Path to the benchmark config TOML file.
-    #[arg(long, default_value = "./bench-config.toml")]
+    /// Path to the project's config.toml (default: ./config.toml).
+    #[arg(short, long, default_value = "./config.toml")]
     config: String,
-
-    /// Override: path to the project's config.toml.
-    #[arg(long)]
-    project_config: Option<String>,
 
     /// Override: number of concurrent virtual users.
     #[arg(short = 'c', long)]
@@ -71,64 +67,55 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // Load bench config from file, then apply CLI overrides
-    let mut bench_config = if std::path::Path::new(&cli.config).exists() {
-        BenchConfig::load(&cli.config)?
-    } else {
-        tracing::info!(
-            "Bench config '{}' not found, using defaults",
-            cli.config
-        );
-        BenchConfig::default()
-    };
+    // Load the project's TestConfig (includes [bench] section)
+    let mut config = TestConfig::load(&cli.config)?;
 
-    // CLI overrides
-    if let Some(path) = cli.project_config {
-        bench_config.config_path = path;
-    }
-    if let Some(c) = cli.concurrency {
-        bench_config.concurrency = c;
-    }
-    if let Some(d) = cli.duration {
-        bench_config.duration_secs = d;
-    }
-    if let Some(r) = cli.ramp_up {
-        bench_config.ramp_up_secs = r;
-    }
-    if let Some(o) = cli.output {
-        bench_config.output = o;
-    }
-    if cli.skip_data_ensure {
-        bench_config.skip_data_ensure = true;
-    }
-    if cli.skip_cleanup {
-        bench_config.skip_cleanup = true;
-    }
-    if !cli.filter_groups.is_empty() {
-        bench_config.filter_groups = cli.filter_groups;
-    }
-    if let Some(tp) = cli.test_plan {
-        bench_config.test_plan = Some(tp);
-    }
-    if let Some(w) = cli.warmup {
-        bench_config.warmup_requests = w;
-    }
+    // CLI overrides for mock mode
     if cli.mock {
-        bench_config.mock = true;
+        config.mock = true;
     }
     if let Some(p) = cli.mock_port {
-        bench_config.mock_port = p;
+        config.mock_port = p;
+    }
+
+    // CLI overrides for bench settings
+    if let Some(c) = cli.concurrency {
+        config.bench.concurrency = c;
+    }
+    if let Some(d) = cli.duration {
+        config.bench.duration_secs = d;
+    }
+    if let Some(r) = cli.ramp_up {
+        config.bench.ramp_up_secs = r;
+    }
+    if let Some(o) = cli.output {
+        config.bench.output = o;
+    }
+    if cli.skip_data_ensure {
+        config.bench.skip_data_ensure = true;
+    }
+    if cli.skip_cleanup {
+        config.bench.skip_cleanup = true;
+    }
+    if !cli.filter_groups.is_empty() {
+        config.bench.filter_groups = cli.filter_groups;
+    }
+    if let Some(tp) = cli.test_plan {
+        config.bench.test_plan = Some(tp);
+    }
+    if let Some(w) = cli.warmup {
+        config.bench.warmup_requests = w;
     }
 
     tracing::info!(
         "Benchmark config: concurrency={}, duration={}s, ramp_up={}s, output={}",
-        bench_config.concurrency,
-        bench_config.duration_secs,
-        bench_config.ramp_up_secs,
-        bench_config.output,
+        config.bench.concurrency,
+        config.bench.duration_secs,
+        config.bench.ramp_up_secs,
+        config.bench.output,
     );
 
-    let runner = BenchRunner::new(bench_config).await?;
+    let runner = BenchRunner::new(config).await?;
     runner.run().await?;
 
     Ok(())

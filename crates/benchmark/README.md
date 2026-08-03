@@ -19,14 +19,12 @@ cargo run -p fhir-autotest-bench -- --duration 0
 
 ## Configuration
 
-The benchmark reads from `bench-config.toml` by default, layered on top of the project's `config.toml`. All fields have sensible defaults.
+Benchmark settings live in the `[bench]` section of the project's `config.toml`. All fields have sensible defaults — only set what you need to override.
 
-### `bench-config.toml`
+### `config.toml` — `[bench]` section
 
 ```toml
-# Path to the project's config.toml (default: ./config.toml)
-# config_path = "./config.toml"
-
+[bench]
 # Number of concurrent virtual users
 concurrency = 20
 
@@ -54,11 +52,8 @@ output = "./bench-results"
 # Warm-up requests before recording
 # warmup_requests = 10
 
-# Use built-in mock FHIR server
-# mock = false
-
-# Mock server port (0 = random)
-# mock_port = 0
+# Path to an existing test_plan.json (skip generation)
+# test_plan = "./output/test_plan.json"
 ```
 
 ### CLI Overrides
@@ -77,12 +72,11 @@ Every config field can be overridden via CLI flags:
     --warmup <N>             Warm-up requests
     --mock                   Use mock FHIR server
     --mock-port <PORT>       Mock server port
-    --project-config <PATH>  Override path to config.toml
 ```
 
 ## How It Works
 
-1. **Config loading** — loads `bench-config.toml` and the project's `config.toml`
+1. **Config loading** — loads `config.toml` (includes `[bench]` section)
 2. **Mock server** (optional) — starts an in-process mock FHIR server
 3. **Data ensure** — generates bulk test data and uploads it to the server
 4. **Test plan** — loads or generates a test plan from the IG package

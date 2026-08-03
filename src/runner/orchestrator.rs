@@ -804,6 +804,7 @@ mod tests {
                 mock: false,
                 mock_port: 0,
                 dry_run: false,
+                bench: BenchConfig::default(),
             };
 
             TestEnvironment {
@@ -1473,11 +1474,12 @@ mod tests {
                 tls_ca_cert: None,
             },
             repository: None,
-            overrides: crate::config::models::OverrideConfig::default(),
-            data_generation: crate::config::models::DataGenerationConfig::default(),
+            overrides: OverrideConfig::default(),
+            data_generation: DataGenerationConfig::default(),
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
         let orchestrator = Orchestrator::new(config);
         // Just verify it doesn't panic

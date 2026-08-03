@@ -178,6 +178,14 @@ pub struct TestConfig {
     /// (e.g. for manual testing with curl). Use 0 for a random port.
     #[serde(default = "default_mock_port")]
     pub mock_port: u16,
+
+    /// Benchmark configuration for load/performance testing.
+    ///
+    /// When running `fhir-autotest-bench`, these settings control concurrency,
+    /// duration, ramp-up, and other benchmark parameters. They are read from
+    /// the `[bench]` section of the config file.
+    #[serde(default)]
+    pub bench: BenchConfig,
 }
 
 fn default_output() -> String {
@@ -406,6 +414,93 @@ pub struct DataGenerationConfig {
     /// `{output}/data/` for manual upload.
     #[serde(default)]
     pub generate_only: bool,
+}
+
+/// Benchmark configuration for load/performance testing.
+///
+/// These settings are read from the `[bench]` section of the config file
+/// and used by `fhir-autotest-bench` for concurrency, duration, ramp-up,
+/// and other benchmark parameters.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BenchConfig {
+    /// Number of concurrent virtual users (connections).
+    #[serde(default = "default_bench_concurrency")]
+    pub concurrency: usize,
+
+    /// Duration of the benchmark in seconds (0 = run all tests once).
+    #[serde(default = "default_bench_duration_secs")]
+    pub duration_secs: u64,
+
+    /// Ramp-up time in seconds — gradually increase concurrency over this period.
+    #[serde(default = "default_bench_ramp_up_secs")]
+    pub ramp_up_secs: u64,
+
+    /// Timeout per individual request in seconds.
+    #[serde(default = "default_bench_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+
+    /// Path to an existing test_plan.json. If absent, one is generated.
+    #[serde(default)]
+    pub test_plan: Option<String>,
+
+    /// Output directory for benchmark reports (default: ./bench-results).
+    #[serde(default = "default_bench_output")]
+    pub output: String,
+
+    /// Whether to skip the data-ensure step (assume data already exists).
+    #[serde(default)]
+    pub skip_data_ensure: bool,
+
+    /// Whether to skip cleanup after the benchmark.
+    #[serde(default)]
+    pub skip_cleanup: bool,
+
+    /// Filter test groups by resource type (e.g. ["Patient", "Observation"]).
+    /// Empty means all groups.
+    #[serde(default)]
+    pub filter_groups: Vec<String>,
+
+    /// Warm-up requests before recording measurements (number of requests).
+    #[serde(default = "default_bench_warmup")]
+    pub warmup_requests: usize,
+}
+
+fn default_bench_concurrency() -> usize { 10 }
+fn default_bench_duration_secs() -> u64 { 30 }
+fn default_bench_ramp_up_secs() -> u64 { 5 }
+fn default_bench_request_timeout_secs() -> u64 { 30 }
+fn default_bench_output() -> String { "./bench-results".to_string() }
+fn default_bench_warmup() -> usize { 10 }
+
+impl BenchConfig {
+    pub fn request_timeout(&self) -> Duration {
+        Duration::from_secs(self.request_timeout_secs)
+    }
+
+    pub fn duration(&self) -> Duration {
+        Duration::from_secs(self.duration_secs)
+    }
+
+    pub fn ramp_up(&self) -> Duration {
+        Duration::from_secs(self.ramp_up_secs)
+    }
+}
+
+impl Default for BenchConfig {
+    fn default() -> Self {
+        Self {
+            concurrency: default_bench_concurrency(),
+            duration_secs: default_bench_duration_secs(),
+            ramp_up_secs: default_bench_ramp_up_secs(),
+            request_timeout_secs: default_bench_request_timeout_secs(),
+            test_plan: None,
+            output: default_bench_output(),
+            skip_data_ensure: false,
+            skip_cleanup: false,
+            filter_groups: Vec::new(),
+            warmup_requests: default_bench_warmup(),
+        }
+    }
 }
 
 impl TestConfig {

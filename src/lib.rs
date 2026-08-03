@@ -471,6 +471,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let cs = select_capability_statement(&pkg, &config).unwrap();
@@ -512,6 +513,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let cs = select_capability_statement(&pkg, &config).unwrap();
@@ -550,6 +552,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let cs = select_capability_statement(&pkg, &config).unwrap();
@@ -581,6 +584,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -639,6 +643,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let cs = select_capability_statement(&pkg, &config).unwrap();
@@ -673,6 +678,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -720,6 +726,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -765,6 +772,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -812,6 +820,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -869,6 +878,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: BenchConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);

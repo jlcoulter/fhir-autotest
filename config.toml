@@ -131,3 +131,20 @@ counts.Location = 200
 counts.HealthcareService = 100
 counts.Endpoint = 500
 counts.Provenance = 100
+
+# ── Benchmark (optional) ─────────────────────────────────────────────────────
+#
+# Settings for fhir-autotest-bench (performance/load testing).
+# All fields have defaults — uncomment to override.
+#
+# [bench]
+# concurrency = 10
+# duration_secs = 30
+# ramp_up_secs = 5
+# request_timeout_secs = 30
+# output = "./bench-results"
+# skip_data_ensure = false
+# skip_cleanup = false
+# filter_groups = []
+# warmup_requests = 10
+# test_plan = "./output/test_plan.json"

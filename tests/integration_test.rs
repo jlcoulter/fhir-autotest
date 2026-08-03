@@ -455,6 +455,7 @@ async fn run_against_mock_fhir_server() {
         data_generation: fhir_autotest::config::models::DataGenerationConfig::default(),
         mock: false,
         mock_port: 0,
+        bench: fhir_autotest::config::models::BenchConfig::default(),
     };
 
     // 4. Run the orchestrator
@@ -627,6 +628,7 @@ async fn bulk_data_generates_ndjson_files() {
         },
         mock: false,
         mock_port: 0,
+        bench: BenchConfig::default(),
     };
 
     let orchestrator = Orchestrator::new(config);
@@ -1117,6 +1119,7 @@ fn extended_package_runs_against_mock_server() {
         data_generation: fhir_autotest::config::models::DataGenerationConfig::default(),
         mock: false,
         mock_port: 0,
+        bench: fhir_autotest::config::models::BenchConfig::default(),
     };
 
     let orchestrator = Orchestrator::new(config);

@@ -2,7 +2,8 @@ use crate::config::BenchConfig;
 use crate::report::{BenchReport, BenchSample};
 use anyhow::Result;
 use chrono::Utc;
-use fhir_autotest::config::models::{TestConfig, WriteEndpoint};
+use fhir_autotest::config::models::TestConfig;
+use fhir_autotest::config::models::WriteEndpoint;
 use fhir_autotest::generate::model::TestPlan;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::Rng;
@@ -29,25 +30,19 @@ pub struct BenchRunner {
 }
 
 impl BenchRunner {
-    /// Create a new runner, loading configs and ensuring data/plan exist.
-    pub async fn new(mut bench_config: BenchConfig) -> Result<Self> {
-        // 1. Load the project's TestConfig
-        let mut test_config = TestConfig::load(&bench_config.config_path)?;
+    /// Create a new runner from a loaded TestConfig.
+    pub async fn new(test_config: TestConfig) -> Result<Self> {
+        let bench_config = test_config.bench.clone();
 
-        // 2. If mock mode is enabled, start the mock server and redirect
-        if bench_config.mock || test_config.mock {
-            let port = if bench_config.mock_port != 0 {
-                bench_config.mock_port
-            } else {
-                test_config.mock_port
-            };
+        // 1. If mock mode is enabled, start the mock server and redirect
+        let mut test_config = test_config;
+        if test_config.mock {
+            let port = test_config.mock_port;
             let addr = fhir_autotest::mock_server::start_mock_server(port).await?;
             let mock_url = format!("http://{}/fhir", addr);
             println!("Mock FHIR server running at {}", mock_url);
             test_config.server.base_url = mock_url.clone();
             test_config.repository = None;
-            // Also update the bench config so the report reflects the mock URL
-            bench_config.mock = true;
         }
 
         // 3. Build an HTTP client with the server's TLS settings and headers
@@ -726,6 +721,7 @@ mod tests {
             mock: false,
             mock_port: 0,
             dry_run: false,
+            bench: bench_config.clone(),
         };
 
         let write_endpoint = test_config.write_endpoint();
@@ -906,19 +902,42 @@ base_url = "http://localhost:9999/fhir"
         std::fs::write(&config_path, &config_content).unwrap();
 
         let cfg = BenchConfig {
-            config_path: config_path.to_str().unwrap().to_string(),
             duration_secs: 0,
             concurrency: 1,
             warmup_requests: 0,
             output: temp_dir.path().join("bench-out").to_str().unwrap().to_string(),
             skip_data_ensure: true,
             skip_cleanup: true,
-            mock: true,
-            mock_port: 0,
             ..BenchConfig::default()
         };
 
-        let runner = BenchRunner::new(cfg).await.unwrap();
+        // Write the bench config into the config.toml
+        let config_content = format!(
+            r#"
+package = "{}"
+output = "{}"
+mock = true
+mock_port = 0
+
+[server]
+base_url = "http://localhost:9999/fhir"
+
+[bench]
+concurrency = {}
+duration_secs = 0
+output = "{}"
+skip_data_ensure = true
+skip_cleanup = true
+"#,
+            tgz_path.to_str().unwrap().replace('\\', "/"),
+            temp_dir.path().join("output").to_str().unwrap().replace('\\', "/"),
+            cfg.concurrency,
+            cfg.output,
+        );
+        std::fs::write(&config_path, &config_content).unwrap();
+
+        let test_config = TestConfig::load(config_path.to_str().unwrap()).unwrap();
+        let runner = BenchRunner::new(test_config).await.unwrap();
         let report = runner.run().await.unwrap();
 
         assert!(report.total_requests > 0, "mock server should serve requests");
