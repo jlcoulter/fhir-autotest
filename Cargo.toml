@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "fhir-autotest-fuzz"]
+resolver = "2"
+
 [package]
 name = "fhir-autotest"
 version = "0.1.0"

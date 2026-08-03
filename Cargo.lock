@@ -459,6 +459,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fhir-autotest-fuzz"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fhir-autotest",
+ "rand 0.9.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "filetime"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
