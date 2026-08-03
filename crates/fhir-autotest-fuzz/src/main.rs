@@ -1,4 +1,5 @@
 use clap::Parser;
+use fhir_autotest_fuzz::config::FuzzConfig;
 
 #[derive(Parser)]
 #[command(name = "fhir-autotest-fuzz")]
@@ -15,7 +16,7 @@ struct Cli {
     target: Option<String>,
 
     /// Path to config file (TOML). Defaults to ./config.toml.
-    /// Fields: package, server.base_url, mock, mock_port, output, dry_run.
+    /// Reads [fuzz] section for defaults: iterations, mutations, seed, delay_ms, concurrency.
     #[arg(short, long, default_value = "./config.toml")]
     config: String,
 
@@ -24,21 +25,25 @@ struct Cli {
     output: Option<String>,
 
     /// Number of fuzz iterations per resource type (default: 100).
-    #[arg(short, long, default_value_t = 100)]
-    iterations: usize,
+    /// Overrides [fuzz].iterations in config file.
+    #[arg(short, long)]
+    iterations: Option<usize>,
 
     /// Comma-separated list of mutation categories to apply.
     /// Options: boundary, type_mismatch, cardinality, encoding, search_param, all
-    #[arg(long, default_value = "all")]
-    mutations: String,
+    /// Overrides [fuzz].mutations in config file.
+    #[arg(long)]
+    mutations: Option<String>,
 
     /// Seed for deterministic fuzzing (0 = random).
-    #[arg(long, default_value_t = 0)]
-    seed: u64,
+    /// Overrides [fuzz].seed in config file.
+    #[arg(long)]
+    seed: Option<u64>,
 
     /// Concurrency level for parallel fuzzing (default: 4).
-    #[arg(long, default_value_t = 4)]
-    concurrency: usize,
+    /// Overrides [fuzz].concurrency in config file.
+    #[arg(long)]
+    concurrency: Option<usize>,
 
     /// Dry-run: print what would be sent without executing.
     /// Overrides `dry_run` in config file.
@@ -57,8 +62,9 @@ struct Cli {
 
     /// Delay in milliseconds between requests (default: 0 = no delay).
     /// Use to avoid overwhelming the target server.
-    #[arg(long, default_value_t = 0)]
-    delay_ms: u64,
+    /// Overrides [fuzz].delay_ms in config file.
+    #[arg(long)]
+    delay_ms: Option<u64>,
 }
 
 #[tokio::main]
@@ -72,8 +78,16 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // Load config file — provides defaults for package, target, mock, output, dry_run
+    // Load config file — provides defaults for everything
     let config = fhir_autotest::TestConfig::load(&cli.config).ok();
+    let fuzz_config: FuzzConfig = config
+        .as_ref()
+        .and_then(|_| {
+            // Re-read the raw TOML to extract [fuzz] section
+            let content = std::fs::read_to_string(&cli.config).ok()?;
+            toml::from_str(&content).ok()
+        })
+        .unwrap_or_default();
 
     // Resolve package path: CLI flag wins, then config file
     let package = cli
@@ -120,8 +134,15 @@ async fn main() -> anyhow::Result<()> {
     // Resolve dry-run: CLI --dry-run wins, then config.dry_run
     let dry_run = cli.dry_run || config.as_ref().map(|c| c.dry_run).unwrap_or(false);
 
+    // Resolve fuzzer settings: CLI flag wins, then [fuzz] config, then hardcoded default
+    let iterations = cli.iterations.unwrap_or(fuzz_config.iterations);
+    let seed = cli.seed.unwrap_or(fuzz_config.seed);
+    let concurrency = cli.concurrency.unwrap_or(fuzz_config.concurrency);
+    let delay_ms = cli.delay_ms.unwrap_or(fuzz_config.delay_ms);
+    let mutations_str = cli.mutations.unwrap_or(fuzz_config.mutations);
+
     // Parse mutation categories
-    let categories: Vec<&str> = if cli.mutations == "all" {
+    let categories: Vec<&str> = if mutations_str == "all" {
         vec![
             "boundary",
             "type_mismatch",
@@ -130,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
             "search_param",
         ]
     } else {
-        cli.mutations.split(',').map(|s| s.trim()).collect()
+        mutations_str.split(',').map(|s| s.trim()).collect()
     };
 
     // Parse the IG package to get profiles, structure definitions, and capability statement
@@ -149,11 +170,11 @@ async fn main() -> anyhow::Result<()> {
     let mut fuzzer = fhir_autotest_fuzz::Fuzzer::new(
         &target_url,
         &output,
-        cli.iterations,
-        cli.seed,
-        cli.concurrency,
+        iterations,
+        seed,
+        concurrency,
         dry_run,
-        cli.delay_ms,
+        delay_ms,
     );
 
     // Register mutation strategies
@@ -183,7 +204,7 @@ async fn main() -> anyhow::Result<()> {
     // Run the fuzzer
     println!(
         "Starting fuzz run: {} iterations, {} categories, target: {}",
-        cli.iterations,
+        iterations,
         categories.len(),
         target_url
     );

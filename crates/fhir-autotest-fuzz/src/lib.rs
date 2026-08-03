@@ -1,3 +1,4 @@
+pub mod config;
 pub mod mutators;
 pub mod reporter;
 pub mod runner;
