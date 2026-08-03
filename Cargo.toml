@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "fhir-autotest-fuzz"]
+members = [".", "crates/*"]
 resolver = "2"
 
 [package]
