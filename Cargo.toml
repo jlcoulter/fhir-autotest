@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/benchmark",
 ]
+members = [".", "crates/*"]
+resolver = "2"
 
 [package]
 name = "fhir-autotest"

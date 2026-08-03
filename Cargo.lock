@@ -508,6 +508,13 @@ dependencies = [
  "fhir-autotest",
  "hdrhistogram",
  "indicatif",
+name = "fhir-autotest-fuzz"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "fhir-autotest",
  "rand 0.9.5",
  "reqwest",
  "serde",
@@ -517,6 +524,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

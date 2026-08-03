@@ -35,23 +35,51 @@ type MockStore = Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>;
 
 /// Stamp FHIR meta fields (versionId, lastUpdated) on a resource.
 fn stamp_meta(body: &mut serde_json::Value) {
-    if body.get("meta").is_none() {
-        body["meta"] = serde_json::json!({});
-    }
-    let meta = body.get_mut("meta").unwrap();
-    if meta.get("versionId").is_none() {
-        meta["versionId"] = serde_json::Value::String("1".to_string());
-    }
-    if meta.get("lastUpdated").is_none() {
-        meta["lastUpdated"] = serde_json::Value::String(chrono::Utc::now().to_rfc3339());
+    match body.get_mut("meta") {
+        None => {
+            body["meta"] = serde_json::json!({
+                "versionId": "1",
+                "lastUpdated": chrono::Utc::now().to_rfc3339()
+            });
+        }
+        Some(meta) if !meta.is_object() => {
+            // meta exists but is not an object (e.g. fuzzer mutated it to an array).
+            // Replace it with a valid meta block.
+            *meta = serde_json::json!({
+                "versionId": "1",
+                "lastUpdated": chrono::Utc::now().to_rfc3339()
+            });
+        }
+        Some(meta) => {
+            if meta.get("versionId").is_none() {
+                meta["versionId"] = serde_json::Value::String("1".to_string());
+            }
+            if meta.get("lastUpdated").is_none() {
+                meta["lastUpdated"] = serde_json::Value::String(chrono::Utc::now().to_rfc3339());
+            }
+        }
     }
 }
 
 async fn create_resource(
     State(store): State<MockStore>,
     Path(rtype): Path<String>,
-    Json(mut body): Json<serde_json::Value>,
+    Json(body): Json<serde_json::Value>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if !body.is_object() {
+        tracing::debug!(
+            "Mock POST /{} → 400 Bad Request (body must be a JSON object)",
+            rtype
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "resourceType": "OperationOutcome",
+                "issue": [{"severity": "error", "code": "structure", "diagnostics": "Request body must be a JSON object"}]
+            })),
+        );
+    }
+    let mut body = body;
     let id = uuid::Uuid::new_v4().to_string();
     body["id"] = serde_json::Value::String(id.clone());
     stamp_meta(&mut body);
@@ -630,8 +658,23 @@ fn extract_codings_from_value<'a>(
 async fn update_resource(
     State(store): State<MockStore>,
     Path((rtype, id)): Path<(String, String)>,
-    Json(mut body): Json<serde_json::Value>,
+    Json(body): Json<serde_json::Value>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if !body.is_object() {
+        tracing::debug!(
+            "Mock PUT /{}/{} → 400 Bad Request (body must be a JSON object)",
+            rtype,
+            id
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "resourceType": "OperationOutcome",
+                "issue": [{"severity": "error", "code": "structure", "diagnostics": "Request body must be a JSON object"}]
+            })),
+        );
+    }
+    let mut body = body;
     body["id"] = serde_json::Value::String(id.clone());
     stamp_meta(&mut body);
     let mut store = store.lock().unwrap();
@@ -2529,8 +2572,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_with_array_body_returns_400() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Send an array instead of an object — should get 400
+        let resp = client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!([{"resourceType": "Patient"}]))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["resourceType"], "OperationOutcome");
+    }
+
+    #[tokio::test]
+    async fn test_update_with_array_body_returns_400() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Send an array instead of an object to PUT — should get 400
+        let resp = client
+            .put(format!("{}/Patient/some-id", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!([{"resourceType": "Patient"}]))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["resourceType"], "OperationOutcome");
+    }
+
+    #[tokio::test]
+    async fn test_create_with_null_body_returns_400() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Send null — should get 400
+        let resp = client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::Value::Null)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_create_with_malformed_meta_array_does_not_panic() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Send a resource where meta is an array (fuzzer-style mutation)
+        let resp = client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!({
+                "resourceType": "Patient",
+                "meta": ["versionId", "lastUpdated"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        // Should not panic — either 201 (meta replaced) or 400
+        assert!(
+            resp.status() == StatusCode::CREATED || resp.status() == StatusCode::BAD_REQUEST,
+            "Expected 201 or 400, got {}",
+            resp.status()
+        );
+    }
+
+    #[tokio::test]
     async fn test_stamp_meta_existing_meta() {
-        // Test stamp_meta when meta already exists with versionId
         let mut resource = serde_json::json!({
             "resourceType": "Patient",
             "meta": {
