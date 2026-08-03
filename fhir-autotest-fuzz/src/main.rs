@@ -54,6 +54,11 @@ struct Cli {
     /// Overrides `mock_port` in config file.
     #[arg(long, default_value_t = 0)]
     mock_port: u16,
+
+    /// Delay in milliseconds between requests (default: 0 = no delay).
+    /// Use to avoid overwhelming the target server.
+    #[arg(long, default_value_t = 0)]
+    delay_ms: u64,
 }
 
 #[tokio::main]
@@ -148,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
         cli.seed,
         cli.concurrency,
         dry_run,
+        cli.delay_ms,
     );
 
     // Register mutation strategies

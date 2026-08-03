@@ -9,6 +9,7 @@ use crate::runner::FuzzRunner;
 use fhir_autotest::model::capability::CapabilityStatement;
 use fhir_autotest::model::profile::StructureDefinition;
 use std::path::Path;
+use tokio::time::sleep;
 
 /// The main fuzzer orchestrator.
 ///
@@ -23,6 +24,8 @@ pub struct Fuzzer {
     seed: u64,
     concurrency: usize,
     dry_run: bool,
+    delay_ms: u64,
+    progress_interval: usize,
     mutators: Vec<Box<dyn Mutator>>,
 }
 
@@ -34,6 +37,7 @@ impl Fuzzer {
         seed: u64,
         concurrency: usize,
         dry_run: bool,
+        delay_ms: u64,
     ) -> Self {
         Self {
             target_url: target_url.to_string(),
@@ -42,12 +46,40 @@ impl Fuzzer {
             seed,
             concurrency,
             dry_run,
+            delay_ms,
+            progress_interval: 100,
             mutators: Vec::new(),
         }
     }
 
+    pub fn set_progress_interval(&mut self, interval: usize) {
+        self.progress_interval = interval;
+    }
+
     pub fn register_mutator(&mut self, mutator: Box<dyn Mutator>) {
         self.mutators.push(mutator);
+    }
+
+    /// Print a progress line if the request count has crossed a multiple of the interval.
+    fn report_progress(&self, report: &FuzzReport, phase: &str, detail: &str) {
+        if report.total > 0 && report.total % self.progress_interval == 0 {
+            let pct_anomalies = if report.total > 0 {
+                (report.anomalies as f64 / report.total as f64) * 100.0
+            } else {
+                0.0
+            };
+            println!(
+                "  [{:>8}] {} — {} requests, {} anomalies ({:.1}%) — {}",
+                phase, detail, report.total, report.anomalies, pct_anomalies, detail
+            );
+        }
+    }
+
+    /// Enforce inter-request delay if configured.
+    async fn enforce_delay(&self) {
+        if self.delay_ms > 0 {
+            sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        }
     }
 
     pub async fn run(
@@ -108,6 +140,13 @@ impl Fuzzer {
                         report.anomalies += 1;
                         report.anomaly_details.push(result);
                     }
+
+                    self.report_progress(
+                        &report,
+                        "POST",
+                        &format!("{}/{}", profile.base_type, mutator_name),
+                    );
+                    self.enforce_delay().await;
                 }
             }
         }
@@ -130,7 +169,6 @@ impl Fuzzer {
                     }
                 };
 
-            // Generate a fake ID for the PUT target
             let fake_id = format!("fuzz-put-{}", uuid::Uuid::new_v4());
 
             tracing::info!(
@@ -163,6 +201,13 @@ impl Fuzzer {
                         report.anomalies += 1;
                         report.anomaly_details.push(result);
                     }
+
+                    self.report_progress(
+                        &report,
+                        "PUT",
+                        &format!("{}/{}", profile.base_type, mutator_name),
+                    );
+                    self.enforce_delay().await;
                 }
             }
         }
@@ -196,6 +241,13 @@ impl Fuzzer {
                                 report.anomalies += 1;
                                 report.anomaly_details.push(result);
                             }
+
+                            self.report_progress(
+                                &report,
+                                "SEARCH",
+                                &format!("{}?{}", rtype, param_name),
+                            );
+                            self.enforce_delay().await;
                         }
                     }
                 }
