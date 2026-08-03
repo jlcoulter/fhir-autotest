@@ -883,7 +883,7 @@ fn format_duration(us: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fhir_autotest::config::models::{DataGenerationConfig, OverrideConfig, ServerConfig};
+    use fhir_autotest::config::models::{CustomTestsConfig, DataGenerationConfig, OverrideConfig, ServerConfig};
     use fhir_autotest::generate::model::*;
     use fhir_autotest::mock_server::start_mock_server;
 
@@ -992,6 +992,7 @@ mod tests {
             mock_port: 0,
             dry_run: false,
             bench: bench_config.clone(),
+            custom_tests: CustomTestsConfig::default(),
         };
 
         let write_endpoint = test_config.write_endpoint();
