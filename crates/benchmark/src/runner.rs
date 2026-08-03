@@ -883,7 +883,9 @@ fn format_duration(us: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fhir_autotest::config::models::{CustomTestsConfig, DataGenerationConfig, OverrideConfig, ServerConfig};
+    use fhir_autotest::config::models::{
+        CustomTestsConfig, DataGenerationConfig, OverrideConfig, ServerConfig,
+    };
     use fhir_autotest::generate::model::*;
     use fhir_autotest::mock_server::start_mock_server;
 
