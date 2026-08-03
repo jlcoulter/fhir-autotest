@@ -33,8 +33,17 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Test
+      - name: Test (all workspace members)
         run: cargo test --all
+
+      - name: Test bench crate explicitly
+        run: cargo test -p fhir-autotest-bench
+
+      - name: Test fuzz crate explicitly
+        run: cargo test -p fhir-autotest-fuzz
+
+      - name: Fuzz smoke test (10 iterations against mock server)
+        run: cargo run -p fhir-autotest-fuzz -- --mock --iterations 10
 
       - name: Build release
         run: cargo build --release
