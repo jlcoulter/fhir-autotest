@@ -10,8 +10,9 @@ struct Cli {
     package: String,
 
     /// Base URL of the FHIR server to fuzz.
+    /// Required unless --mock is used.
     #[arg(short, long)]
-    target: String,
+    target: Option<String>,
 
     /// Path to a config file (TOML). Overrides individual flags when set.
     #[arg(short, long)]
@@ -63,13 +64,15 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Resolve target URL
-    let target_url = if cli.mock {
+    let target_url: String = if cli.mock {
         let addr = fhir_autotest::mock_server::start_mock_server(cli.mock_port).await?;
         let url = format!("http://{}/fhir", addr);
         println!("Mock FHIR server running at {}", url);
         url
+    } else if let Some(target) = cli.target {
+        target
     } else {
-        cli.target.clone()
+        anyhow::bail!("Either --target <URL> or --mock is required");
     };
 
     // Parse mutation categories
