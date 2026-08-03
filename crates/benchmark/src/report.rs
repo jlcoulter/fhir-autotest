@@ -171,10 +171,9 @@ impl BenchReport {
     pub fn write(&self, output_dir: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(output_dir)?;
 
-        // Summary JSON (no raw samples)
+        // Summary JSON (no raw samples, but keep steps)
         let summary = BenchReport {
             samples: Vec::new(),
-            steps: Vec::new(),
             ..self.clone()
         };
         let summary_json = serde_json::to_string_pretty(&summary)?;
@@ -232,6 +231,23 @@ impl BenchReport {
                 g.throughput_req_per_sec,
             ));
         }
+
+        // Steps table for max-throughput mode
+        if !self.steps.is_empty() {
+            out.push_str("\n── Steps ──\n");
+            out.push_str(&format!("  {:<8} {:>8} {:>8} {:>8} {:>10} {:>10} {:>10} {:>10}  {}\n",
+                "Conc", "Total", "Passed", "Failed", "Err%", "p50", "p95", "p99", "Status"));
+            for s in &self.steps {
+                let status = if s.breached { format!("BREACHED: {}", s.breach_reason) } else { "OK".to_string() };
+                out.push_str(&format!("  {:<8} {:>8} {:>8} {:>8} {:>9.1}% {:>10} {:>10} {:>10}  {}\n",
+                    s.concurrency, s.total, s.passed, s.failed,
+                    s.error_rate * 100.0,
+                    format_duration_us(s.latency_p50_us),
+                    format_duration_us(s.latency_p95_us),
+                    format_duration_us(s.latency_p99_us),
+                    status));
+            }
+        }
         out
     }
 
@@ -252,6 +268,37 @@ impl BenchReport {
                 g.throughput_req_per_sec,
             ));
         }
+
+        // Steps table for max-throughput mode
+        let mut step_rows = String::new();
+        for s in &self.steps {
+            let status = if s.breached {
+                format!("<span class=\"fail\">BREACHED: {}</span>", html_escape(&s.breach_reason))
+            } else {
+                "<span class=\"pass\">OK</span>".to_string()
+            };
+            step_rows.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.1}%</td><td>{}</td><td>{}</td><td>{}</td><td>{:.1}</td><td>{}</td></tr>\n",
+                s.concurrency, s.total, s.passed, s.failed,
+                s.error_rate * 100.0,
+                format_duration_us(s.latency_p50_us),
+                format_duration_us(s.latency_p95_us),
+                format_duration_us(s.latency_p99_us),
+                s.throughput_req_per_sec,
+                status,
+            ));
+        }
+
+        let steps_section = if !self.steps.is_empty() {
+            format!(
+                r#"<h2>Steps</h2>
+<table>
+<tr><th>Conc</th><th>Total</th><th>Passed</th><th>Failed</th><th>Err%</th><th>P50</th><th>P95</th><th>P99</th><th>Throughput</th><th>Status</th></tr>
+{}
+</table>"#, step_rows)
+        } else {
+            String::new()
+        };
 
         format!(
             r#"<!DOCTYPE html>
@@ -293,6 +340,7 @@ td:first-child {{ text-align: left; }}
 <tr><th>Group</th><th>Total</th><th>Passed</th><th>Failed</th><th>P50</th><th>P90</th><th>P95</th><th>P99</th><th>Throughput</th></tr>
 {}
 </table>
+{steps_section}
 </body>
 </html>"#,
             self.timestamp.format("%Y-%m-%d %H:%M:%S"),
@@ -311,6 +359,7 @@ td:first-child {{ text-align: left; }}
             format_duration_us(self.latency_p99_us),
             format_duration_us(self.latency_max_us),
             rows,
+            steps_section = steps_section,
         )
     }
 }

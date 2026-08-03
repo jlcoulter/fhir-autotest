@@ -8,7 +8,7 @@ use fhir_autotest_bench::BenchRunner;
 #[command(version)]
 struct Cli {
     /// Path to the project's config.toml (default: ./config.toml).
-    #[arg(short, long, default_value = "./config.toml")]
+    #[arg(long, default_value = "./config.toml")]
     config: String,
 
     /// Override: number of concurrent virtual users.
