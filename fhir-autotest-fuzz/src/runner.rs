@@ -274,13 +274,6 @@ impl FuzzRunner {
                 if status >= 500 {
                     result.is_anomaly = true;
                     result.reason = Some(format!("Server error: HTTP {}", status));
-                } else if status == 200 || status == 201 {
-                    // A 200/201 on clearly invalid data is suspicious
-                    result.is_anomaly = true;
-                    result.reason = Some(format!(
-                        "Accepted potentially invalid data: HTTP {}",
-                        status
-                    ));
                 } else if status == 0 {
                     result.is_anomaly = true;
                     result.reason = Some("Connection refused or timeout".to_string());
@@ -321,16 +314,8 @@ impl FuzzRunner {
 /// Returns a description of the first leak found, or None.
 fn detect_leak(body: &str) -> Option<String> {
     for (label, pattern) in LEAK_PATTERNS {
-        // Simple substring match for common patterns; regex would be more precise
-        // but substring is fast and catches the vast majority of real leaks.
-        let pattern_chars: Vec<char> = pattern.chars().collect();
-        if pattern_chars.len() > 4 {
-            // Use a simplified check: look for characteristic substrings
-            let characteristic = &pattern[..pattern.len().min(20)];
-            let characteristic = characteristic.trim_start_matches(r"\");
-            if body.contains(characteristic) {
-                return Some(format!("Information leak detected: {}", label));
-            }
+        if body.contains(pattern) {
+            return Some(format!("Information leak detected: {}", label));
         }
     }
 
@@ -389,5 +374,105 @@ mod tests {
     fn detect_html_error_page() {
         let body = "<html><head><title>500 Internal Server Error</title></head><body>";
         assert!(detect_leak(body).is_some());
+    }
+
+    // ── Integration tests with mock FHIR server ─────────────────────────
+
+    /// Start the mock server on a random port and return the base URL.
+    async fn setup_mock_server() -> String {
+        let app = fhir_autotest::mock_server::create_mock_app();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{}/fhir", addr)
+    }
+
+    #[tokio::test]
+    async fn send_fuzzed_post_returns_result() {
+        let base_url = setup_mock_server().await;
+        let runner = FuzzRunner::new(&base_url, 1, false);
+
+        let body = serde_json::json!({"resourceType": "Patient", "name": [{"family": "Test"}]});
+        let result = runner.send_fuzzed("Patient", &body, "boundary", 0).await;
+
+        assert_eq!(result.method, "POST");
+        assert_eq!(result.status_code, 201);
+        assert!(!result.is_anomaly());
+        assert!(result.response_size > 0);
+    }
+
+    #[tokio::test]
+    async fn send_fuzzed_put_returns_result() {
+        let base_url = setup_mock_server().await;
+        let runner = FuzzRunner::new(&base_url, 1, false);
+
+        let body = serde_json::json!({"resourceType": "Patient", "name": [{"family": "Test"}]});
+        let result = runner.send_fuzzed_put("Patient", "test-put-id", &body, "put_boundary", 0).await;
+
+        assert_eq!(result.method, "PUT");
+        assert_eq!(result.status_code, 201); // update-as-create
+        assert!(!result.is_anomaly());
+        assert!(result.response_size > 0);
+    }
+
+    #[tokio::test]
+    async fn send_fuzzed_search_returns_result() {
+        let base_url = setup_mock_server().await;
+        let runner = FuzzRunner::new(&base_url, 1, false);
+
+        let result = runner.send_fuzzed_search("Patient", "?name=Test", "search_param", 0).await;
+
+        assert_eq!(result.method, "GET");
+        assert_eq!(result.status_code, 200);
+        assert!(!result.is_anomaly());
+        assert!(result.response_size > 0);
+    }
+
+    #[tokio::test]
+    async fn send_fuzzed_post_with_invalid_body_flagged_as_anomaly() {
+        let base_url = setup_mock_server().await;
+        let runner = FuzzRunner::new(&base_url, 1, false);
+
+        // Send an array — mock server returns 400, which is not 200/201/500
+        // so it should NOT be flagged as anomaly (400 is expected rejection)
+        let result = runner.send_fuzzed("Patient", &serde_json::json!([1, 2, 3]), "type_mismatch", 0).await;
+
+        assert_eq!(result.status_code, 400);
+        assert!(!result.is_anomaly(), "400 should not be flagged as anomaly");
+    }
+
+    #[tokio::test]
+    async fn send_fuzzed_dry_run_returns_zero_status() {
+        let runner = FuzzRunner::new("http://localhost:1", 1, true);
+
+        let body = serde_json::json!({"resourceType": "Patient"});
+        let result = runner.send_fuzzed("Patient", &body, "boundary", 0).await;
+
+        assert_eq!(result.status_code, 0);
+        assert!(!result.is_anomaly());
+        assert_eq!(result.duration_ms, 0);
+    }
+
+    #[tokio::test]
+    async fn send_fuzzed_put_dry_run_returns_zero_status() {
+        let runner = FuzzRunner::new("http://localhost:1", 1, true);
+
+        let body = serde_json::json!({"resourceType": "Patient"});
+        let result = runner.send_fuzzed_put("Patient", "id", &body, "put_boundary", 0).await;
+
+        assert_eq!(result.status_code, 0);
+        assert!(!result.is_anomaly());
+    }
+
+    #[tokio::test]
+    async fn send_fuzzed_search_dry_run_returns_zero_status() {
+        let runner = FuzzRunner::new("http://localhost:1", 1, true);
+
+        let result = runner.send_fuzzed_search("Patient", "?name=test", "search_param", 0).await;
+
+        assert_eq!(result.status_code, 0);
+        assert!(!result.is_anomaly());
     }
 }

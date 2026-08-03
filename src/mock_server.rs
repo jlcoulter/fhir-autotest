@@ -1535,4 +1535,80 @@ mod tests {
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["resourceType"], "Parameters");
     }
+
+    #[tokio::test]
+    async fn test_create_with_array_body_returns_400() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Send an array instead of an object — should get 400
+        let resp = client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!([{"resourceType": "Patient"}]))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["resourceType"], "OperationOutcome");
+    }
+
+    #[tokio::test]
+    async fn test_update_with_array_body_returns_400() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Send an array instead of an object to PUT — should get 400
+        let resp = client
+            .put(format!("{}/Patient/some-id", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!([{"resourceType": "Patient"}]))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["resourceType"], "OperationOutcome");
+    }
+
+    #[tokio::test]
+    async fn test_create_with_null_body_returns_400() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Send null — should get 400
+        let resp = client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::Value::Null)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_create_with_malformed_meta_array_does_not_panic() {
+        let base_url = setup_server().await;
+        let client = reqwest::Client::new();
+
+        // Send a resource where meta is an array (fuzzer-style mutation)
+        let resp = client
+            .post(format!("{}/Patient", base_url))
+            .header("Content-Type", "application/fhir+json")
+            .json(&serde_json::json!({
+                "resourceType": "Patient",
+                "meta": ["versionId", "lastUpdated"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        // Should not panic — either 201 (meta replaced) or 400
+        assert!(
+            resp.status() == StatusCode::CREATED || resp.status() == StatusCode::BAD_REQUEST,
+            "Expected 201 or 400, got {}",
+            resp.status()
+        );
+    }
 }

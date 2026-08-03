@@ -463,12 +463,14 @@ name = "fhir-autotest-fuzz"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "fhir-autotest",
  "rand 0.9.5",
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

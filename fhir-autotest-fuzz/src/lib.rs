@@ -264,3 +264,121 @@ impl Fuzzer {
         Ok(report)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mutators::BoundaryMutator;
+    use fhir_autotest::test_helpers::create_test_ig_package;
+
+    /// Start the mock server on a random port and return the base URL.
+    async fn setup_mock_server() -> String {
+        let app = fhir_autotest::mock_server::create_mock_app();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{}/fhir", addr)
+    }
+
+    #[tokio::test]
+    async fn fuzzer_run_produces_report_with_all_phases() {
+        let base_url = setup_mock_server().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("fuzz-output");
+
+        // Create the IG package (has Patient + Observation with search params)
+        let tgz_data = create_test_ig_package();
+        let tgz_path = temp_dir.path().join("test_ig.tgz");
+        std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+        // Parse the package
+        let pkg = fhir_autotest::parse_package(tgz_path.to_str().unwrap()).unwrap();
+        let profiles = &pkg.structure_definitions;
+        let cs = pkg.capability_statements.first();
+
+        // Build the fuzzer with 2 iterations and one mutator
+        let mut fuzzer = Fuzzer::new(&base_url, output_dir.to_str().unwrap(), 2, 42, 1, false, 0);
+        fuzzer.register_mutator(Box::new(BoundaryMutator));
+
+        // Run
+        let report = fuzzer.run(profiles, cs).await.unwrap();
+
+        // Verify report structure
+        assert!(report.total > 0, "Should have run at least one request");
+        assert!(!report.categories_used.is_empty(), "Should have categories");
+
+        // POST: 2 profiles × 1 mutator × 2 iterations = 4
+        // PUT: 2 profiles × 1 mutator (put_boundary) × 2 iterations = 4
+        // SEARCH: 2 resource types × 2 params each × 2 iterations = 8
+        // Total: 16
+        assert_eq!(report.total, 16, "Expected 16 total requests");
+
+        // Categories should include boundary and put_boundary
+        assert!(
+            report.categories_used.contains(&"boundary".to_string()),
+            "Should include boundary category"
+        );
+
+        // Report JSON should have been written
+        let report_path = output_dir.join("fuzz_report.json");
+        assert!(report_path.exists(), "fuzz_report.json should exist");
+
+        // Verify the JSON is valid
+        let report_content = std::fs::read_to_string(&report_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&report_content).unwrap();
+        assert_eq!(parsed["total"], 16);
+    }
+
+    #[tokio::test]
+    async fn fuzzer_dry_run_produces_report_with_zero_anomalies() {
+        let base_url = setup_mock_server().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("fuzz-output");
+
+        let tgz_data = create_test_ig_package();
+        let tgz_path = temp_dir.path().join("test_ig.tgz");
+        std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+        let pkg = fhir_autotest::parse_package(tgz_path.to_str().unwrap()).unwrap();
+        let profiles = &pkg.structure_definitions;
+        let cs = pkg.capability_statements.first();
+
+        // Dry run — no actual requests
+        let mut fuzzer = Fuzzer::new(&base_url, output_dir.to_str().unwrap(), 2, 42, 1, true, 0);
+        fuzzer.register_mutator(Box::new(BoundaryMutator));
+
+        let report = fuzzer.run(profiles, cs).await.unwrap();
+
+        assert_eq!(report.total, 16, "Dry run should still count requests");
+        assert_eq!(report.anomalies, 0, "Dry run should have no anomalies");
+        assert!(report.anomaly_details.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fuzzer_run_without_capability_statement_skips_search_phase() {
+        let base_url = setup_mock_server().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("fuzz-output");
+
+        let tgz_data = create_test_ig_package();
+        let tgz_path = temp_dir.path().join("test_ig.tgz");
+        std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+        let pkg = fhir_autotest::parse_package(tgz_path.to_str().unwrap()).unwrap();
+        let profiles = &pkg.structure_definitions;
+
+        // No CapabilityStatement passed — search phase should be skipped
+        let mut fuzzer = Fuzzer::new(&base_url, output_dir.to_str().unwrap(), 2, 42, 1, false, 0);
+        fuzzer.register_mutator(Box::new(BoundaryMutator));
+
+        let report = fuzzer.run(profiles, None).await.unwrap();
+
+        // POST: 2 profiles × 1 mutator × 2 iterations = 4
+        // PUT: 2 profiles × 1 mutator (put_boundary) × 2 iterations = 4
+        // SEARCH: skipped (no CS)
+        // Total: 8
+        assert_eq!(report.total, 8, "Expected 8 requests without CS (4 POST + 4 PUT)");
+    }
+}
