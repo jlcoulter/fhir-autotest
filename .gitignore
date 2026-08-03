@@ -23,3 +23,7 @@ results/
 # Env
 .env
 .env.local
+
+# Coverage artifacts
+cov.json
+lcov.info

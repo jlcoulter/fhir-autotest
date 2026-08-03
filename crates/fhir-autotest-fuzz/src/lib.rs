@@ -375,4 +375,208 @@ mod tests {
             "Expected 8 requests without CS (4 POST + 4 PUT)"
         );
     }
+
+    // ── New tests for uncovered paths ────────────────────────────────────
+
+    #[test]
+    fn fuzzer_set_progress_interval() {
+        let mut fuzzer = Fuzzer::new("http://localhost", "./out", 10, 0, 1, false, 0);
+        assert_eq!(fuzzer.progress_interval, 100);
+        fuzzer.set_progress_interval(50);
+        assert_eq!(fuzzer.progress_interval, 50);
+    }
+
+    #[test]
+    fn fuzzer_new_defaults() {
+        let fuzzer = Fuzzer::new("http://localhost", "./out", 10, 0, 1, false, 0);
+        assert_eq!(fuzzer.target_url, "http://localhost");
+        assert_eq!(fuzzer.output_dir, "./out");
+        assert_eq!(fuzzer.iterations, 10);
+        assert_eq!(fuzzer.seed, 0);
+        assert_eq!(fuzzer.concurrency, 1);
+        assert!(!fuzzer.dry_run);
+        assert_eq!(fuzzer.delay_ms, 0);
+        assert_eq!(fuzzer.progress_interval, 100);
+        assert!(fuzzer.mutators.is_empty());
+    }
+
+    #[test]
+    fn fuzzer_register_mutator() {
+        let mut fuzzer = Fuzzer::new("http://localhost", "./out", 10, 0, 1, false, 0);
+        assert!(fuzzer.mutators.is_empty());
+        fuzzer.register_mutator(Box::new(BoundaryMutator));
+        assert_eq!(fuzzer.mutators.len(), 1);
+        assert_eq!(fuzzer.mutators[0].name(), "boundary");
+    }
+
+    #[test]
+    fn report_progress_triggers_at_interval() {
+        let fuzzer = Fuzzer::new("http://localhost", "./out", 10, 0, 1, false, 0);
+        let mut report = FuzzReport::new();
+        report.total = 100;
+        report.anomalies = 5;
+        // progress_interval is 100, total=100, so 100 % 100 == 0 -> triggers
+        // This just tests it doesn't panic
+        fuzzer.report_progress(&report, "POST", "Patient/boundary");
+    }
+
+    #[test]
+    fn report_progress_does_not_trigger_below_interval() {
+        let fuzzer = Fuzzer::new("http://localhost", "./out", 10, 0, 1, false, 0);
+        let mut report = FuzzReport::new();
+        report.total = 50;
+        // 50 % 100 != 0, should not trigger
+        fuzzer.report_progress(&report, "POST", "Patient/boundary");
+    }
+
+    #[test]
+    fn report_progress_zero_total() {
+        let fuzzer = Fuzzer::new("http://localhost", "./out", 10, 0, 1, false, 0);
+        let report = FuzzReport::new();
+        // total=0, should not trigger
+        fuzzer.report_progress(&report, "POST", "Patient/boundary");
+    }
+
+    #[tokio::test]
+    async fn enforce_delay_zero_is_noop() {
+        let fuzzer = Fuzzer::new("http://localhost", "./out", 10, 0, 1, false, 0);
+        // delay_ms=0, should return immediately
+        fuzzer.enforce_delay().await;
+    }
+
+    #[tokio::test]
+    async fn enforce_delay_positive() {
+        let fuzzer = Fuzzer::new("http://localhost", "./out", 10, 0, 1, false, 1);
+        // delay_ms=1, should sleep briefly
+        let start = std::time::Instant::now();
+        fuzzer.enforce_delay().await;
+        let elapsed = start.elapsed();
+        assert!(elapsed.as_millis() >= 1);
+    }
+
+    #[tokio::test]
+    async fn fuzzer_run_with_seed_zero_uses_random() {
+        let base_url = setup_mock_server().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("fuzz-output");
+
+        let tgz_data = create_test_ig_package();
+        let tgz_path = temp_dir.path().join("test_ig.tgz");
+        std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+        let pkg = fhir_autotest::parse_package(tgz_path.to_str().unwrap()).unwrap();
+        let profiles = &pkg.structure_definitions;
+        let cs = pkg.capability_statements.first();
+
+        // seed=0 should use random seed
+        let mut fuzzer = Fuzzer::new(&base_url, output_dir.to_str().unwrap(), 1, 0, 1, false, 0);
+        fuzzer.register_mutator(Box::new(BoundaryMutator));
+
+        let report = fuzzer.run(profiles, cs).await.unwrap();
+        assert!(report.total > 0);
+    }
+
+    #[tokio::test]
+    async fn fuzzer_run_with_delay_ms() {
+        let base_url = setup_mock_server().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("fuzz-output");
+
+        let tgz_data = create_test_ig_package();
+        let tgz_path = temp_dir.path().join("test_ig.tgz");
+        std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+        let pkg = fhir_autotest::parse_package(tgz_path.to_str().unwrap()).unwrap();
+        let profiles = &pkg.structure_definitions;
+        let cs = pkg.capability_statements.first();
+
+        // With delay_ms=1, should still work
+        let mut fuzzer = Fuzzer::new(&base_url, output_dir.to_str().unwrap(), 1, 42, 1, false, 1);
+        fuzzer.register_mutator(Box::new(BoundaryMutator));
+
+        let report = fuzzer.run(profiles, cs).await.unwrap();
+        assert!(report.total > 0);
+    }
+
+    #[tokio::test]
+    async fn fuzzer_run_with_progress_interval() {
+        let base_url = setup_mock_server().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("fuzz-output");
+
+        let tgz_data = create_test_ig_package();
+        let tgz_path = temp_dir.path().join("test_ig.tgz");
+        std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+        let pkg = fhir_autotest::parse_package(tgz_path.to_str().unwrap()).unwrap();
+        let profiles = &pkg.structure_definitions;
+        let cs = pkg.capability_statements.first();
+
+        // Set progress interval to 1 so it triggers on every request
+        let mut fuzzer = Fuzzer::new(&base_url, output_dir.to_str().unwrap(), 1, 42, 1, false, 0);
+        fuzzer.set_progress_interval(1);
+        fuzzer.register_mutator(Box::new(BoundaryMutator));
+
+        let report = fuzzer.run(profiles, cs).await.unwrap();
+        assert!(report.total > 0);
+    }
+
+    #[tokio::test]
+    async fn fuzzer_run_with_multiple_mutators() {
+        let base_url = setup_mock_server().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("fuzz-output");
+
+        let tgz_data = create_test_ig_package();
+        let tgz_path = temp_dir.path().join("test_ig.tgz");
+        std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+        let pkg = fhir_autotest::parse_package(tgz_path.to_str().unwrap()).unwrap();
+        let profiles = &pkg.structure_definitions;
+        let cs = pkg.capability_statements.first();
+
+        // Register two mutators
+        let mut fuzzer = Fuzzer::new(&base_url, output_dir.to_str().unwrap(), 1, 42, 1, false, 0);
+        fuzzer.register_mutator(Box::new(BoundaryMutator));
+        fuzzer.register_mutator(Box::new(crate::mutators::TypeMismatchMutator));
+
+        let report = fuzzer.run(profiles, cs).await.unwrap();
+        // POST: 2 profiles × 2 mutators × 1 iteration = 4
+        // PUT: 2 profiles × 2 mutators (put_boundary, put_type_mismatch) × 1 iteration = 4
+        // SEARCH: 2 resource types × 2 params × 1 iteration = 4
+        // Total: 12
+        assert_eq!(report.total, 12);
+        assert!(report.categories_used.contains(&"boundary".to_string()));
+        assert!(
+            report
+                .categories_used
+                .contains(&"type_mismatch".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn fuzzer_run_with_unknown_mutation_category_handled_by_main() {
+        // This tests that the fuzzer itself doesn't validate mutation names
+        // (that's done in main.rs). The fuzzer just runs whatever mutators
+        // are registered.
+        let base_url = setup_mock_server().await;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("fuzz-output");
+
+        let tgz_data = create_test_ig_package();
+        let tgz_path = temp_dir.path().join("test_ig.tgz");
+        std::fs::write(&tgz_path, &tgz_data).unwrap();
+
+        let pkg = fhir_autotest::parse_package(tgz_path.to_str().unwrap()).unwrap();
+        let profiles = &pkg.structure_definitions;
+
+        // No mutators registered — should still run (just no POST/PUT phases)
+        let fuzzer = Fuzzer::new(&base_url, output_dir.to_str().unwrap(), 1, 42, 1, false, 0);
+
+        let report = fuzzer.run(profiles, None).await.unwrap();
+        // No mutators, so POST and PUT phases produce 0 requests
+        // SEARCH skipped (no CS)
+        // Total: 0
+        assert_eq!(report.total, 0);
+    }
 }

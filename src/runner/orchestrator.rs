@@ -1389,6 +1389,60 @@ mod tests {
     }
 
     #[test]
+    fn run_report_display_with_validation_errors() {
+        let report = RunReport {
+            total: 1,
+            passed: 0,
+            failed: 1,
+            results: vec![TestResult {
+                test_name: "test-errors".to_string(),
+                passed: false,
+                status_code: 400,
+                response_body: None,
+                validation_errors: vec![
+                    "Missing required field".to_string(),
+                    "Invalid value".to_string(),
+                ],
+                request_url: "http://example.com/Patient/1".to_string(),
+                request_method: "POST".to_string(),
+                request_body: None,
+                test_group: "Patient".to_string(),
+                response_headers: HashMap::new(),
+            }],
+        };
+        let display = format!("{}", report);
+        assert!(display.contains("Missing required field"));
+        assert!(display.contains("Invalid value"));
+        assert!(display.contains("Total: 1"));
+        assert!(display.contains("Failed: 1"));
+    }
+
+    #[test]
+    fn run_report_display_with_request_body_not_truncated() {
+        let report = RunReport {
+            total: 1,
+            passed: 0,
+            failed: 1,
+            results: vec![TestResult {
+                test_name: "test-short-body".to_string(),
+                passed: false,
+                status_code: 400,
+                response_body: Some(serde_json::json!({"resourceType": "OperationOutcome"})),
+                validation_errors: vec!["Error".to_string()],
+                request_url: "http://example.com/Patient/1".to_string(),
+                request_method: "POST".to_string(),
+                request_body: Some(serde_json::json!({"resourceType": "Patient", "name": "John"})),
+                test_group: "Patient".to_string(),
+                response_headers: HashMap::new(),
+            }],
+        };
+        let display = format!("{}", report);
+        assert!(display.contains("Request body:"));
+        assert!(display.contains("Response:"));
+        assert!(!display.contains("truncated"));
+    }
+
+    #[test]
     fn run_report_write_results_creates_files() {
         let dir = tempfile::tempdir().unwrap();
         let report = RunReport {
