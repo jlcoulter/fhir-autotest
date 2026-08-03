@@ -131,3 +131,25 @@ counts.Location = 200
 counts.HealthcareService = 100
 counts.Endpoint = 500
 counts.Provenance = 100
+
+# ── Fuzzer (optional) ──────────────────────────────────────────────────────
+#
+# Settings for fhir-autotest-fuzz. All fields have CLI flag equivalents
+# that override these values.
+#
+# [fuzz]
+# Number of fuzz iterations per resource type per mutator (default: 100).
+# iterations = 100
+#
+# Comma-separated mutation categories: boundary, type_mismatch, cardinality,
+# encoding, search_param, or "all" (default: all).
+# mutations = "all"
+#
+# Seed for deterministic fuzzing (0 = random, default: 0).
+# seed = 0
+#
+# Delay in milliseconds between requests (default: 0 = no delay).
+# delay_ms = 200
+#
+# Concurrency level (default: 4).
+# concurrency = 4
