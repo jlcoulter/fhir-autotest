@@ -145,16 +145,33 @@ async fn main() -> anyhow::Result<()> {
             "steady" => fhir_autotest::config::models::BenchMode::Steady,
             "max_throughput" => fhir_autotest::config::models::BenchMode::MaxThroughput,
             "soak" => fhir_autotest::config::models::BenchMode::Soak,
-            _ => anyhow::bail!("Unknown mode '{}'. Use 'steady', 'max_throughput', or 'soak'.", m),
+            _ => anyhow::bail!(
+                "Unknown mode '{}'. Use 'steady', 'max_throughput', or 'soak'.",
+                m
+            ),
         };
     }
-    if let Some(v) = cli.min_concurrency { config.bench.min_concurrency = v; }
-    if let Some(v) = cli.max_concurrency { config.bench.max_concurrency = v; }
-    if let Some(v) = cli.step_size { config.bench.step_size = v; }
-    if let Some(v) = cli.stabilization_secs { config.bench.stabilization_secs = v; }
-    if let Some(v) = cli.max_error_rate { config.bench.max_error_rate = v; }
-    if let Some(v) = cli.max_latency_p95_ms { config.bench.max_latency_p95_ms = v; }
-    if let Some(v) = cli.soak_hours { config.bench.soak_hours = v; }
+    if let Some(v) = cli.min_concurrency {
+        config.bench.min_concurrency = v;
+    }
+    if let Some(v) = cli.max_concurrency {
+        config.bench.max_concurrency = v;
+    }
+    if let Some(v) = cli.step_size {
+        config.bench.step_size = v;
+    }
+    if let Some(v) = cli.stabilization_secs {
+        config.bench.stabilization_secs = v;
+    }
+    if let Some(v) = cli.max_error_rate {
+        config.bench.max_error_rate = v;
+    }
+    if let Some(v) = cli.max_latency_p95_ms {
+        config.bench.max_latency_p95_ms = v;
+    }
+    if let Some(v) = cli.soak_hours {
+        config.bench.soak_hours = v;
+    }
 
     tracing::info!(
         "Benchmark config: mode={:?}, concurrency={}, duration={}s, ramp_up={}s, output={}",

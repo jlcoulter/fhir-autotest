@@ -80,11 +80,7 @@ pub struct BenchReport {
 
 impl BenchReport {
     /// Build a report from collected samples and benchmark parameters.
-    pub fn from_samples(
-        samples: Vec<BenchSample>,
-        duration: Duration,
-        concurrency: usize,
-    ) -> Self {
+    pub fn from_samples(samples: Vec<BenchSample>, duration: Duration, concurrency: usize) -> Self {
         let total = samples.len() as u64;
         let passed = samples.iter().filter(|s| s.passed).count() as u64;
         let failed = total - passed;
@@ -115,8 +111,7 @@ impl BenchReport {
                 let g_passed = group_samples.iter().filter(|s| s.passed).count() as u64;
                 let g_failed = g_total - g_passed;
 
-                let mut g_hist =
-                    Histogram::<u64>::new_with_bounds(1, 10_000_000, 3).unwrap();
+                let mut g_hist = Histogram::<u64>::new_with_bounds(1, 10_000_000, 3).unwrap();
                 for s in &group_samples {
                     g_hist.record(s.latency_us).ok();
                 }
@@ -198,16 +193,22 @@ impl BenchReport {
     fn format_text(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("{}\n", self.title));
-        out.push_str(&format!("  Timestamp: {}\n", self.timestamp.format("%Y-%m-%d %H:%M:%S UTC")));
+        out.push_str(&format!(
+            "  Timestamp: {}\n",
+            self.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
         out.push_str(&format!("  Duration: {:.1}s\n", self.duration_secs));
         out.push_str(&format!("  Concurrency: {}\n", self.concurrency));
-        out.push_str("\n");
+        out.push('\n');
         out.push_str("── Overall ──\n");
         out.push_str(&format!("  Total requests: {}\n", self.total_requests));
         out.push_str(&format!("  Passed:         {}\n", self.passed));
         out.push_str(&format!("  Failed:         {}\n", self.failed));
-        out.push_str(&format!("  Throughput:     {:.1} req/s\n", self.throughput_req_per_sec));
-        out.push_str("\n");
+        out.push_str(&format!(
+            "  Throughput:     {:.1} req/s\n",
+            self.throughput_req_per_sec
+        ));
+        out.push('\n');
         out.push_str("── Latency (μs) ──\n");
         out.push_str(&format!("  Min:    {}\n", self.latency_min_us));
         out.push_str(&format!("  Mean:   {:.0}\n", self.latency_mean_us));
@@ -216,7 +217,7 @@ impl BenchReport {
         out.push_str(&format!("  P95:    {}\n", self.latency_p95_us));
         out.push_str(&format!("  P99:    {}\n", self.latency_p99_us));
         out.push_str(&format!("  Max:    {}\n", self.latency_max_us));
-        out.push_str("\n");
+        out.push('\n');
         out.push_str("── Per Group ──\n");
         for g in &self.groups {
             out.push_str(&format!(
@@ -235,17 +236,28 @@ impl BenchReport {
         // Steps table for max-throughput mode
         if !self.steps.is_empty() {
             out.push_str("\n── Steps ──\n");
-            out.push_str(&format!("  {:<8} {:>8} {:>8} {:>8} {:>10} {:>10} {:>10} {:>10}  {}\n",
-                "Conc", "Total", "Passed", "Failed", "Err%", "p50", "p95", "p99", "Status"));
+            out.push_str(&format!(
+                "  {:<8} {:>8} {:>8} {:>8} {:>10} {:>10} {:>10} {:>10}  {}\n",
+                "Conc", "Total", "Passed", "Failed", "Err%", "p50", "p95", "p99", "Status"
+            ));
             for s in &self.steps {
-                let status = if s.breached { format!("BREACHED: {}", s.breach_reason) } else { "OK".to_string() };
-                out.push_str(&format!("  {:<8} {:>8} {:>8} {:>8} {:>9.1}% {:>10} {:>10} {:>10}  {}\n",
-                    s.concurrency, s.total, s.passed, s.failed,
+                let status = if s.breached {
+                    format!("BREACHED: {}", s.breach_reason)
+                } else {
+                    "OK".to_string()
+                };
+                out.push_str(&format!(
+                    "  {:<8} {:>8} {:>8} {:>8} {:>9.1}% {:>10} {:>10} {:>10}  {}\n",
+                    s.concurrency,
+                    s.total,
+                    s.passed,
+                    s.failed,
                     s.error_rate * 100.0,
                     format_duration_us(s.latency_p50_us),
                     format_duration_us(s.latency_p95_us),
                     format_duration_us(s.latency_p99_us),
-                    status));
+                    status
+                ));
             }
         }
         out
@@ -273,7 +285,10 @@ impl BenchReport {
         let mut step_rows = String::new();
         for s in &self.steps {
             let status = if s.breached {
-                format!("<span class=\"fail\">BREACHED: {}</span>", html_escape(&s.breach_reason))
+                format!(
+                    "<span class=\"fail\">BREACHED: {}</span>",
+                    html_escape(&s.breach_reason)
+                )
             } else {
                 "<span class=\"pass\">OK</span>".to_string()
             };
@@ -295,7 +310,9 @@ impl BenchReport {
 <table>
 <tr><th>Conc</th><th>Total</th><th>Passed</th><th>Failed</th><th>Err%</th><th>P50</th><th>P95</th><th>P99</th><th>Throughput</th><th>Status</th></tr>
 {}
-</table>"#, step_rows)
+</table>"#,
+                step_rows
+            )
         } else {
             String::new()
         };
@@ -438,9 +455,7 @@ mod tests {
 
     #[test]
     fn report_latency_percentiles() {
-        let samples: Vec<_> = (1..=100)
-            .map(|i| sample(i * 10, true, "Patient"))
-            .collect();
+        let samples: Vec<_> = (1..=100).map(|i| sample(i * 10, true, "Patient")).collect();
         let report = BenchReport::from_samples(samples, Duration::from_secs(10), 1);
         // P50 should be around 500, P90 around 900, P99 around 990
         assert!(report.latency_p50_us >= 400 && report.latency_p50_us <= 600);
@@ -463,7 +478,11 @@ mod tests {
         assert_eq!(patient.passed, 2);
         assert_eq!(patient.failed, 0);
 
-        let obs = report.groups.iter().find(|g| g.group == "Observation").unwrap();
+        let obs = report
+            .groups
+            .iter()
+            .find(|g| g.group == "Observation")
+            .unwrap();
         assert_eq!(obs.total, 1);
         assert_eq!(obs.passed, 0);
         assert_eq!(obs.failed, 1);
@@ -497,11 +516,16 @@ mod tests {
         let report = BenchReport::from_samples(samples, Duration::from_secs(1), 1);
         report.write(dir.path()).unwrap();
 
-        let summary: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.path().join("summary.json")).unwrap())
-                .unwrap();
+        let summary: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("summary.json")).unwrap(),
+        )
+        .unwrap();
         // Summary should not contain raw samples
-        assert!(summary.get("samples").map_or(true, |v| v.as_array().map_or(true, |a| a.is_empty())));
+        assert!(
+            summary
+                .get("samples")
+                .is_none_or(|v| v.as_array().is_none_or(|a| a.is_empty()))
+        );
     }
 
     #[test]
@@ -514,7 +538,10 @@ mod tests {
 
     #[test]
     fn html_escape_special_chars() {
-        assert_eq!(html_escape("Patient & Observation"), "Patient &amp; Observation");
+        assert_eq!(
+            html_escape("Patient & Observation"),
+            "Patient &amp; Observation"
+        );
         assert_eq!(html_escape("<script>"), "&lt;script&gt;");
         assert_eq!(html_escape("say \"hi\""), "say &quot;hi&quot;");
     }

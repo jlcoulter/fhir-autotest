@@ -137,9 +137,9 @@ counts.Provenance = 100
 # Settings for fhir-autotest-bench (performance/load testing).
 # All fields have defaults — uncomment to override.
 #
-# [bench]
-# mode = "steady"              # "steady", "max_throughput", or "soak"
-# concurrency = 10
+[bench]
+mode = "soak"              # "steady", "max_throughput", or "soak"
+concurrency = 50
 # duration_secs = 30
 # ramp_up_secs = 5
 # request_timeout_secs = 30
@@ -156,7 +156,7 @@ counts.Provenance = 100
 # step_size = 10
 # stabilization_secs = 10
 # max_error_rate = 0.05
-# max_latency_p95_ms = 1000
+# max_latency_p95_ms = 200
 #
 # # Soak mode settings
-# soak_hours = 4
+soak_hours = 1

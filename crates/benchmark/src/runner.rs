@@ -12,8 +12,8 @@ use rand::Rng;
 use rand::SeedableRng;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
@@ -50,14 +50,17 @@ impl BenchRunner {
         // 3. Build an HTTP client with the server's TLS settings and headers
         let tls = fhir_autotest::config::models::TlsConfig::from_server(&test_config.server);
         let mut client_builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(bench_config.request_timeout_secs))
+            .timeout(std::time::Duration::from_secs(
+                bench_config.request_timeout_secs,
+            ))
             .user_agent("fhir-autotest-bench/0.1");
         if !tls.verify {
             client_builder = client_builder.danger_accept_invalid_certs(true);
         }
         if let Some(ca_path) = &tls.ca_cert {
             let cert = std::fs::read(ca_path)?;
-            client_builder = client_builder.add_root_certificate(reqwest::Certificate::from_pem(&cert)?);
+            client_builder =
+                client_builder.add_root_certificate(reqwest::Certificate::from_pem(&cert)?);
         }
         let mut default_headers = reqwest::header::HeaderMap::new();
         for (key, value) in &test_config.server.headers {
@@ -104,7 +107,12 @@ impl BenchRunner {
     /// Steady mode: fixed concurrency for a fixed duration (or one-shot).
     async fn run_steady(&self) -> Result<BenchReport> {
         let bench_cfg = &self.bench_config;
-        let base_url = self.test_config.server.base_url.trim_end_matches('/').to_string();
+        let base_url = self
+            .test_config
+            .server
+            .base_url
+            .trim_end_matches('/')
+            .to_string();
 
         // Filter test groups if configured
         let groups = self.filtered_groups()?;
@@ -127,12 +135,25 @@ impl BenchRunner {
         if is_oneshot {
             self.spawn_oneshot_workers(&all_tests, &base_url, &samples, concurrency, &mut handles);
         } else {
-            self.spawn_duration_workers(&all_tests, &base_url, &samples, &semaphore, concurrency, duration, ramp_up, &shutdown, &mut handles).await;
+            self.spawn_duration_workers(
+                &all_tests,
+                &base_url,
+                &samples,
+                &semaphore,
+                concurrency,
+                duration,
+                ramp_up,
+                &shutdown,
+                &mut handles,
+            )
+            .await;
             self.spawn_progress_bar(&samples, duration, &shutdown, &mut handles);
         }
 
         // Wait for all workers to finish
-        for h in handles { h.await.ok(); }
+        for h in handles {
+            h.await.ok();
+        }
         signal_handle.abort();
 
         let actual_duration = start.elapsed();
@@ -146,7 +167,12 @@ impl BenchRunner {
     /// Max-throughput mode: ramp concurrency upward until a threshold is breached.
     async fn run_max_throughput(&self) -> Result<BenchReport> {
         let bench_cfg = &self.bench_config;
-        let base_url = self.test_config.server.base_url.trim_end_matches('/').to_string();
+        let base_url = self
+            .test_config
+            .server
+            .base_url
+            .trim_end_matches('/')
+            .to_string();
         let groups = self.filtered_groups()?;
         let all_tests = self.collect_tests(&groups)?;
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -161,12 +187,22 @@ impl BenchRunner {
         let max_latency_p95 = Duration::from_millis(bench_cfg.max_latency_p95_ms);
 
         println!("\n── Max-Throughput Mode ──");
-        println!("  Starting at concurrency={}, stepping by +{}, max={}", concurrency, step, max_conc);
-        println!("  Thresholds: error_rate>{:.0}% or p95>{}ms", max_error * 100.0, bench_cfg.max_latency_p95_ms);
+        println!(
+            "  Starting at concurrency={}, stepping by +{}, max={}",
+            concurrency, step, max_conc
+        );
+        println!(
+            "  Thresholds: error_rate>{:.0}% or p95>{}ms",
+            max_error * 100.0,
+            bench_cfg.max_latency_p95_ms
+        );
         println!();
 
         while concurrency <= max_conc && !shutdown.load(Ordering::SeqCst) {
-            print!("  Concurrency={:<4} stabilizing for {}s ... ", concurrency, bench_cfg.stabilization_secs);
+            print!(
+                "  Concurrency={:<4} stabilizing for {}s ... ",
+                concurrency, bench_cfg.stabilization_secs
+            );
             std::io::Write::flush(&mut std::io::stdout()).ok();
 
             let samples = Arc::<std::sync::Mutex<Vec<BenchSample>>>::default();
@@ -174,22 +210,45 @@ impl BenchRunner {
             let start = Instant::now();
             let mut handles = Vec::new();
 
-            self.spawn_duration_workers(&all_tests, &base_url, &samples, &semaphore, concurrency, stabilize, Duration::ZERO, &shutdown, &mut handles).await;
-            for h in handles { h.await.ok(); }
+            self.spawn_duration_workers(
+                &all_tests,
+                &base_url,
+                &samples,
+                &semaphore,
+                concurrency,
+                stabilize,
+                Duration::ZERO,
+                &shutdown,
+                &mut handles,
+            )
+            .await;
+            for h in handles {
+                h.await.ok();
+            }
 
             let elapsed = start.elapsed();
             let all_samples = std::mem::take(&mut *samples.lock().unwrap());
             let total = all_samples.len() as u64;
             let passed = all_samples.iter().filter(|s| s.passed).count() as u64;
             let failed = total - passed;
-            let error_rate = if total > 0 { failed as f64 / total as f64 } else { 0.0 };
+            let error_rate = if total > 0 {
+                failed as f64 / total as f64
+            } else {
+                0.0
+            };
 
             let mut hist = Histogram::<u64>::new_with_bounds(1, 10_000_000, 3).unwrap();
-            for s in &all_samples { hist.record(s.latency_us).ok(); }
+            for s in &all_samples {
+                hist.record(s.latency_us).ok();
+            }
             let p50 = hist.value_at_percentile(50.0);
             let p95 = hist.value_at_percentile(95.0);
             let p99 = hist.value_at_percentile(99.0);
-            let throughput = if elapsed.as_secs_f64() > 0.0 { total as f64 / elapsed.as_secs_f64() } else { 0.0 };
+            let throughput = if elapsed.as_secs_f64() > 0.0 {
+                total as f64 / elapsed.as_secs_f64()
+            } else {
+                0.0
+            };
 
             let p95_dur = Duration::from_micros(p95);
             let mut breached = false;
@@ -197,15 +256,32 @@ impl BenchRunner {
 
             if error_rate > max_error {
                 breached = true;
-                breach_reason = format!("error_rate {:.1}% > {:.0}%", error_rate * 100.0, max_error * 100.0);
+                breach_reason = format!(
+                    "error_rate {:.1}% > {:.0}%",
+                    error_rate * 100.0,
+                    max_error * 100.0
+                );
             } else if p95_dur > max_latency_p95 {
                 breached = true;
-                breach_reason = format!("p95 {}ms > {}ms", p95_dur.as_millis(), bench_cfg.max_latency_p95_ms);
+                breach_reason = format!(
+                    "p95 {}ms > {}ms",
+                    p95_dur.as_millis(),
+                    bench_cfg.max_latency_p95_ms
+                );
             }
 
-            println!("{} req, {:.1} req/s, p95={}, errors={:.1}%{}",
-                total, throughput, format_duration(p95), error_rate * 100.0,
-                if breached { format!(" — BREACHED: {}", breach_reason) } else { String::new() });
+            println!(
+                "{} req, {:.1} req/s, p95={}, errors={:.1}%{}",
+                total,
+                throughput,
+                format_duration(p95),
+                error_rate * 100.0,
+                if breached {
+                    format!(" — BREACHED: {}", breach_reason)
+                } else {
+                    String::new()
+                }
+            );
 
             steps.push(StepReport {
                 concurrency,
@@ -221,14 +297,23 @@ impl BenchRunner {
                 breach_reason,
             });
 
-            if breached { break; }
+            if breached {
+                break;
+            }
             concurrency += step;
         }
 
         // Build a combined report from all steps
         let all_samples = Vec::new(); // not collected across steps
-        let total_duration = steps.last().map(|s| s.concurrency as f64 * 0.1).unwrap_or(0.0);
-        let mut report = BenchReport::from_samples(all_samples, Duration::from_secs_f64(total_duration), bench_cfg.concurrency);
+        let total_duration = steps
+            .last()
+            .map(|s| s.concurrency as f64 * 0.1)
+            .unwrap_or(0.0);
+        let mut report = BenchReport::from_samples(
+            all_samples,
+            Duration::from_secs_f64(total_duration),
+            bench_cfg.concurrency,
+        );
         report.title = "FHIR Autotest Max-Throughput Report".to_string();
         report.steps = steps;
 
@@ -238,11 +323,18 @@ impl BenchRunner {
         // Print summary
         println!("\n{}", report.title);
         if let Some(last_ok) = report.steps.iter().rev().find(|s| !s.breached) {
-            println!("  Max sustainable concurrency: {} ({:.1} req/s, p95={})",
-                last_ok.concurrency, last_ok.throughput_req_per_sec, format_duration(last_ok.latency_p95_us));
+            println!(
+                "  Max sustainable concurrency: {} ({:.1} req/s, p95={})",
+                last_ok.concurrency,
+                last_ok.throughput_req_per_sec,
+                format_duration(last_ok.latency_p95_us)
+            );
         }
         if let Some(breach) = report.steps.iter().find(|s| s.breached) {
-            println!("  Breach at concurrency={}: {}", breach.concurrency, breach.breach_reason);
+            println!(
+                "  Breach at concurrency={}: {}",
+                breach.concurrency, breach.breach_reason
+            );
         }
         println!("  Report: {}/", output_dir.display());
 
@@ -253,7 +345,12 @@ impl BenchRunner {
     /// Soak mode: sustained load at fixed concurrency for an extended period.
     async fn run_soak(&self) -> Result<BenchReport> {
         let bench_cfg = &self.bench_config;
-        let base_url = self.test_config.server.base_url.trim_end_matches('/').to_string();
+        let base_url = self
+            .test_config
+            .server
+            .base_url
+            .trim_end_matches('/')
+            .to_string();
         let groups = self.filtered_groups()?;
         let all_tests = self.collect_tests(&groups)?;
 
@@ -270,22 +367,39 @@ impl BenchRunner {
         self.warmup(&all_tests, &base_url, &shutdown).await;
 
         println!("\n── Soak Mode ──");
-        println!("  Concurrency={}, duration={}h ({}s)", bench_cfg.concurrency, bench_cfg.soak_hours, soak_secs);
+        println!(
+            "  Concurrency={}, duration={}h ({}s)",
+            bench_cfg.concurrency, bench_cfg.soak_hours, soak_secs
+        );
         println!();
 
         let mut handles = Vec::new();
         let concurrency = bench_cfg.concurrency;
 
-        self.spawn_duration_workers(&all_tests, &base_url, &samples, &semaphore, concurrency, duration, ramp_up, &shutdown, &mut handles).await;
+        self.spawn_duration_workers(
+            &all_tests,
+            &base_url,
+            &samples,
+            &semaphore,
+            concurrency,
+            duration,
+            ramp_up,
+            &shutdown,
+            &mut handles,
+        )
+        .await;
         self.spawn_progress_bar(&samples, duration, &shutdown, &mut handles);
 
-        for h in handles { h.await.ok(); }
+        for h in handles {
+            h.await.ok();
+        }
         signal_handle.abort();
 
         let actual_duration = start.elapsed();
         let all_samples = std::mem::take(&mut *samples.lock().unwrap());
 
-        let mut report = BenchReport::from_samples(all_samples, actual_duration, bench_cfg.concurrency);
+        let mut report =
+            BenchReport::from_samples(all_samples, actual_duration, bench_cfg.concurrency);
         report.title = "FHIR Autotest Soak Report".to_string();
 
         let output_dir = Path::new(&bench_cfg.output);
@@ -294,13 +408,17 @@ impl BenchRunner {
         println!("\n{}", report.title);
         println!("  Duration:   {:.1}s", report.duration_secs);
         println!("  Concurrency: {}", report.concurrency);
-        println!("  Requests:   {} total, {} passed, {} failed",
-            report.total_requests, report.passed, report.failed);
+        println!(
+            "  Requests:   {} total, {} passed, {} failed",
+            report.total_requests, report.passed, report.failed
+        );
         println!("  Throughput: {:.1} req/s", report.throughput_req_per_sec);
-        println!("  Latency:    p50={}  p95={}  p99={}",
+        println!(
+            "  Latency:    p50={}  p95={}  p99={}",
             format_duration(report.latency_p50_us),
             format_duration(report.latency_p95_us),
-            format_duration(report.latency_p99_us));
+            format_duration(report.latency_p99_us)
+        );
         println!("  Report:     {}/", output_dir.display());
 
         self.cleanup().await?;
@@ -314,7 +432,11 @@ impl BenchRunner {
         let groups: Vec<_> = if bench_cfg.filter_groups.is_empty() {
             self.plan.test_groups.iter().collect()
         } else {
-            self.plan.test_groups.iter().filter(|g| bench_cfg.filter_groups.contains(&g.resource_type)).collect()
+            self.plan
+                .test_groups
+                .iter()
+                .filter(|g| bench_cfg.filter_groups.contains(&g.resource_type))
+                .collect()
         };
         if groups.is_empty() {
             anyhow::bail!("No test groups match the configured filters");
@@ -322,11 +444,17 @@ impl BenchRunner {
         Ok(groups)
     }
 
-    fn collect_tests(&self, groups: &[&fhir_autotest::generate::model::TestGroup]) -> Result<Vec<(String, fhir_autotest::generate::model::TestCase)>> {
-        let all_tests: Vec<_> = groups.iter().flat_map(|g| {
-            let group_name = g.resource_type.clone();
-            g.tests.iter().map(move |t| (group_name.clone(), t.clone()))
-        }).collect();
+    fn collect_tests(
+        &self,
+        groups: &[&fhir_autotest::generate::model::TestGroup],
+    ) -> Result<Vec<(String, fhir_autotest::generate::model::TestCase)>> {
+        let all_tests: Vec<_> = groups
+            .iter()
+            .flat_map(|g| {
+                let group_name = g.resource_type.clone();
+                g.tests.iter().map(move |t| (group_name.clone(), t.clone()))
+            })
+            .collect();
         if all_tests.is_empty() {
             anyhow::bail!("No test cases available in the selected groups");
         }
@@ -342,9 +470,16 @@ impl BenchRunner {
         })
     }
 
-    async fn warmup(&self, all_tests: &[(String, fhir_autotest::generate::model::TestCase)], base_url: &str, shutdown: &Arc<AtomicBool>) {
+    async fn warmup(
+        &self,
+        all_tests: &[(String, fhir_autotest::generate::model::TestCase)],
+        base_url: &str,
+        shutdown: &Arc<AtomicBool>,
+    ) {
         let warmup = self.bench_config.warmup_requests;
-        if warmup == 0 { return; }
+        if warmup == 0 {
+            return;
+        }
         tracing::info!("Warm-up: sending {} requests...", warmup);
         let warmup_done = Arc::new(AtomicBool::new(false));
         let warmup_count = Arc::new(AtomicU64::new(0));
@@ -366,7 +501,9 @@ impl BenchRunner {
                 let url = format!("{}{}", base_url, test.request.url);
                 let _ = client.get(&url).send().await;
                 let prev = wc.fetch_add(1, Ordering::Relaxed);
-                if prev + 1 >= warmup as u64 { wd.store(true, Ordering::Release); }
+                if prev + 1 >= warmup as u64 {
+                    wd.store(true, Ordering::Release);
+                }
             }));
         }
         while !warmup_done.load(Ordering::Acquire) && !shutdown.load(Ordering::SeqCst) {
@@ -376,15 +513,20 @@ impl BenchRunner {
     }
 
     fn spawn_oneshot_workers(
-        &self, all_tests: &[(String, fhir_autotest::generate::model::TestCase)],
-        base_url: &str, samples: &Arc<std::sync::Mutex<Vec<BenchSample>>>,
-        concurrency: usize, handles: &mut Vec<tokio::task::JoinHandle<()>>,
+        &self,
+        all_tests: &[(String, fhir_autotest::generate::model::TestCase)],
+        base_url: &str,
+        samples: &Arc<std::sync::Mutex<Vec<BenchSample>>>,
+        concurrency: usize,
+        handles: &mut Vec<tokio::task::JoinHandle<()>>,
     ) {
-        let chunk_size = (all_tests.len() + concurrency - 1) / concurrency;
+        let chunk_size = all_tests.len().div_ceil(concurrency);
         for worker_id in 0..concurrency {
             let start_idx = worker_id * chunk_size;
             let end_idx = std::cmp::min(start_idx + chunk_size, all_tests.len());
-            if start_idx >= all_tests.len() { break; }
+            if start_idx >= all_tests.len() {
+                break;
+            }
             let worker_tests = all_tests[start_idx..end_idx].to_vec();
             let client = self.client.clone();
             let base_url = base_url.to_string();
@@ -393,7 +535,7 @@ impl BenchRunner {
                 for (group_name, test) in &worker_tests {
                     let url = format!("{}{}", base_url, test.request.url);
                     let request_start = Instant::now();
-                    let result = Self::send_request(&client, &test, &url).await;
+                    let result = Self::send_request(&client, test, &url).await;
                     let latency_us = request_start.elapsed().as_micros() as u64;
                     let (status_code, passed) = Self::classify_result(&result);
                     samples.lock().unwrap().push(BenchSample {
@@ -411,11 +553,17 @@ impl BenchRunner {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_duration_workers(
-        &self, all_tests: &[(String, fhir_autotest::generate::model::TestCase)],
-        base_url: &str, samples: &Arc<std::sync::Mutex<Vec<BenchSample>>>,
-        semaphore: &Arc<Semaphore>, concurrency: usize, duration: Duration,
-        ramp_up: Duration, shutdown: &Arc<AtomicBool>,
+        &self,
+        all_tests: &[(String, fhir_autotest::generate::model::TestCase)],
+        base_url: &str,
+        samples: &Arc<std::sync::Mutex<Vec<BenchSample>>>,
+        semaphore: &Arc<Semaphore>,
+        concurrency: usize,
+        duration: Duration,
+        ramp_up: Duration,
+        shutdown: &Arc<AtomicBool>,
         handles: &mut Vec<tokio::task::JoinHandle<()>>,
     ) {
         for worker_id in 0..concurrency {
@@ -431,7 +579,9 @@ impl BenchRunner {
                 let mut rng = rand::rngs::StdRng::seed_from_u64(worker_id as u64);
                 loop {
                     let elapsed = start.elapsed();
-                    if elapsed >= duration || shutdown.load(Ordering::SeqCst) { break; }
+                    if elapsed >= duration || shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
                     if ramp_up > Duration::ZERO {
                         let ramp_progress = elapsed.as_secs_f64() / ramp_up.as_secs_f64();
                         let effective = (worker_id as f64 + 1.0) / concurrency as f64;
@@ -463,8 +613,10 @@ impl BenchRunner {
     }
 
     fn spawn_progress_bar(
-        &self, samples: &Arc<std::sync::Mutex<Vec<BenchSample>>>,
-        duration: Duration, shutdown: &Arc<AtomicBool>,
+        &self,
+        samples: &Arc<std::sync::Mutex<Vec<BenchSample>>>,
+        duration: Duration,
+        shutdown: &Arc<AtomicBool>,
         handles: &mut Vec<tokio::task::JoinHandle<()>>,
     ) {
         let pb = ProgressBar::new(duration.as_secs());
@@ -480,7 +632,9 @@ impl BenchRunner {
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 let elapsed = start.elapsed();
-                if elapsed >= duration || shutdown.load(Ordering::SeqCst) { break; }
+                if elapsed >= duration || shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
                 let count = samples.lock().unwrap().len();
                 let secs = elapsed.as_secs_f64().max(0.1);
                 pb.set_message(format!("{} req, {:.1} req/s", count, count as f64 / secs));
@@ -490,16 +644,34 @@ impl BenchRunner {
         }));
     }
 
-    async fn send_request(client: &reqwest::Client, test: &fhir_autotest::generate::model::TestCase, url: &str) -> Result<reqwest::Response, reqwest::Error> {
+    async fn send_request(
+        client: &reqwest::Client,
+        test: &fhir_autotest::generate::model::TestCase,
+        url: &str,
+    ) -> Result<reqwest::Response, reqwest::Error> {
         match test.request.method.as_str() {
             "GET" => client.get(url).send().await,
             "POST" => {
-                let body = test.request.body.as_ref().and_then(|b| serde_json::to_vec(b).ok());
-                match body { Some(bytes) => client.post(url).body(bytes).send().await, _ => client.post(url).send().await }
+                let body = test
+                    .request
+                    .body
+                    .as_ref()
+                    .and_then(|b| serde_json::to_vec(b).ok());
+                match body {
+                    Some(bytes) => client.post(url).body(bytes).send().await,
+                    _ => client.post(url).send().await,
+                }
             }
             "PUT" => {
-                let body = test.request.body.as_ref().and_then(|b| serde_json::to_vec(b).ok());
-                match body { Some(bytes) => client.put(url).body(bytes).send().await, _ => client.put(url).send().await }
+                let body = test
+                    .request
+                    .body
+                    .as_ref()
+                    .and_then(|b| serde_json::to_vec(b).ok());
+                match body {
+                    Some(bytes) => client.put(url).body(bytes).send().await,
+                    _ => client.put(url).send().await,
+                }
             }
             "DELETE" => client.delete(url).send().await,
             _ => client.get(url).send().await,
@@ -508,7 +680,10 @@ impl BenchRunner {
 
     fn classify_result(result: &Result<reqwest::Response, reqwest::Error>) -> (u16, bool) {
         match result {
-            Ok(resp) => { let sc = resp.status().as_u16(); (sc, sc >= 200 && sc < 500) }
+            Ok(resp) => {
+                let sc = resp.status().as_u16();
+                (sc, (200..500).contains(&sc))
+            }
             Err(_) => (0, false),
         }
     }
@@ -519,13 +694,17 @@ impl BenchRunner {
         println!("\n{}", report.title);
         println!("  Duration:   {:.1}s", report.duration_secs);
         println!("  Concurrency: {}", report.concurrency);
-        println!("  Requests:   {} total, {} passed, {} failed",
-            report.total_requests, report.passed, report.failed);
+        println!(
+            "  Requests:   {} total, {} passed, {} failed",
+            report.total_requests, report.passed, report.failed
+        );
         println!("  Throughput: {:.1} req/s", report.throughput_req_per_sec);
-        println!("  Latency:    p50={}  p95={}  p99={}",
+        println!(
+            "  Latency:    p50={}  p95={}  p99={}",
             format_duration(report.latency_p50_us),
             format_duration(report.latency_p95_us),
-            format_duration(report.latency_p99_us));
+            format_duration(report.latency_p99_us)
+        );
         println!("  Report:     {}/", output_dir.display());
         self.cleanup().await
     }
@@ -533,15 +712,26 @@ impl BenchRunner {
     async fn cleanup(&self) -> Result<()> {
         if !self.bench_config.skip_cleanup && !self.uploaded_ids.is_empty() {
             let concurrency = match &self.write_endpoint {
-                WriteEndpoint::Repository { concurrency, .. } | WriteEndpoint::Server { concurrency, .. } => *concurrency,
+                WriteEndpoint::Repository { concurrency, .. }
+                | WriteEndpoint::Server { concurrency, .. } => *concurrency,
             };
             let write_url = match &self.write_endpoint {
-                WriteEndpoint::Repository { base_url, .. } | WriteEndpoint::Server { base_url, .. } => base_url.as_str(),
+                WriteEndpoint::Repository { base_url, .. }
+                | WriteEndpoint::Server { base_url, .. } => base_url.as_str(),
             };
-            println!("\n── Cleanup: deleting {} resource types from {} ──", self.uploaded_ids.len(), write_url);
+            println!(
+                "\n── Cleanup: deleting {} resource types from {} ──",
+                self.uploaded_ids.len(),
+                write_url
+            );
             if let Err(e) = fhir_autotest::runner::bulk_loader::delete_all_resources(
-                &self.uploaded_ids, &self.upload_order, &self.write_endpoint, concurrency,
-            ).await {
+                &self.uploaded_ids,
+                &self.upload_order,
+                &self.write_endpoint,
+                concurrency,
+            )
+            .await
+            {
                 tracing::warn!("Cleanup encountered errors: {:#}", e);
                 println!("  Cleanup completed with errors (see logs)");
             } else {
@@ -577,9 +767,10 @@ async fn ensure_data_exists(
     tracing::info!("Ensuring bulk data exists...");
 
     // We need a package path
-    let package = test_config.package.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("No IG package path configured")
-    })?;
+    let package = test_config
+        .package
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("No IG package path configured"))?;
 
     // Generate the test plan and resources first
     fhir_autotest::run_generate(package, test_config).await?;
@@ -610,7 +801,10 @@ async fn ensure_data_exists(
     )?;
 
     if test_config.data_generation.generate_only {
-        tracing::info!("generate_only = true: NDJSON files left in {}/data/", test_config.output);
+        tracing::info!(
+            "generate_only = true: NDJSON files left in {}/data/",
+            test_config.output
+        );
         return Ok((HashMap::new(), Vec::new(), test_config.write_endpoint()));
     }
 
@@ -661,9 +855,10 @@ async fn load_or_generate_plan(
     }
 
     // Generate a new test plan
-    let package = test_config.package.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("No IG package path configured")
-    })?;
+    let package = test_config
+        .package
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("No IG package path configured"))?;
 
     tracing::info!("Generating test plan...");
     fhir_autotest::run_generate(package, test_config).await?;
@@ -751,38 +946,33 @@ mod tests {
                 TestGroup {
                     resource_type: "Observation".to_string(),
                     profile_url: None,
-                    tests: vec![
-                        TestCase {
-                            name: "read-observation".to_string(),
-                            kind: TestCaseKind::Interaction,
-                            interaction: Interaction::Read,
-                            resource_type: "Observation".to_string(),
-                            profile_url: None,
-                            request: HttpRequest {
-                                method: "GET".to_string(),
-                                url: "/Observation/{id}".to_string(),
-                                headers: HashMap::new(),
-                                body: None,
-                            },
-                            validation: ValidationSpec {
-                                expected_status: 200,
-                                profile_url: None,
-                                required_elements: vec![],
-                                forbidden_elements: vec![],
-                                response_assertion: None,
-                            },
+                    tests: vec![TestCase {
+                        name: "read-observation".to_string(),
+                        kind: TestCaseKind::Interaction,
+                        interaction: Interaction::Read,
+                        resource_type: "Observation".to_string(),
+                        profile_url: None,
+                        request: HttpRequest {
+                            method: "GET".to_string(),
+                            url: "/Observation/{id}".to_string(),
+                            headers: HashMap::new(),
+                            body: None,
                         },
-                    ],
+                        validation: ValidationSpec {
+                            expected_status: 200,
+                            profile_url: None,
+                            required_elements: vec![],
+                            forbidden_elements: vec![],
+                            response_assertion: None,
+                        },
+                    }],
                 },
             ],
         }
     }
 
     /// Create a BenchRunner configured against a mock server with a given plan.
-    async fn runner_with_plan(
-        plan: TestPlan,
-        bench_config: BenchConfig,
-    ) -> (BenchRunner, String) {
+    async fn runner_with_plan(plan: TestPlan, bench_config: BenchConfig) -> (BenchRunner, String) {
         let addr = start_mock_server(0).await.unwrap();
         let mock_url = format!("http://{}/fhir", addr);
 
@@ -936,10 +1126,12 @@ mod tests {
         let (runner, _url) = runner_with_plan(plan, cfg).await;
         let result = runner.run().await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No test groups match"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No test groups match")
+        );
     }
 
     #[tokio::test]
@@ -977,7 +1169,12 @@ output = "{}"
 base_url = "http://localhost:9999/fhir"
 "#,
             tgz_path.to_str().unwrap().replace('\\', "/"),
-            temp_dir.path().join("output").to_str().unwrap().replace('\\', "/"),
+            temp_dir
+                .path()
+                .join("output")
+                .to_str()
+                .unwrap()
+                .replace('\\', "/"),
         );
         std::fs::write(&config_path, &config_content).unwrap();
 
@@ -985,7 +1182,12 @@ base_url = "http://localhost:9999/fhir"
             duration_secs: 0,
             concurrency: 1,
             warmup_requests: 0,
-            output: temp_dir.path().join("bench-out").to_str().unwrap().to_string(),
+            output: temp_dir
+                .path()
+                .join("bench-out")
+                .to_str()
+                .unwrap()
+                .to_string(),
             skip_data_ensure: true,
             skip_cleanup: true,
             ..BenchConfig::default()
@@ -1010,7 +1212,12 @@ skip_data_ensure = true
 skip_cleanup = true
 "#,
             tgz_path.to_str().unwrap().replace('\\', "/"),
-            temp_dir.path().join("output").to_str().unwrap().replace('\\', "/"),
+            temp_dir
+                .path()
+                .join("output")
+                .to_str()
+                .unwrap()
+                .replace('\\', "/"),
             cfg.concurrency,
             cfg.output,
         );
@@ -1020,6 +1227,9 @@ skip_cleanup = true
         let runner = BenchRunner::new(test_config).await.unwrap();
         let report = runner.run().await.unwrap();
 
-        assert!(report.total_requests > 0, "mock server should serve requests");
+        assert!(
+            report.total_requests > 0,
+            "mock server should serve requests"
+        );
     }
 }
