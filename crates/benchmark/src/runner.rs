@@ -4,6 +4,7 @@ use anyhow::Result;
 use chrono::Utc;
 use fhir_autotest::config::models::{TestConfig, WriteEndpoint};
 use fhir_autotest::generate::model::TestPlan;
+use indicatif::{ProgressBar, ProgressStyle};
 use rand::Rng;
 use rand::SeedableRng;
 use std::collections::HashMap;
@@ -201,6 +202,45 @@ impl BenchRunner {
         }
         let mut handles = Vec::new();
         let concurrency = bench_cfg.concurrency;
+
+        // Progress bar for duration mode
+        let pb = if !is_oneshot {
+            let pb = ProgressBar::new(bench_cfg.duration_secs);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed_precise}/{duration_precise}] {bar:40.cyan/blue} {pos}/{len}s {msg}")
+                    .unwrap()
+                    .progress_chars("#>-"),
+            );
+            pb.set_message("0 req, 0.0 req/s");
+            Some(pb)
+        } else {
+            None
+        };
+
+        // Progress bar updater task (duration mode only)
+        if let Some(pb) = &pb {
+            let pb = pb.clone();
+            let samples = samples.clone();
+            let start = start;
+            let duration = duration;
+            let handle = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    let elapsed = start.elapsed();
+                    if elapsed >= duration {
+                        break;
+                    }
+                    let count = samples.lock().unwrap().len();
+                    let secs = elapsed.as_secs_f64().max(0.1);
+                    let rate = count as f64 / secs;
+                    pb.set_message(format!("{} req, {:.1} req/s", count, rate));
+                    pb.inc(1);
+                }
+                pb.finish_with_message("done");
+            });
+            handles.push(handle);
+        }
 
         if is_oneshot {
             // One-shot mode: distribute all test cases across workers, each runs once
