@@ -138,6 +138,7 @@ counts.Provenance = 100
 # All fields have defaults — uncomment to override.
 #
 # [bench]
+# mode = "steady"              # "steady", "max_throughput", or "soak"
 # concurrency = 10
 # duration_secs = 30
 # ramp_up_secs = 5
@@ -148,3 +149,14 @@ counts.Provenance = 100
 # filter_groups = []
 # warmup_requests = 10
 # test_plan = "./output/test_plan.json"
+#
+# # Max-throughput mode settings
+# min_concurrency = 1
+# max_concurrency = 500
+# step_size = 10
+# stabilization_secs = 10
+# max_error_rate = 0.05
+# max_latency_p95_ms = 1000
+#
+# # Soak mode settings
+# soak_hours = 4

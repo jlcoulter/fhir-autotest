@@ -54,6 +54,38 @@ struct Cli {
     /// Port for the mock server (default: 0 = random available port).
     #[arg(long)]
     mock_port: Option<u16>,
+
+    /// Benchmark mode: "steady" (default), "max_throughput", or "soak".
+    #[arg(long)]
+    mode: Option<String>,
+
+    /// Starting concurrency for max-throughput ramp.
+    #[arg(long)]
+    min_concurrency: Option<usize>,
+
+    /// Maximum concurrency to try before giving up.
+    #[arg(long)]
+    max_concurrency: Option<usize>,
+
+    /// Concurrency increment per step (max-throughput mode).
+    #[arg(long)]
+    step_size: Option<usize>,
+
+    /// Seconds to stabilize at each concurrency level (max-throughput mode).
+    #[arg(long)]
+    stabilization_secs: Option<u64>,
+
+    /// Stop when error rate exceeds this fraction (max-throughput mode).
+    #[arg(long)]
+    max_error_rate: Option<f64>,
+
+    /// Stop when p95 latency exceeds this value in ms (max-throughput mode).
+    #[arg(long)]
+    max_latency_p95_ms: Option<u64>,
+
+    /// Duration in hours for soak mode.
+    #[arg(long)]
+    soak_hours: Option<u64>,
 }
 
 #[tokio::main]
@@ -107,8 +139,26 @@ async fn main() -> anyhow::Result<()> {
         config.bench.warmup_requests = w;
     }
 
+    // CLI overrides for mode
+    if let Some(m) = cli.mode {
+        config.bench.mode = match m.as_str() {
+            "steady" => fhir_autotest::config::models::BenchMode::Steady,
+            "max_throughput" => fhir_autotest::config::models::BenchMode::MaxThroughput,
+            "soak" => fhir_autotest::config::models::BenchMode::Soak,
+            _ => anyhow::bail!("Unknown mode '{}'. Use 'steady', 'max_throughput', or 'soak'.", m),
+        };
+    }
+    if let Some(v) = cli.min_concurrency { config.bench.min_concurrency = v; }
+    if let Some(v) = cli.max_concurrency { config.bench.max_concurrency = v; }
+    if let Some(v) = cli.step_size { config.bench.step_size = v; }
+    if let Some(v) = cli.stabilization_secs { config.bench.stabilization_secs = v; }
+    if let Some(v) = cli.max_error_rate { config.bench.max_error_rate = v; }
+    if let Some(v) = cli.max_latency_p95_ms { config.bench.max_latency_p95_ms = v; }
+    if let Some(v) = cli.soak_hours { config.bench.soak_hours = v; }
+
     tracing::info!(
-        "Benchmark config: concurrency={}, duration={}s, ramp_up={}s, output={}",
+        "Benchmark config: mode={:?}, concurrency={}, duration={}s, ramp_up={}s, output={}",
+        config.bench.mode,
         config.bench.concurrency,
         config.bench.duration_secs,
         config.bench.ramp_up_secs,

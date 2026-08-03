@@ -35,6 +35,22 @@ pub struct GroupStats {
     pub throughput_req_per_sec: f64,
 }
 
+/// A single step in a max-throughput ramp.
+#[derive(Debug, Clone, Serialize)]
+pub struct StepReport {
+    pub concurrency: usize,
+    pub total: u64,
+    pub passed: u64,
+    pub failed: u64,
+    pub error_rate: f64,
+    pub latency_p50_us: u64,
+    pub latency_p95_us: u64,
+    pub latency_p99_us: u64,
+    pub throughput_req_per_sec: f64,
+    pub breached: bool,
+    pub breach_reason: String,
+}
+
 /// Overall benchmark report.
 #[derive(Debug, Clone, Serialize)]
 pub struct BenchReport {
@@ -57,6 +73,9 @@ pub struct BenchReport {
     /// All raw samples (omitted from summary JSON, included in full results).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub samples: Vec<BenchSample>,
+    /// Per-step results for max-throughput mode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<StepReport>,
 }
 
 impl BenchReport {
@@ -144,6 +163,7 @@ impl BenchReport {
             throughput_req_per_sec: throughput,
             groups,
             samples,
+            steps: Vec::new(),
         }
     }
 
@@ -154,6 +174,7 @@ impl BenchReport {
         // Summary JSON (no raw samples)
         let summary = BenchReport {
             samples: Vec::new(),
+            steps: Vec::new(),
             ..self.clone()
         };
         let summary_json = serde_json::to_string_pretty(&summary)?;

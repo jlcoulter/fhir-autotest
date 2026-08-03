@@ -1,10 +1,12 @@
 use crate::config::BenchConfig;
-use crate::report::{BenchReport, BenchSample};
+use crate::report::{BenchReport, BenchSample, StepReport};
 use anyhow::Result;
 use chrono::Utc;
+use fhir_autotest::config::models::BenchMode;
 use fhir_autotest::config::models::TestConfig;
 use fhir_autotest::config::models::WriteEndpoint;
 use fhir_autotest::generate::model::TestPlan;
+use hdrhistogram::Histogram;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::Rng;
 use rand::SeedableRng;
@@ -90,342 +92,205 @@ impl BenchRunner {
         })
     }
 
-    /// Run the benchmark and return a report.
+    /// Run the benchmark according to the configured mode.
     pub async fn run(&self) -> Result<BenchReport> {
+        match self.bench_config.mode {
+            BenchMode::Steady => self.run_steady().await,
+            BenchMode::MaxThroughput => self.run_max_throughput().await,
+            BenchMode::Soak => self.run_soak().await,
+        }
+    }
+
+    /// Steady mode: fixed concurrency for a fixed duration (or one-shot).
+    async fn run_steady(&self) -> Result<BenchReport> {
         let bench_cfg = &self.bench_config;
         let base_url = self.test_config.server.base_url.trim_end_matches('/').to_string();
 
         // Filter test groups if configured
-        let groups: Vec<_> = if bench_cfg.filter_groups.is_empty() {
-            self.plan.test_groups.iter().collect()
-        } else {
-            self.plan
-                .test_groups
-                .iter()
-                .filter(|g| bench_cfg.filter_groups.contains(&g.resource_type))
-                .collect()
-        };
+        let groups = self.filtered_groups()?;
+        let all_tests = self.collect_tests(&groups)?;
 
-        if groups.is_empty() {
-            anyhow::bail!("No test groups match the configured filters");
-        }
-
-        tracing::info!(
-            "Benchmark: {} groups, {} total tests, concurrency={}, duration={}s",
-            groups.len(),
-            groups.iter().map(|g| g.tests.len()).sum::<usize>(),
-            bench_cfg.concurrency,
-            bench_cfg.duration_secs,
-        );
-
-        // Collect all test cases into a flat list for random selection
-        let all_tests: Vec<_> = groups
-            .iter()
-            .flat_map(|g| {
-                let group_name = g.resource_type.clone();
-                g.tests.iter().map(move |t| (group_name.clone(), t.clone()))
-            })
-            .collect();
-
-        if all_tests.is_empty() {
-            anyhow::bail!("No test cases available in the selected groups");
-        }
-
-        // Shared state
+        let is_oneshot = bench_cfg.duration_secs == 0;
         let samples = Arc::<std::sync::Mutex<Vec<BenchSample>>>::default();
         let semaphore = Arc::new(Semaphore::new(bench_cfg.concurrency));
         let start = Instant::now();
         let duration = bench_cfg.duration();
         let ramp_up = bench_cfg.ramp_up();
-        let warmup = bench_cfg.warmup_requests;
-        let warmup_done = Arc::new(AtomicBool::new(false));
-        let warmup_count = Arc::new(AtomicU64::new(0));
         let shutdown = Arc::new(AtomicBool::new(false));
 
-        // Signal handler: listen for Ctrl+C and set shutdown flag
-        let shutdown_signal = shutdown.clone();
-        let signal_handle = tokio::spawn(async move {
-            tokio::signal::ctrl_c().await.ok();
-            tracing::info!("Received Ctrl+C, shutting down gracefully...");
-            shutdown_signal.store(true, Ordering::SeqCst);
-        });
+        let signal_handle = self.spawn_signal_handler(&shutdown);
+        self.warmup(&all_tests, &base_url, &shutdown).await;
 
-        // Warm-up phase: send a few requests without recording
-        if warmup > 0 {
-            tracing::info!("Warm-up: sending {} requests...", warmup);
-            let client = self.client.clone();
-            let base_url = base_url.clone();
-            let tests = all_tests.clone();
-            let warmup_done = warmup_done.clone();
-            let warmup_count = warmup_count.clone();
-
-            let warmup_sem = Arc::new(Semaphore::new(bench_cfg.concurrency));
-            let mut handles = Vec::new();
-            for i in 0..warmup {
-                let permit = warmup_sem.clone().acquire_owned().await.unwrap();
-                let client = client.clone();
-                let base_url = base_url.clone();
-                let tests = tests.clone();
-                let warmup_done = warmup_done.clone();
-                let warmup_count = warmup_count.clone();
-                let seed = i as u64;
-                let h = tokio::spawn(async move {
-                    let _permit = permit;
-                    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-                    let idx = rng.random_range(0..tests.len());
-                    let (_group, test) = &tests[idx];
-                    let url = format!("{}{}", base_url, test.request.url);
-                    let _ = client.get(&url).send().await;
-                    let prev = warmup_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if prev + 1 >= warmup as u64 {
-                        warmup_done.store(true, std::sync::atomic::Ordering::Release);
-                    }
-                });
-                handles.push(h);
-            }
-            // Wait for warmup to complete
-            while !warmup_done.load(std::sync::atomic::Ordering::Acquire) {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            tracing::info!("Warm-up complete");
-        }
-
-        // Main benchmark loop
-        let is_oneshot = bench_cfg.duration_secs == 0;
-        if is_oneshot {
-            tracing::info!(
-                "Benchmark running in one-shot mode: {} test cases across {} workers",
-                all_tests.len(),
-                bench_cfg.concurrency,
-            );
-        } else {
-            tracing::info!(
-                "Benchmark running for {}s with {} workers...",
-                bench_cfg.duration_secs,
-                bench_cfg.concurrency,
-            );
-        }
         let mut handles = Vec::new();
         let concurrency = bench_cfg.concurrency;
 
-        // Progress bar for duration mode
-        let pb = if !is_oneshot {
-            let pb = ProgressBar::new(bench_cfg.duration_secs);
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{elapsed_precise}/{duration_precise}] {bar:40.cyan/blue} {pos}/{len}s {msg}")
-                    .unwrap()
-                    .progress_chars("#>-"),
-            );
-            pb.set_message("0 req, 0.0 req/s");
-            Some(pb)
-        } else {
-            None
-        };
-
-        // Progress bar updater task (duration mode only)
-        if let Some(pb) = &pb {
-            let pb = pb.clone();
-            let samples = samples.clone();
-            let start = start;
-            let duration = duration;
-            let shutdown = shutdown.clone();
-            let handle = tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    let elapsed = start.elapsed();
-                    if elapsed >= duration || shutdown.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    let count = samples.lock().unwrap().len();
-                    let secs = elapsed.as_secs_f64().max(0.1);
-                    let rate = count as f64 / secs;
-                    pb.set_message(format!("{} req, {:.1} req/s", count, rate));
-                    pb.inc(1);
-                }
-                pb.finish_with_message("done");
-            });
-            handles.push(handle);
-        }
-
         if is_oneshot {
-            // One-shot mode: distribute all test cases across workers, each runs once
-            let chunk_size = (all_tests.len() + concurrency - 1) / concurrency;
-            for worker_id in 0..concurrency {
-                let start_idx = worker_id * chunk_size;
-                let end_idx = std::cmp::min(start_idx + chunk_size, all_tests.len());
-                if start_idx >= all_tests.len() {
-                    break;
-                }
-                let worker_tests: Vec<_> = all_tests[start_idx..end_idx].to_vec();
-                let client = self.client.clone();
-                let base_url = base_url.clone();
-                let samples = samples.clone();
-
-                let handle = tokio::spawn(async move {
-                    for (group_name, test) in &worker_tests {
-                        let url = format!("{}{}", base_url, test.request.url);
-                        let request_start = Instant::now();
-
-                        let result = match test.request.method.as_str() {
-                            "GET" => client.get(&url).send().await,
-                            "POST" => {
-                                let body = test.request.body.as_ref().map(|b| serde_json::to_vec(b));
-                                match body {
-                                    Some(Ok(bytes)) => client.post(&url).body(bytes).send().await,
-                                    _ => client.post(&url).send().await,
-                                }
-                            }
-                            "PUT" => {
-                                let body = test.request.body.as_ref().map(|b| serde_json::to_vec(b));
-                                match body {
-                                    Some(Ok(bytes)) => client.put(&url).body(bytes).send().await,
-                                    _ => client.put(&url).send().await,
-                                }
-                            }
-                            "DELETE" => client.delete(&url).send().await,
-                            _ => client.get(&url).send().await,
-                        };
-
-                        let latency_us = request_start.elapsed().as_micros() as u64;
-                        let (status_code, passed) = match &result {
-                            Ok(resp) => {
-                                let sc = resp.status().as_u16();
-                                let ok = sc >= 200 && sc < 500;
-                                (sc, ok)
-                            }
-                            Err(_) => (0, false),
-                        };
-
-                        let sample = BenchSample {
-                            test_group: group_name.clone(),
-                            test_name: test.name.clone(),
-                            request_method: test.request.method.clone(),
-                            request_url: url,
-                            status_code,
-                            latency_us,
-                            passed,
-                            timestamp: Utc::now(),
-                        };
-                        samples.lock().unwrap().push(sample);
-                    }
-                });
-                handles.push(handle);
-            }
+            self.spawn_oneshot_workers(&all_tests, &base_url, &samples, concurrency, &mut handles);
         } else {
-            // Duration mode: spawn workers that continuously send requests
-            for worker_id in 0..concurrency {
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
-                let client = self.client.clone();
-                let base_url = base_url.clone();
-                let tests = all_tests.clone();
-                let samples = samples.clone();
-                let start = start;
-                let duration = duration;
-                let ramp_up = ramp_up;
-                let worker_id = worker_id;
-                let shutdown = shutdown.clone();
-
-                let handle = tokio::spawn(async move {
-                    let _permit = permit;
-                    let mut rng = rand::rngs::StdRng::seed_from_u64(worker_id as u64);
-
-                    loop {
-                        let elapsed = start.elapsed();
-                        if elapsed >= duration || shutdown.load(Ordering::SeqCst) {
-                            break;
-                        }
-
-                        // Ramp-up: gradually increase effective concurrency
-                        if ramp_up > Duration::ZERO {
-                            let ramp_progress = elapsed.as_secs_f64() / ramp_up.as_secs_f64();
-                            let effective_workers = (worker_id as f64 + 1.0) / concurrency as f64;
-                            if effective_workers > ramp_progress.min(1.0) {
-                                tokio::time::sleep(Duration::from_millis(50)).await;
-                                continue;
-                            }
-                        }
-
-                        // Pick a random test case
-                        let idx = rng.random_range(0..tests.len());
-                        let (group_name, test) = &tests[idx];
-
-                        let url = format!("{}{}", base_url, test.request.url);
-                        let request_start = Instant::now();
-
-                        let result = match test.request.method.as_str() {
-                            "GET" => client.get(&url).send().await,
-                            "POST" => {
-                                let body = test.request.body.as_ref().map(|b| serde_json::to_vec(b));
-                                match body {
-                                    Some(Ok(bytes)) => client.post(&url).body(bytes).send().await,
-                                    _ => client.post(&url).send().await,
-                                }
-                            }
-                            "PUT" => {
-                                let body = test.request.body.as_ref().map(|b| serde_json::to_vec(b));
-                                match body {
-                                    Some(Ok(bytes)) => client.put(&url).body(bytes).send().await,
-                                    _ => client.put(&url).send().await,
-                                }
-                            }
-                            "DELETE" => client.delete(&url).send().await,
-                            _ => client.get(&url).send().await,
-                        };
-
-                        let latency_us = request_start.elapsed().as_micros() as u64;
-                        let (status_code, passed) = match &result {
-                            Ok(resp) => {
-                                let sc = resp.status().as_u16();
-                                let ok = sc >= 200 && sc < 500; // 5xx is a failure
-                                (sc, ok)
-                            }
-                            Err(_) => (0, false),
-                        };
-
-                        let sample = BenchSample {
-                            test_group: group_name.clone(),
-                            test_name: test.name.clone(),
-                            request_method: test.request.method.clone(),
-                            request_url: url,
-                            status_code,
-                            latency_us,
-                            passed,
-                            timestamp: Utc::now(),
-                        };
-
-                        samples.lock().unwrap().push(sample);
-                    }
-                });
-
-                handles.push(handle);
-            }
+            self.spawn_duration_workers(&all_tests, &base_url, &samples, &semaphore, concurrency, duration, ramp_up, &shutdown, &mut handles).await;
+            self.spawn_progress_bar(&samples, duration, &shutdown, &mut handles);
         }
 
         // Wait for all workers to finish
-        for h in handles {
-            h.await.ok();
-        }
-
-        // Abort the signal handler (no longer needed)
+        for h in handles { h.await.ok(); }
         signal_handle.abort();
 
         let actual_duration = start.elapsed();
         let all_samples = std::mem::take(&mut *samples.lock().unwrap());
 
-        tracing::info!(
-            "Benchmark complete: {} requests in {:.1}s",
-            all_samples.len(),
-            actual_duration.as_secs_f64()
-        );
-
         let report = BenchReport::from_samples(all_samples, actual_duration, bench_cfg.concurrency);
+        self.write_report_and_cleanup(&report).await?;
+        Ok(report)
+    }
 
-        // Write report
+    /// Max-throughput mode: ramp concurrency upward until a threshold is breached.
+    async fn run_max_throughput(&self) -> Result<BenchReport> {
+        let bench_cfg = &self.bench_config;
+        let base_url = self.test_config.server.base_url.trim_end_matches('/').to_string();
+        let groups = self.filtered_groups()?;
+        let all_tests = self.collect_tests(&groups)?;
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let _signal_handle = self.spawn_signal_handler(&shutdown);
+
+        let mut steps: Vec<StepReport> = Vec::new();
+        let mut concurrency = bench_cfg.min_concurrency;
+        let max_conc = bench_cfg.max_concurrency;
+        let step = bench_cfg.step_size;
+        let stabilize = Duration::from_secs(bench_cfg.stabilization_secs);
+        let max_error = bench_cfg.max_error_rate;
+        let max_latency_p95 = Duration::from_millis(bench_cfg.max_latency_p95_ms);
+
+        println!("\n── Max-Throughput Mode ──");
+        println!("  Starting at concurrency={}, stepping by +{}, max={}", concurrency, step, max_conc);
+        println!("  Thresholds: error_rate>{:.0}% or p95>{}ms", max_error * 100.0, bench_cfg.max_latency_p95_ms);
+        println!();
+
+        while concurrency <= max_conc && !shutdown.load(Ordering::SeqCst) {
+            print!("  Concurrency={:<4} stabilizing for {}s ... ", concurrency, bench_cfg.stabilization_secs);
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+
+            let samples = Arc::<std::sync::Mutex<Vec<BenchSample>>>::default();
+            let semaphore = Arc::new(Semaphore::new(concurrency));
+            let start = Instant::now();
+            let mut handles = Vec::new();
+
+            self.spawn_duration_workers(&all_tests, &base_url, &samples, &semaphore, concurrency, stabilize, Duration::ZERO, &shutdown, &mut handles).await;
+            for h in handles { h.await.ok(); }
+
+            let elapsed = start.elapsed();
+            let all_samples = std::mem::take(&mut *samples.lock().unwrap());
+            let total = all_samples.len() as u64;
+            let passed = all_samples.iter().filter(|s| s.passed).count() as u64;
+            let failed = total - passed;
+            let error_rate = if total > 0 { failed as f64 / total as f64 } else { 0.0 };
+
+            let mut hist = Histogram::<u64>::new_with_bounds(1, 10_000_000, 3).unwrap();
+            for s in &all_samples { hist.record(s.latency_us).ok(); }
+            let p50 = hist.value_at_percentile(50.0);
+            let p95 = hist.value_at_percentile(95.0);
+            let p99 = hist.value_at_percentile(99.0);
+            let throughput = if elapsed.as_secs_f64() > 0.0 { total as f64 / elapsed.as_secs_f64() } else { 0.0 };
+
+            let p95_dur = Duration::from_micros(p95);
+            let mut breached = false;
+            let mut breach_reason = String::new();
+
+            if error_rate > max_error {
+                breached = true;
+                breach_reason = format!("error_rate {:.1}% > {:.0}%", error_rate * 100.0, max_error * 100.0);
+            } else if p95_dur > max_latency_p95 {
+                breached = true;
+                breach_reason = format!("p95 {}ms > {}ms", p95_dur.as_millis(), bench_cfg.max_latency_p95_ms);
+            }
+
+            println!("{} req, {:.1} req/s, p95={}, errors={:.1}%{}",
+                total, throughput, format_duration(p95), error_rate * 100.0,
+                if breached { format!(" — BREACHED: {}", breach_reason) } else { String::new() });
+
+            steps.push(StepReport {
+                concurrency,
+                total,
+                passed,
+                failed,
+                error_rate,
+                latency_p50_us: p50,
+                latency_p95_us: p95,
+                latency_p99_us: p99,
+                throughput_req_per_sec: throughput,
+                breached,
+                breach_reason,
+            });
+
+            if breached { break; }
+            concurrency += step;
+        }
+
+        // Build a combined report from all steps
+        let all_samples = Vec::new(); // not collected across steps
+        let total_duration = steps.last().map(|s| s.concurrency as f64 * 0.1).unwrap_or(0.0);
+        let mut report = BenchReport::from_samples(all_samples, Duration::from_secs_f64(total_duration), bench_cfg.concurrency);
+        report.title = "FHIR Autotest Max-Throughput Report".to_string();
+        report.steps = steps;
+
         let output_dir = Path::new(&bench_cfg.output);
         report.write(output_dir)?;
 
-        // Print summary to stdout
+        // Print summary
+        println!("\n{}", report.title);
+        if let Some(last_ok) = report.steps.iter().rev().find(|s| !s.breached) {
+            println!("  Max sustainable concurrency: {} ({:.1} req/s, p95={})",
+                last_ok.concurrency, last_ok.throughput_req_per_sec, format_duration(last_ok.latency_p95_us));
+        }
+        if let Some(breach) = report.steps.iter().find(|s| s.breached) {
+            println!("  Breach at concurrency={}: {}", breach.concurrency, breach.breach_reason);
+        }
+        println!("  Report: {}/", output_dir.display());
+
+        self.cleanup().await?;
+        Ok(report)
+    }
+
+    /// Soak mode: sustained load at fixed concurrency for an extended period.
+    async fn run_soak(&self) -> Result<BenchReport> {
+        let bench_cfg = &self.bench_config;
+        let base_url = self.test_config.server.base_url.trim_end_matches('/').to_string();
+        let groups = self.filtered_groups()?;
+        let all_tests = self.collect_tests(&groups)?;
+
+        // Soak uses soak_hours as duration
+        let soak_secs = bench_cfg.soak_hours * 3600;
+        let samples = Arc::<std::sync::Mutex<Vec<BenchSample>>>::default();
+        let semaphore = Arc::new(Semaphore::new(bench_cfg.concurrency));
+        let start = Instant::now();
+        let duration = Duration::from_secs(soak_secs);
+        let ramp_up = bench_cfg.ramp_up();
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        let signal_handle = self.spawn_signal_handler(&shutdown);
+        self.warmup(&all_tests, &base_url, &shutdown).await;
+
+        println!("\n── Soak Mode ──");
+        println!("  Concurrency={}, duration={}h ({}s)", bench_cfg.concurrency, bench_cfg.soak_hours, soak_secs);
+        println!();
+
+        let mut handles = Vec::new();
+        let concurrency = bench_cfg.concurrency;
+
+        self.spawn_duration_workers(&all_tests, &base_url, &samples, &semaphore, concurrency, duration, ramp_up, &shutdown, &mut handles).await;
+        self.spawn_progress_bar(&samples, duration, &shutdown, &mut handles);
+
+        for h in handles { h.await.ok(); }
+        signal_handle.abort();
+
+        let actual_duration = start.elapsed();
+        let all_samples = std::mem::take(&mut *samples.lock().unwrap());
+
+        let mut report = BenchReport::from_samples(all_samples, actual_duration, bench_cfg.concurrency);
+        report.title = "FHIR Autotest Soak Report".to_string();
+
+        let output_dir = Path::new(&bench_cfg.output);
+        report.write(output_dir)?;
+
         println!("\n{}", report.title);
         println!("  Duration:   {:.1}s", report.duration_secs);
         println!("  Concurrency: {}", report.concurrency);
@@ -438,37 +303,252 @@ impl BenchRunner {
             format_duration(report.latency_p99_us));
         println!("  Report:     {}/", output_dir.display());
 
-        // 6. Cleanup: delete uploaded resources
+        self.cleanup().await?;
+        Ok(report)
+    }
+
+    // ── Shared helpers ──────────────────────────────────────────────────────
+
+    fn filtered_groups(&self) -> Result<Vec<&fhir_autotest::generate::model::TestGroup>> {
+        let bench_cfg = &self.bench_config;
+        let groups: Vec<_> = if bench_cfg.filter_groups.is_empty() {
+            self.plan.test_groups.iter().collect()
+        } else {
+            self.plan.test_groups.iter().filter(|g| bench_cfg.filter_groups.contains(&g.resource_type)).collect()
+        };
+        if groups.is_empty() {
+            anyhow::bail!("No test groups match the configured filters");
+        }
+        Ok(groups)
+    }
+
+    fn collect_tests(&self, groups: &[&fhir_autotest::generate::model::TestGroup]) -> Result<Vec<(String, fhir_autotest::generate::model::TestCase)>> {
+        let all_tests: Vec<_> = groups.iter().flat_map(|g| {
+            let group_name = g.resource_type.clone();
+            g.tests.iter().map(move |t| (group_name.clone(), t.clone()))
+        }).collect();
+        if all_tests.is_empty() {
+            anyhow::bail!("No test cases available in the selected groups");
+        }
+        Ok(all_tests)
+    }
+
+    fn spawn_signal_handler(&self, shutdown: &Arc<AtomicBool>) -> tokio::task::JoinHandle<()> {
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            tracing::info!("Received Ctrl+C, shutting down gracefully...");
+            s.store(true, Ordering::SeqCst);
+        })
+    }
+
+    async fn warmup(&self, all_tests: &[(String, fhir_autotest::generate::model::TestCase)], base_url: &str, shutdown: &Arc<AtomicBool>) {
+        let warmup = self.bench_config.warmup_requests;
+        if warmup == 0 { return; }
+        tracing::info!("Warm-up: sending {} requests...", warmup);
+        let warmup_done = Arc::new(AtomicBool::new(false));
+        let warmup_count = Arc::new(AtomicU64::new(0));
+        let warmup_sem = Arc::new(Semaphore::new(self.bench_config.concurrency));
+        let mut handles = Vec::new();
+        for i in 0..warmup {
+            let permit = warmup_sem.clone().acquire_owned().await.unwrap();
+            let client = self.client.clone();
+            let base_url = base_url.to_string();
+            let tests = all_tests.to_vec();
+            let wd = warmup_done.clone();
+            let wc = warmup_count.clone();
+            let seed = i as u64;
+            handles.push(tokio::spawn(async move {
+                let _permit = permit;
+                let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+                let idx = rng.random_range(0..tests.len());
+                let (_group, test) = &tests[idx];
+                let url = format!("{}{}", base_url, test.request.url);
+                let _ = client.get(&url).send().await;
+                let prev = wc.fetch_add(1, Ordering::Relaxed);
+                if prev + 1 >= warmup as u64 { wd.store(true, Ordering::Release); }
+            }));
+        }
+        while !warmup_done.load(Ordering::Acquire) && !shutdown.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tracing::info!("Warm-up complete");
+    }
+
+    fn spawn_oneshot_workers(
+        &self, all_tests: &[(String, fhir_autotest::generate::model::TestCase)],
+        base_url: &str, samples: &Arc<std::sync::Mutex<Vec<BenchSample>>>,
+        concurrency: usize, handles: &mut Vec<tokio::task::JoinHandle<()>>,
+    ) {
+        let chunk_size = (all_tests.len() + concurrency - 1) / concurrency;
+        for worker_id in 0..concurrency {
+            let start_idx = worker_id * chunk_size;
+            let end_idx = std::cmp::min(start_idx + chunk_size, all_tests.len());
+            if start_idx >= all_tests.len() { break; }
+            let worker_tests = all_tests[start_idx..end_idx].to_vec();
+            let client = self.client.clone();
+            let base_url = base_url.to_string();
+            let samples = samples.clone();
+            handles.push(tokio::spawn(async move {
+                for (group_name, test) in &worker_tests {
+                    let url = format!("{}{}", base_url, test.request.url);
+                    let request_start = Instant::now();
+                    let result = Self::send_request(&client, &test, &url).await;
+                    let latency_us = request_start.elapsed().as_micros() as u64;
+                    let (status_code, passed) = Self::classify_result(&result);
+                    samples.lock().unwrap().push(BenchSample {
+                        test_group: group_name.clone(),
+                        test_name: test.name.clone(),
+                        request_method: test.request.method.clone(),
+                        request_url: url,
+                        status_code,
+                        latency_us,
+                        passed,
+                        timestamp: Utc::now(),
+                    });
+                }
+            }));
+        }
+    }
+
+    async fn spawn_duration_workers(
+        &self, all_tests: &[(String, fhir_autotest::generate::model::TestCase)],
+        base_url: &str, samples: &Arc<std::sync::Mutex<Vec<BenchSample>>>,
+        semaphore: &Arc<Semaphore>, concurrency: usize, duration: Duration,
+        ramp_up: Duration, shutdown: &Arc<AtomicBool>,
+        handles: &mut Vec<tokio::task::JoinHandle<()>>,
+    ) {
+        for worker_id in 0..concurrency {
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let client = self.client.clone();
+            let base_url = base_url.to_string();
+            let tests = all_tests.to_vec();
+            let samples = samples.clone();
+            let start = Instant::now();
+            let shutdown = shutdown.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = permit;
+                let mut rng = rand::rngs::StdRng::seed_from_u64(worker_id as u64);
+                loop {
+                    let elapsed = start.elapsed();
+                    if elapsed >= duration || shutdown.load(Ordering::SeqCst) { break; }
+                    if ramp_up > Duration::ZERO {
+                        let ramp_progress = elapsed.as_secs_f64() / ramp_up.as_secs_f64();
+                        let effective = (worker_id as f64 + 1.0) / concurrency as f64;
+                        if effective > ramp_progress.min(1.0) {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            continue;
+                        }
+                    }
+                    let idx = rng.random_range(0..tests.len());
+                    let (group_name, test) = &tests[idx];
+                    let url = format!("{}{}", base_url, test.request.url);
+                    let request_start = Instant::now();
+                    let result = Self::send_request(&client, test, &url).await;
+                    let latency_us = request_start.elapsed().as_micros() as u64;
+                    let (status_code, passed) = Self::classify_result(&result);
+                    samples.lock().unwrap().push(BenchSample {
+                        test_group: group_name.clone(),
+                        test_name: test.name.clone(),
+                        request_method: test.request.method.clone(),
+                        request_url: url,
+                        status_code,
+                        latency_us,
+                        passed,
+                        timestamp: Utc::now(),
+                    });
+                }
+            }));
+        }
+    }
+
+    fn spawn_progress_bar(
+        &self, samples: &Arc<std::sync::Mutex<Vec<BenchSample>>>,
+        duration: Duration, shutdown: &Arc<AtomicBool>,
+        handles: &mut Vec<tokio::task::JoinHandle<()>>,
+    ) {
+        let pb = ProgressBar::new(duration.as_secs());
+        pb.set_style(ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}/{duration_precise}] {bar:40.cyan/blue} {pos}/{len}s {msg}").unwrap()
+            .progress_chars("#>-"));
+        pb.set_message("0 req, 0.0 req/s");
+        let pb = pb.clone();
+        let samples = samples.clone();
+        let start = Instant::now();
+        let shutdown = shutdown.clone();
+        handles.push(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let elapsed = start.elapsed();
+                if elapsed >= duration || shutdown.load(Ordering::SeqCst) { break; }
+                let count = samples.lock().unwrap().len();
+                let secs = elapsed.as_secs_f64().max(0.1);
+                pb.set_message(format!("{} req, {:.1} req/s", count, count as f64 / secs));
+                pb.inc(1);
+            }
+            pb.finish_with_message("done");
+        }));
+    }
+
+    async fn send_request(client: &reqwest::Client, test: &fhir_autotest::generate::model::TestCase, url: &str) -> Result<reqwest::Response, reqwest::Error> {
+        match test.request.method.as_str() {
+            "GET" => client.get(url).send().await,
+            "POST" => {
+                let body = test.request.body.as_ref().and_then(|b| serde_json::to_vec(b).ok());
+                match body { Some(bytes) => client.post(url).body(bytes).send().await, _ => client.post(url).send().await }
+            }
+            "PUT" => {
+                let body = test.request.body.as_ref().and_then(|b| serde_json::to_vec(b).ok());
+                match body { Some(bytes) => client.put(url).body(bytes).send().await, _ => client.put(url).send().await }
+            }
+            "DELETE" => client.delete(url).send().await,
+            _ => client.get(url).send().await,
+        }
+    }
+
+    fn classify_result(result: &Result<reqwest::Response, reqwest::Error>) -> (u16, bool) {
+        match result {
+            Ok(resp) => { let sc = resp.status().as_u16(); (sc, sc >= 200 && sc < 500) }
+            Err(_) => (0, false),
+        }
+    }
+
+    async fn write_report_and_cleanup(&self, report: &BenchReport) -> Result<()> {
+        let output_dir = Path::new(&self.bench_config.output);
+        report.write(output_dir)?;
+        println!("\n{}", report.title);
+        println!("  Duration:   {:.1}s", report.duration_secs);
+        println!("  Concurrency: {}", report.concurrency);
+        println!("  Requests:   {} total, {} passed, {} failed",
+            report.total_requests, report.passed, report.failed);
+        println!("  Throughput: {:.1} req/s", report.throughput_req_per_sec);
+        println!("  Latency:    p50={}  p95={}  p99={}",
+            format_duration(report.latency_p50_us),
+            format_duration(report.latency_p95_us),
+            format_duration(report.latency_p99_us));
+        println!("  Report:     {}/", output_dir.display());
+        self.cleanup().await
+    }
+
+    async fn cleanup(&self) -> Result<()> {
         if !self.bench_config.skip_cleanup && !self.uploaded_ids.is_empty() {
             let concurrency = match &self.write_endpoint {
-                WriteEndpoint::Repository { concurrency, .. }
-                | WriteEndpoint::Server { concurrency, .. } => *concurrency,
+                WriteEndpoint::Repository { concurrency, .. } | WriteEndpoint::Server { concurrency, .. } => *concurrency,
             };
             let write_url = match &self.write_endpoint {
-                WriteEndpoint::Repository { base_url, .. }
-                | WriteEndpoint::Server { base_url, .. } => base_url.as_str(),
+                WriteEndpoint::Repository { base_url, .. } | WriteEndpoint::Server { base_url, .. } => base_url.as_str(),
             };
-            println!(
-                "\n── Cleanup: deleting {} resource types from {} ──",
-                self.uploaded_ids.len(),
-                write_url,
-            );
+            println!("\n── Cleanup: deleting {} resource types from {} ──", self.uploaded_ids.len(), write_url);
             if let Err(e) = fhir_autotest::runner::bulk_loader::delete_all_resources(
-                &self.uploaded_ids,
-                &self.upload_order,
-                &self.write_endpoint,
-                concurrency,
-            )
-            .await
-            {
+                &self.uploaded_ids, &self.upload_order, &self.write_endpoint, concurrency,
+            ).await {
                 tracing::warn!("Cleanup encountered errors: {:#}", e);
                 println!("  Cleanup completed with errors (see logs)");
             } else {
                 println!("  Cleanup complete");
             }
         }
-
-        Ok(report)
+        Ok(())
     }
 }
 
