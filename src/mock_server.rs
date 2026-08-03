@@ -67,7 +67,10 @@ async fn create_resource(
     Json(body): Json<serde_json::Value>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if !body.is_object() {
-        tracing::debug!("Mock POST /{} → 400 Bad Request (body must be a JSON object)", rtype);
+        tracing::debug!(
+            "Mock POST /{} → 400 Bad Request (body must be a JSON object)",
+            rtype
+        );
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -658,7 +661,11 @@ async fn update_resource(
     Json(body): Json<serde_json::Value>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if !body.is_object() {
-        tracing::debug!("Mock PUT /{}/{} → 400 Bad Request (body must be a JSON object)", rtype, id);
+        tracing::debug!(
+            "Mock PUT /{}/{} → 400 Bad Request (body must be a JSON object)",
+            rtype,
+            id
+        );
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({

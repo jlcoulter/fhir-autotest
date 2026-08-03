@@ -180,18 +180,18 @@ async fn main() -> anyhow::Result<()> {
     // Register mutation strategies
     for cat in &categories {
         match *cat {
-            "boundary" => fuzzer.register_mutator(Box::new(
-                fhir_autotest_fuzz::mutators::BoundaryMutator,
-            )),
-            "type_mismatch" => fuzzer.register_mutator(Box::new(
-                fhir_autotest_fuzz::mutators::TypeMismatchMutator,
-            )),
-            "cardinality" => fuzzer.register_mutator(Box::new(
-                fhir_autotest_fuzz::mutators::CardinalityMutator,
-            )),
-            "encoding" => fuzzer.register_mutator(Box::new(
-                fhir_autotest_fuzz::mutators::EncodingMutator,
-            )),
+            "boundary" => {
+                fuzzer.register_mutator(Box::new(fhir_autotest_fuzz::mutators::BoundaryMutator))
+            }
+            "type_mismatch" => {
+                fuzzer.register_mutator(Box::new(fhir_autotest_fuzz::mutators::TypeMismatchMutator))
+            }
+            "cardinality" => {
+                fuzzer.register_mutator(Box::new(fhir_autotest_fuzz::mutators::CardinalityMutator))
+            }
+            "encoding" => {
+                fuzzer.register_mutator(Box::new(fhir_autotest_fuzz::mutators::EncodingMutator))
+            }
             "search_param" => {
                 // search_param is handled directly by the orchestrator, not as a body mutator
             }

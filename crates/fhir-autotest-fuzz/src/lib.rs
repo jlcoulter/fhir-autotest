@@ -3,8 +3,8 @@ pub mod mutators;
 pub mod reporter;
 pub mod runner;
 
-use crate::mutators::search_param::generate_fuzzed_query_param;
 use crate::mutators::Mutator;
+use crate::mutators::search_param::generate_fuzzed_query_param;
 use crate::reporter::FuzzReport;
 use crate::runner::FuzzRunner;
 use fhir_autotest::model::capability::CapabilityStatement;
@@ -102,21 +102,19 @@ impl Fuzzer {
 
         // ── Phase 1: POST fuzzing (create with mutated body) ──────────────
         for profile in profiles {
-            let base_resource =
-                match fhir_autotest::generate::resource_generator::generate_resource(
-                    profile,
-                    profiles,
-                ) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!(
-                            "Skipping profile {}: cannot generate base resource: {}",
-                            profile.name,
-                            e
-                        );
-                        continue;
-                    }
-                };
+            let base_resource = match fhir_autotest::generate::resource_generator::generate_resource(
+                profile, profiles,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping profile {}: cannot generate base resource: {}",
+                        profile.name,
+                        e
+                    );
+                    continue;
+                }
+            };
 
             tracing::info!(
                 "Fuzzing POST {} (profile: {})",
@@ -154,21 +152,19 @@ impl Fuzzer {
 
         // ── Phase 2: PUT fuzzing (update with mutated body) ───────────────
         for profile in profiles {
-            let base_resource =
-                match fhir_autotest::generate::resource_generator::generate_resource(
-                    profile,
-                    profiles,
-                ) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!(
-                            "Skipping PUT fuzz for profile {}: cannot generate base: {}",
-                            profile.name,
-                            e
-                        );
-                        continue;
-                    }
-                };
+            let base_resource = match fhir_autotest::generate::resource_generator::generate_resource(
+                profile, profiles,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping PUT fuzz for profile {}: cannot generate base: {}",
+                        profile.name,
+                        e
+                    );
+                    continue;
+                }
+            };
 
             let fake_id = format!("fuzz-put-{}", uuid::Uuid::new_v4());
 
@@ -188,13 +184,7 @@ impl Fuzzer {
                     let fuzzed = mutator.mutate(&base_resource, profile, rng);
 
                     let result = runner
-                        .send_fuzzed_put(
-                            &profile.base_type,
-                            &fake_id,
-                            &fuzzed,
-                            &mutator_name,
-                            i,
-                        )
+                        .send_fuzzed_put(&profile.base_type, &fake_id, &fuzzed, &mutator_name, i)
                         .await;
 
                     report.total += 1;
@@ -380,6 +370,9 @@ mod tests {
         // PUT: 2 profiles × 1 mutator (put_boundary) × 2 iterations = 4
         // SEARCH: skipped (no CS)
         // Total: 8
-        assert_eq!(report.total, 8, "Expected 8 requests without CS (4 POST + 4 PUT)");
+        assert_eq!(
+            report.total, 8,
+            "Expected 8 requests without CS (4 POST + 4 PUT)"
+        );
     }
 }

@@ -153,7 +153,17 @@ impl FuzzRunner {
         let response = self.client.post(&url).json(body).send().await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        self.classify_response(response, mutator_name, resource_type, iteration, "POST", url, body_size, duration_ms).await
+        self.classify_response(
+            response,
+            mutator_name,
+            resource_type,
+            iteration,
+            "POST",
+            url,
+            body_size,
+            duration_ms,
+        )
+        .await
     }
 
     /// Send a fuzzed PUT (update) request with a mutated body.
@@ -190,7 +200,17 @@ impl FuzzRunner {
         let response = self.client.put(&url).json(body).send().await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        self.classify_response(response, mutator_name, resource_type, iteration, "PUT", url, body_size, duration_ms).await
+        self.classify_response(
+            response,
+            mutator_name,
+            resource_type,
+            iteration,
+            "PUT",
+            url,
+            body_size,
+            duration_ms,
+        )
+        .await
     }
 
     /// Send a fuzzed GET (search) request with fuzzed query parameters.
@@ -224,7 +244,17 @@ impl FuzzRunner {
         let response = self.client.get(&url).send().await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        self.classify_response(response, mutator_name, resource_type, iteration, "GET", url, 0, duration_ms).await
+        self.classify_response(
+            response,
+            mutator_name,
+            resource_type,
+            iteration,
+            "GET",
+            url,
+            0,
+            duration_ms,
+        )
+        .await
     }
 
     /// Classify a response: extract status, detect anomalies, check body for leaks.
@@ -342,7 +372,8 @@ mod tests {
 
     #[test]
     fn detect_python_traceback() {
-        let body = "Traceback (most recent call last):\n  File \"/app/server.py\", line 23, in handle";
+        let body =
+            "Traceback (most recent call last):\n  File \"/app/server.py\", line 23, in handle";
         assert!(detect_leak(body).is_some());
     }
 
@@ -409,7 +440,9 @@ mod tests {
         let runner = FuzzRunner::new(&base_url, 1, false);
 
         let body = serde_json::json!({"resourceType": "Patient", "name": [{"family": "Test"}]});
-        let result = runner.send_fuzzed_put("Patient", "test-put-id", &body, "put_boundary", 0).await;
+        let result = runner
+            .send_fuzzed_put("Patient", "test-put-id", &body, "put_boundary", 0)
+            .await;
 
         assert_eq!(result.method, "PUT");
         assert_eq!(result.status_code, 201); // update-as-create
@@ -422,7 +455,9 @@ mod tests {
         let base_url = setup_mock_server().await;
         let runner = FuzzRunner::new(&base_url, 1, false);
 
-        let result = runner.send_fuzzed_search("Patient", "?name=Test", "search_param", 0).await;
+        let result = runner
+            .send_fuzzed_search("Patient", "?name=Test", "search_param", 0)
+            .await;
 
         assert_eq!(result.method, "GET");
         assert_eq!(result.status_code, 200);
@@ -437,7 +472,9 @@ mod tests {
 
         // Send an array — mock server returns 400, which is not 200/201/500
         // so it should NOT be flagged as anomaly (400 is expected rejection)
-        let result = runner.send_fuzzed("Patient", &serde_json::json!([1, 2, 3]), "type_mismatch", 0).await;
+        let result = runner
+            .send_fuzzed("Patient", &serde_json::json!([1, 2, 3]), "type_mismatch", 0)
+            .await;
 
         assert_eq!(result.status_code, 400);
         assert!(!result.is_anomaly(), "400 should not be flagged as anomaly");
@@ -460,7 +497,9 @@ mod tests {
         let runner = FuzzRunner::new("http://localhost:1", 1, true);
 
         let body = serde_json::json!({"resourceType": "Patient"});
-        let result = runner.send_fuzzed_put("Patient", "id", &body, "put_boundary", 0).await;
+        let result = runner
+            .send_fuzzed_put("Patient", "id", &body, "put_boundary", 0)
+            .await;
 
         assert_eq!(result.status_code, 0);
         assert!(!result.is_anomaly());
@@ -470,7 +509,9 @@ mod tests {
     async fn send_fuzzed_search_dry_run_returns_zero_status() {
         let runner = FuzzRunner::new("http://localhost:1", 1, true);
 
-        let result = runner.send_fuzzed_search("Patient", "?name=test", "search_param", 0).await;
+        let result = runner
+            .send_fuzzed_search("Patient", "?name=test", "search_param", 0)
+            .await;
 
         assert_eq!(result.status_code, 0);
         assert!(!result.is_anomaly());

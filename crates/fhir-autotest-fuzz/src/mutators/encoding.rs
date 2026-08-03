@@ -32,11 +32,11 @@ fn apply_encoding_mutations(value: &mut serde_json::Value, seed: u64) {
 
     match value {
         serde_json::Value::String(s) => match strategy {
-            0 => *s = format!("\"; {} //", s),              // JSON injection
-            1 => *s = format!("{}\\\"{}", s, s),            // escaped quote
+            0 => *s = format!("\"; {} //", s),               // JSON injection
+            1 => *s = format!("{}\\\"{}", s, s),             // escaped quote
             2 => *s = format!("{}\n{}\r{}\t{}", s, s, s, s), // control chars
-            3 => *s = format!("{}\u{0000}{}", s, s),        // null byte injection
-            4 => *s = format!("{}\u{200B}{}", s, s),        // zero-width space
+            3 => *s = format!("{}\u{0000}{}", s, s),         // null byte injection
+            4 => *s = format!("{}\u{200B}{}", s, s),         // zero-width space
             5 => *s = format!("{}\u{FFFE}{}", s, s),         // non-character
             _ => {}
         },

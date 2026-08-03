@@ -33,27 +33,27 @@ fn apply_boundary_mutations(value: &mut serde_json::Value, seed: u64) {
 
     match value {
         serde_json::Value::String(s) => match strategy {
-            0 => *s = String::new(),                    // empty string
-            1 => *s = " ".repeat(10000),                 // very long whitespace
-            2 => *s = "A".repeat(65536),                 // max-length string
-            3 => *s = "\0\0\0\0".to_string(),            // null bytes
-            4 => *s = "\\u0000\\u0000".to_string(),      // escaped unicode
-            5 => *s = "💉🏥🧬🩺".to_string(),            // multi-byte unicode
-            6 => *s = "\t\n\r".to_string(),              // control characters
-            7 => *s = "🫀".repeat(1000),                  // emoji overflow
+            0 => *s = String::new(),                // empty string
+            1 => *s = " ".repeat(10000),            // very long whitespace
+            2 => *s = "A".repeat(65536),            // max-length string
+            3 => *s = "\0\0\0\0".to_string(),       // null bytes
+            4 => *s = "\\u0000\\u0000".to_string(), // escaped unicode
+            5 => *s = "💉🏥🧬🩺".to_string(),       // multi-byte unicode
+            6 => *s = "\t\n\r".to_string(),         // control characters
+            7 => *s = "🫀".repeat(1000),            // emoji overflow
             _ => {}
         },
         serde_json::Value::Number(n) => {
             if let Some(f) = n.as_f64() {
                 *value = serde_json::json!(match strategy {
-                    0 => -f,                              // negate
-                    1 => f64::NEG_INFINITY,               // -inf
-                    2 => f64::INFINITY,                   // +inf
-                    3 => f64::NAN,                         // NaN
-                    4 => 0.0,                              // zero
-                    5 => -0.0,                             // negative zero
-                    6 => 1e308,                            // near overflow
-                    7 => -1e308,                           // near underflow
+                    0 => -f,                // negate
+                    1 => f64::NEG_INFINITY, // -inf
+                    2 => f64::INFINITY,     // +inf
+                    3 => f64::NAN,          // NaN
+                    4 => 0.0,               // zero
+                    5 => -0.0,              // negative zero
+                    6 => 1e308,             // near overflow
+                    7 => -1e308,            // near underflow
                     _ => f,
                 });
             } else if let Some(i) = n.as_i64() {
