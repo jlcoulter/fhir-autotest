@@ -63,7 +63,7 @@ impl Fuzzer {
 
     /// Print a progress line if the request count has crossed a multiple of the interval.
     fn report_progress(&self, report: &FuzzReport, phase: &str, detail: &str) {
-        if report.total > 0 && report.total % self.progress_interval == 0 {
+        if report.total > 0 && report.total.is_multiple_of(self.progress_interval) {
             let pct_anomalies = if report.total > 0 {
                 (report.anomalies as f64 / report.total as f64) * 100.0
             } else {

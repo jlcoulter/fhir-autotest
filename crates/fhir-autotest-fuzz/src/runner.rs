@@ -258,6 +258,7 @@ impl FuzzRunner {
     }
 
     /// Classify a response: extract status, detect anomalies, check body for leaks.
+    #[allow(clippy::too_many_arguments)]
     async fn classify_response(
         &self,
         response: Result<reqwest::Response, reqwest::Error>,
@@ -310,14 +311,14 @@ impl FuzzRunner {
                 }
 
                 // Check for information leaks in the response body
-                if let Some(ref text) = response_text {
-                    if let Some(leak_reason) = detect_leak(text) {
-                        result.is_anomaly = true;
-                        result.reason = match result.reason {
-                            Some(existing) => Some(format!("{}; {}", existing, leak_reason)),
-                            None => Some(leak_reason),
-                        };
-                    }
+                if let Some(ref text) = response_text
+                    && let Some(leak_reason) = detect_leak(text)
+                {
+                    result.is_anomaly = true;
+                    result.reason = match result.reason {
+                        Some(existing) => Some(format!("{}; {}", existing, leak_reason)),
+                        None => Some(leak_reason),
+                    };
                 }
 
                 result

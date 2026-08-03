@@ -33,10 +33,7 @@ pub struct PlanContext {
 /// This is the shared setup used by `run_generate`, `run_dry_run`, and
 /// `Orchestrator::run` — each caller then generates resources and produces
 /// output in its own way.
-pub async fn prepare_plan_context(
-    package_path: &str,
-    config: &TestConfig,
-) -> Result<PlanContext> {
+pub async fn prepare_plan_context(package_path: &str, config: &TestConfig) -> Result<PlanContext> {
     tracing::debug!("Preparing plan context for package: {}", package_path);
     let pkg = parse_package(package_path)?;
     let value_set_systems = build_value_set_system_map(&pkg.raw_resources);

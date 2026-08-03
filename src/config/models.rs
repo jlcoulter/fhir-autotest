@@ -482,7 +482,6 @@ pub struct BenchConfig {
     pub mode: BenchMode,
 
     // ── Max-throughput mode fields ──────────────────────────────────────
-
     /// Starting concurrency for max-throughput ramp.
     #[serde(default = "default_bench_min_concurrency")]
     pub min_concurrency: usize,
@@ -508,25 +507,50 @@ pub struct BenchConfig {
     pub max_latency_p95_ms: u64,
 
     // ── Soak mode fields ──────────────────────────────────────────────
-
     /// Duration in hours for soak mode (overrides duration_secs when mode=soak).
     #[serde(default = "default_bench_soak_hours")]
     pub soak_hours: u64,
 }
 
-fn default_bench_concurrency() -> usize { 10 }
-fn default_bench_duration_secs() -> u64 { 30 }
-fn default_bench_ramp_up_secs() -> u64 { 5 }
-fn default_bench_request_timeout_secs() -> u64 { 30 }
-fn default_bench_output() -> String { "./bench-results".to_string() }
-fn default_bench_warmup() -> usize { 10 }
-fn default_bench_min_concurrency() -> usize { 1 }
-fn default_bench_max_concurrency() -> usize { 500 }
-fn default_bench_step_size() -> usize { 10 }
-fn default_bench_stabilization_secs() -> u64 { 10 }
-fn default_bench_max_error_rate() -> f64 { 0.05 }
-fn default_bench_max_latency_p95_ms() -> u64 { 1000 }
-fn default_bench_soak_hours() -> u64 { 4 }
+fn default_bench_concurrency() -> usize {
+    10
+}
+fn default_bench_duration_secs() -> u64 {
+    30
+}
+fn default_bench_ramp_up_secs() -> u64 {
+    5
+}
+fn default_bench_request_timeout_secs() -> u64 {
+    30
+}
+fn default_bench_output() -> String {
+    "./bench-results".to_string()
+}
+fn default_bench_warmup() -> usize {
+    10
+}
+fn default_bench_min_concurrency() -> usize {
+    1
+}
+fn default_bench_max_concurrency() -> usize {
+    500
+}
+fn default_bench_step_size() -> usize {
+    10
+}
+fn default_bench_stabilization_secs() -> u64 {
+    10
+}
+fn default_bench_max_error_rate() -> f64 {
+    0.05
+}
+fn default_bench_max_latency_p95_ms() -> u64 {
+    1000
+}
+fn default_bench_soak_hours() -> u64 {
+    4
+}
 
 impl BenchConfig {
     pub fn request_timeout(&self) -> Duration {
