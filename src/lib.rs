@@ -18,7 +18,7 @@ use std::path::Path;
 
 /// Shared context produced by [`prepare_plan_context`], containing all the
 /// parsed and resolved data needed to generate a test plan and resources.
-pub(crate) struct PlanContext {
+pub struct PlanContext {
     pub pkg: IgPackage,
     pub cs: CapabilityStatement,
     pub profiles: Vec<StructureDefinition>,
@@ -33,7 +33,7 @@ pub(crate) struct PlanContext {
 /// This is the shared setup used by `run_generate`, `run_dry_run`, and
 /// `Orchestrator::run` — each caller then generates resources and produces
 /// output in its own way.
-pub(crate) async fn prepare_plan_context(
+pub async fn prepare_plan_context(
     package_path: &str,
     config: &TestConfig,
 ) -> Result<PlanContext> {

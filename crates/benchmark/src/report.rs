@@ -1,0 +1,312 @@
+use chrono::{DateTime, Utc};
+use hdrhistogram::Histogram;
+use serde::Serialize;
+use std::collections::HashMap;
+use std::path::Path;
+use std::time::Duration;
+
+/// A single benchmark sample: one request's timing and outcome.
+#[derive(Debug, Clone, Serialize)]
+pub struct BenchSample {
+    pub test_group: String,
+    pub test_name: String,
+    pub request_method: String,
+    pub request_url: String,
+    pub status_code: u16,
+    pub latency_us: u64,
+    pub passed: bool,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Per-group statistics.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupStats {
+    pub group: String,
+    pub total: u64,
+    pub passed: u64,
+    pub failed: u64,
+    pub latency_min_us: u64,
+    pub latency_max_us: u64,
+    pub latency_mean_us: f64,
+    pub latency_p50_us: u64,
+    pub latency_p90_us: u64,
+    pub latency_p95_us: u64,
+    pub latency_p99_us: u64,
+    pub throughput_req_per_sec: f64,
+}
+
+/// Overall benchmark report.
+#[derive(Debug, Clone, Serialize)]
+pub struct BenchReport {
+    pub title: String,
+    pub timestamp: DateTime<Utc>,
+    pub duration_secs: f64,
+    pub concurrency: usize,
+    pub total_requests: u64,
+    pub passed: u64,
+    pub failed: u64,
+    pub latency_min_us: u64,
+    pub latency_max_us: u64,
+    pub latency_mean_us: f64,
+    pub latency_p50_us: u64,
+    pub latency_p90_us: u64,
+    pub latency_p95_us: u64,
+    pub latency_p99_us: u64,
+    pub throughput_req_per_sec: f64,
+    pub groups: Vec<GroupStats>,
+    /// All raw samples (omitted from summary JSON, included in full results).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub samples: Vec<BenchSample>,
+}
+
+impl BenchReport {
+    /// Build a report from collected samples and benchmark parameters.
+    pub fn from_samples(
+        samples: Vec<BenchSample>,
+        duration: Duration,
+        concurrency: usize,
+    ) -> Self {
+        let total = samples.len() as u64;
+        let passed = samples.iter().filter(|s| s.passed).count() as u64;
+        let failed = total - passed;
+        let duration_secs = duration.as_secs_f64();
+
+        // Build overall histogram
+        let mut hist = Histogram::<u64>::new_with_bounds(1, 10_000_000, 3).unwrap();
+        for s in &samples {
+            hist.record(s.latency_us).ok();
+        }
+
+        let throughput = if duration_secs > 0.0 {
+            total as f64 / duration_secs
+        } else {
+            0.0
+        };
+
+        // Group samples by test_group
+        let mut grouped: HashMap<String, Vec<&BenchSample>> = HashMap::new();
+        for s in &samples {
+            grouped.entry(s.test_group.clone()).or_default().push(s);
+        }
+
+        let mut groups: Vec<GroupStats> = grouped
+            .into_iter()
+            .map(|(group, group_samples)| {
+                let g_total = group_samples.len() as u64;
+                let g_passed = group_samples.iter().filter(|s| s.passed).count() as u64;
+                let g_failed = g_total - g_passed;
+
+                let mut g_hist =
+                    Histogram::<u64>::new_with_bounds(1, 10_000_000, 3).unwrap();
+                for s in &group_samples {
+                    g_hist.record(s.latency_us).ok();
+                }
+
+                let g_throughput = if duration_secs > 0.0 {
+                    g_total as f64 / duration_secs
+                } else {
+                    0.0
+                };
+
+                GroupStats {
+                    group,
+                    total: g_total,
+                    passed: g_passed,
+                    failed: g_failed,
+                    latency_min_us: g_hist.min(),
+                    latency_max_us: g_hist.max(),
+                    latency_mean_us: g_hist.mean(),
+                    latency_p50_us: g_hist.value_at_percentile(50.0),
+                    latency_p90_us: g_hist.value_at_percentile(90.0),
+                    latency_p95_us: g_hist.value_at_percentile(95.0),
+                    latency_p99_us: g_hist.value_at_percentile(99.0),
+                    throughput_req_per_sec: g_throughput,
+                }
+            })
+            .collect();
+        groups.sort_by(|a, b| a.group.cmp(&b.group));
+
+        BenchReport {
+            title: "FHIR Autotest Benchmark Report".to_string(),
+            timestamp: Utc::now(),
+            duration_secs,
+            concurrency,
+            total_requests: total,
+            passed,
+            failed,
+            latency_min_us: hist.min(),
+            latency_max_us: hist.max(),
+            latency_mean_us: hist.mean(),
+            latency_p50_us: hist.value_at_percentile(50.0),
+            latency_p90_us: hist.value_at_percentile(90.0),
+            latency_p95_us: hist.value_at_percentile(95.0),
+            latency_p99_us: hist.value_at_percentile(99.0),
+            throughput_req_per_sec: throughput,
+            groups,
+            samples,
+        }
+    }
+
+    /// Write the report to the output directory.
+    pub fn write(&self, output_dir: &Path) -> anyhow::Result<()> {
+        std::fs::create_dir_all(output_dir)?;
+
+        // Summary JSON (no raw samples)
+        let summary = BenchReport {
+            samples: Vec::new(),
+            ..self.clone()
+        };
+        let summary_json = serde_json::to_string_pretty(&summary)?;
+        std::fs::write(output_dir.join("summary.json"), &summary_json)?;
+
+        // Full results JSON (with all samples)
+        let full_json = serde_json::to_string_pretty(self)?;
+        std::fs::write(output_dir.join("full_results.json"), &full_json)?;
+
+        // Human-readable text report
+        let text = self.format_text();
+        std::fs::write(output_dir.join("report.txt"), &text)?;
+
+        // Simple HTML report
+        let html = self.format_html();
+        std::fs::write(output_dir.join("report.html"), &html)?;
+
+        tracing::info!("Benchmark report written to {}", output_dir.display());
+        Ok(())
+    }
+
+    fn format_text(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("{}\n", self.title));
+        out.push_str(&format!("  Timestamp: {}\n", self.timestamp.format("%Y-%m-%d %H:%M:%S UTC")));
+        out.push_str(&format!("  Duration: {:.1}s\n", self.duration_secs));
+        out.push_str(&format!("  Concurrency: {}\n", self.concurrency));
+        out.push_str("\n");
+        out.push_str("── Overall ──\n");
+        out.push_str(&format!("  Total requests: {}\n", self.total_requests));
+        out.push_str(&format!("  Passed:         {}\n", self.passed));
+        out.push_str(&format!("  Failed:         {}\n", self.failed));
+        out.push_str(&format!("  Throughput:     {:.1} req/s\n", self.throughput_req_per_sec));
+        out.push_str("\n");
+        out.push_str("── Latency (μs) ──\n");
+        out.push_str(&format!("  Min:    {}\n", self.latency_min_us));
+        out.push_str(&format!("  Mean:   {:.0}\n", self.latency_mean_us));
+        out.push_str(&format!("  P50:    {}\n", self.latency_p50_us));
+        out.push_str(&format!("  P90:    {}\n", self.latency_p90_us));
+        out.push_str(&format!("  P95:    {}\n", self.latency_p95_us));
+        out.push_str(&format!("  P99:    {}\n", self.latency_p99_us));
+        out.push_str(&format!("  Max:    {}\n", self.latency_max_us));
+        out.push_str("\n");
+        out.push_str("── Per Group ──\n");
+        for g in &self.groups {
+            out.push_str(&format!(
+                "  {:<20} total={:<6} passed={:<6} failed={:<4}  p50={:<8} p95={:<8} p99={:<8}  {:.1} req/s\n",
+                g.group,
+                g.total,
+                g.passed,
+                g.failed,
+                format_duration_us(g.latency_p50_us),
+                format_duration_us(g.latency_p95_us),
+                format_duration_us(g.latency_p99_us),
+                g.throughput_req_per_sec,
+            ));
+        }
+        out
+    }
+
+    fn format_html(&self) -> String {
+        let mut rows = String::new();
+        for g in &self.groups {
+            rows.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
+                 <td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.1}</td></tr>\n",
+                html_escape(&g.group),
+                g.total,
+                g.passed,
+                g.failed,
+                format_duration_us(g.latency_p50_us),
+                format_duration_us(g.latency_p90_us),
+                format_duration_us(g.latency_p95_us),
+                format_duration_us(g.latency_p99_us),
+                g.throughput_req_per_sec,
+            ));
+        }
+
+        format!(
+            r#"<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Benchmark Report</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 2em; }}
+h1 {{ color: #333; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ border: 1px solid #ddd; padding: 8px; text-align: right; }}
+th {{ background-color: #f5f5f5; font-weight: 600; }}
+td:first-child {{ text-align: left; }}
+.pass {{ color: #2e7d32; }}
+.fail {{ color: #c62828; }}
+.summary {{ display: flex; gap: 2em; margin: 1em 0; }}
+.stat {{ background: #f9f9f9; padding: 1em; border-radius: 8px; flex: 1; }}
+.stat h3 {{ margin: 0 0 0.5em; color: #555; }}
+.stat .value {{ font-size: 1.5em; font-weight: bold; }}
+</style>
+</head>
+<body>
+<h1>{}: FHIR Autotest Benchmark</h1>
+<p>{} | Duration: {:.1}s | Concurrency: {}</p>
+<div class="summary">
+  <div class="stat"><h3>Total Requests</h3><div class="value">{}</div></div>
+  <div class="stat"><h3>Passed</h3><div class="value pass">{}</div></div>
+  <div class="stat"><h3>Failed</h3><div class="value fail">{}</div></div>
+  <div class="stat"><h3>Throughput</h3><div class="value">{:.1} req/s</div></div>
+</div>
+<h2>Latency</h2>
+<table>
+<tr><th>Min</th><th>Mean</th><th>P50</th><th>P90</th><th>P95</th><th>P99</th><th>Max</th></tr>
+<tr>
+  <td>{}</td><td>{:.0}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>
+</tr>
+</table>
+<h2>Per Group</h2>
+<table>
+<tr><th>Group</th><th>Total</th><th>Passed</th><th>Failed</th><th>P50</th><th>P90</th><th>P95</th><th>P99</th><th>Throughput</th></tr>
+{}
+</table>
+</body>
+</html>"#,
+            self.timestamp.format("%Y-%m-%d %H:%M:%S"),
+            self.title,
+            self.duration_secs,
+            self.concurrency,
+            self.total_requests,
+            self.passed,
+            self.failed,
+            self.throughput_req_per_sec,
+            format_duration_us(self.latency_min_us),
+            self.latency_mean_us,
+            format_duration_us(self.latency_p50_us),
+            format_duration_us(self.latency_p90_us),
+            format_duration_us(self.latency_p95_us),
+            format_duration_us(self.latency_p99_us),
+            format_duration_us(self.latency_max_us),
+            rows,
+        )
+    }
+}
+
+fn format_duration_us(us: u64) -> String {
+    if us >= 1_000_000 {
+        format!("{:.2}s", us as f64 / 1_000_000.0)
+    } else if us >= 1_000 {
+        format!("{:.1}ms", us as f64 / 1_000.0)
+    } else {
+        format!("{}μs", us)
+    }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
