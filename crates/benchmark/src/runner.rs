@@ -9,6 +9,7 @@ use rand::Rng;
 use rand::SeedableRng;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
@@ -142,8 +143,17 @@ impl BenchRunner {
         let duration = bench_cfg.duration();
         let ramp_up = bench_cfg.ramp_up();
         let warmup = bench_cfg.warmup_requests;
-        let warmup_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let warmup_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let warmup_done = Arc::new(AtomicBool::new(false));
+        let warmup_count = Arc::new(AtomicU64::new(0));
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        // Signal handler: listen for Ctrl+C and set shutdown flag
+        let shutdown_signal = shutdown.clone();
+        let signal_handle = tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            tracing::info!("Received Ctrl+C, shutting down gracefully...");
+            shutdown_signal.store(true, Ordering::SeqCst);
+        });
 
         // Warm-up phase: send a few requests without recording
         if warmup > 0 {
@@ -224,11 +234,12 @@ impl BenchRunner {
             let samples = samples.clone();
             let start = start;
             let duration = duration;
+            let shutdown = shutdown.clone();
             let handle = tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     let elapsed = start.elapsed();
-                    if elapsed >= duration {
+                    if elapsed >= duration || shutdown.load(Ordering::SeqCst) {
                         break;
                     }
                     let count = samples.lock().unwrap().len();
@@ -318,6 +329,7 @@ impl BenchRunner {
                 let duration = duration;
                 let ramp_up = ramp_up;
                 let worker_id = worker_id;
+                let shutdown = shutdown.clone();
 
                 let handle = tokio::spawn(async move {
                     let _permit = permit;
@@ -325,7 +337,7 @@ impl BenchRunner {
 
                     loop {
                         let elapsed = start.elapsed();
-                        if elapsed >= duration {
+                        if elapsed >= duration || shutdown.load(Ordering::SeqCst) {
                             break;
                         }
 
@@ -399,6 +411,9 @@ impl BenchRunner {
         for h in handles {
             h.await.ok();
         }
+
+        // Abort the signal handler (no longer needed)
+        signal_handle.abort();
 
         let actual_duration = start.elapsed();
         let all_samples = std::mem::take(&mut *samples.lock().unwrap());
