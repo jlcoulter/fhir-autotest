@@ -136,6 +136,9 @@ pub fn assertion_for_kind(kind: &TestCaseKind, resource_type: &str) -> Option<Re
 
         // Conformance tests carry their own assertions
         TestCaseKind::Conformance { .. } => None,
+
+        // Custom tests carry their own assertions in the ValidationSpec
+        TestCaseKind::Custom { .. } => None,
     }
 }
 
@@ -1203,6 +1206,122 @@ fn build_test_group(
         resource_type: resource.resource_type.clone(),
         profile_url: profile_url.clone(),
         tests,
+    }
+}
+
+/// Merge custom test definitions from the config into a test plan.
+///
+/// For each `[[custom_tests.test]]` entry, this creates a `TestCase` with
+/// the appropriate request and assertions, and appends it to the plan.
+///
+/// For each `[[custom_tests.sequence]]` entry, this creates a `TestCase`
+/// with `TestCaseKind::Custom` that the orchestrator will expand into
+/// multiple steps at execution time.
+pub fn merge_custom_tests(
+    plan: &mut TestPlan,
+    custom_tests: &crate::config::models::CustomTestsConfig,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
+) {
+    use crate::generate::custom_tests::custom_assert_to_response_assertion;
+
+    if custom_tests.test.is_empty() && custom_tests.sequence.is_empty() {
+        return;
+    }
+
+    let mut custom_group = TestGroup {
+        resource_type: "_custom".to_string(),
+        profile_url: None,
+        tests: Vec::new(),
+    };
+
+    for test_def in &custom_tests.test {
+        let resource_type = if test_def.resource_type.is_empty() {
+            "Unknown".to_string()
+        } else {
+            test_def.resource_type.clone()
+        };
+
+        let url = crate::generate::custom_tests::resolve_url_templates(
+            &test_def.url,
+            "",
+            created_ids,
+            field_values,
+            &HashMap::new(),
+        );
+
+        let body = if test_def.body.as_ref().and_then(|b| b.as_str()) == Some("auto") {
+            None
+        } else {
+            test_def.body.clone()
+        };
+
+        let test = TestCase {
+            name: test_def.name.clone(),
+            kind: TestCaseKind::Custom {
+                description: test_def.name.clone(),
+            },
+            interaction: Interaction::from_code(match test_def.method.as_str() {
+                "GET" => "read",
+                "POST" => "create",
+                "PUT" => "update",
+                "DELETE" => "delete",
+                "PATCH" => "patch",
+                _ => "read",
+            })
+            .unwrap_or(Interaction::Read),
+            resource_type: resource_type.clone(),
+            profile_url: None,
+            request: HttpRequest {
+                method: test_def.method.clone(),
+                url,
+                headers: test_def.headers.clone(),
+                body,
+            },
+            validation: ValidationSpec {
+                expected_status: test_def.assert.expected_status,
+                profile_url: None,
+                required_elements: Vec::new(),
+                forbidden_elements: test_def.assert.absent_fields.clone(),
+                response_assertion: Some(custom_assert_to_response_assertion(&test_def.assert)),
+            },
+        };
+        custom_group.tests.push(test);
+    }
+
+    for seq_def in &custom_tests.sequence {
+        let first_step = seq_def.step.first();
+        let resource_type = first_step
+            .map(|s| s.resource.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        let test = TestCase {
+            name: format!("_sequence:{}", seq_def.name),
+            kind: TestCaseKind::Custom {
+                description: format!("sequence:{}", seq_def.name),
+            },
+            interaction: Interaction::Read,
+            resource_type,
+            profile_url: None,
+            request: HttpRequest {
+                method: "SEQUENCE".to_string(),
+                url: format!("_sequence/{}", seq_def.name),
+                headers: HashMap::new(),
+                body: None,
+            },
+            validation: ValidationSpec {
+                expected_status: 0,
+                profile_url: None,
+                required_elements: Vec::new(),
+                forbidden_elements: Vec::new(),
+                response_assertion: None,
+            },
+        };
+        custom_group.tests.push(test);
+    }
+
+    if !custom_group.tests.is_empty() {
+        plan.test_groups.push(custom_group);
     }
 }
 

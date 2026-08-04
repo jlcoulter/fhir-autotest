@@ -413,6 +413,14 @@ impl Orchestrator {
             plan.test_groups.push(conformance_group);
         }
 
+        // 6d. Merge custom test definitions from config
+        merge_custom_tests(
+            &mut plan,
+            &self.config.custom_tests,
+            &resource_field_values,
+            &created_ids,
+        );
+
         tracing::info!(
             "Generated test plan with {} test groups, {} total tests",
             plan.test_groups.len(),
@@ -805,6 +813,7 @@ mod tests {
                 mock_port: 0,
                 dry_run: false,
                 bench: BenchConfig::default(),
+                custom_tests: CustomTestsConfig::default(),
             };
 
             TestEnvironment {
@@ -1534,6 +1543,7 @@ mod tests {
             mock_port: 0,
             dry_run: false,
             bench: BenchConfig::default(),
+            custom_tests: CustomTestsConfig::default(),
         };
         let orchestrator = Orchestrator::new(config);
         // Just verify it doesn't panic

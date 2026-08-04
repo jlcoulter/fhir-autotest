@@ -194,11 +194,21 @@ pub struct TestConfig {
 
     /// Benchmark configuration for load/performance testing.
     ///
-    /// When running `fhir-autotest-bench`, these settings control concurrency,
-    /// duration, ramp-up, and other benchmark parameters. They are read from
-    /// the `[bench]` section of the config file.
+    /// These settings are read from the `[bench]` section of the config file
+    /// and used by `fhir-autotest-bench` for concurrency, duration, ramp-up,
+    /// and other benchmark parameters.
     #[serde(default)]
     pub bench: BenchConfig,
+
+    /// Custom test definitions.
+    ///
+    /// Users can define their own tests in the `[custom_tests]` section of the
+    /// config file. These are merged into the generated test plan and executed
+    /// alongside the auto-generated tests.
+    ///
+    /// See [`CustomTestsConfig`] for the full format.
+    #[serde(default)]
+    pub custom_tests: CustomTestsConfig,
 }
 
 fn default_output() -> String {
@@ -589,6 +599,242 @@ impl Default for BenchConfig {
             soak_hours: default_bench_soak_hours(),
         }
     }
+}
+
+/// Custom test definitions from the `[custom_tests]` section of config.toml.
+///
+/// Users can define their own tests alongside the auto-generated ones. The
+/// simplest form is a single-request test where the tool generates a resource,
+/// creates it, substitutes real IDs/values into the URL, runs the test, and
+/// cleans up.
+///
+/// For multi-step sequences (e.g., create → update → verify propagation),
+/// use `[[custom_tests.sequence]]` with named steps that pass state between
+/// each other via `{steps.<name>.id}` and `{steps.<name>.<field>}` templates.
+///
+/// # Example
+///
+/// ```toml
+/// [custom_tests]
+///
+/// # Override values used in auto-generated tests
+/// overrides = [
+///   { param = "identifier", value = "http://example.com/mrn|KNOWN-001" },
+/// ]
+///
+/// # Skip auto-generated tests that don't apply
+/// skip = ["SearchModifier:name:contains"]
+///
+/// # Simple single-request tests
+/// [[custom_tests.test]]
+/// name = "Read a Patient"
+/// method = "GET"
+/// url = "/Patient/{Patient.id}"
+///
+/// [[custom_tests.test]]
+/// name = "Search by name"
+/// method = "GET"
+/// url = "/Patient?name={Patient.name.family}"
+/// assert = { expected_status = 200, bundle_type = "searchset" }
+///
+/// # Multi-step sequence
+/// [[custom_tests.sequence]]
+/// name = "Propagation test"
+///
+///   [[custom_tests.sequence.step]]
+///   action = "create"
+///   resource = "Practitioner"
+///   body_overrides = { name = [{ family = "Test" }] }
+///   save_as = "prac"
+///
+///   [[custom_tests.sequence.step]]
+///   action = "read"
+///   resource = "Practitioner"
+///   id = "{steps.prac.id}"
+///   assert = { expected_status = 200 }
+/// ```
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct CustomTestsConfig {
+    /// Override values for auto-generated test parameters.
+    /// Keyed by search parameter name, value is the replacement.
+    pub overrides: Vec<CustomTestOverride>,
+
+    /// Names of auto-generated tests to skip.
+    /// Matched against the test's `name` field (substring match).
+    pub skip: Vec<String>,
+
+    /// Simple single-request custom tests.
+    pub test: Vec<CustomTestDef>,
+
+    /// Multi-step sequence tests.
+    pub sequence: Vec<CustomSequenceDef>,
+}
+
+/// A single parameter override for auto-generated tests.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CustomTestOverride {
+    pub param: String,
+    pub value: String,
+}
+
+/// A single custom test definition.
+///
+/// The tool generates a resource for the specified `resource_type`, creates it
+/// on the server, substitutes `{ResourceType.id}` and `{ResourceType.field}`
+/// templates in the URL, runs the request, and asserts the response.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CustomTestDef {
+    /// Test name (displayed in output).
+    pub name: String,
+
+    /// HTTP method: GET, POST, PUT, DELETE, PATCH.
+    pub method: String,
+
+    /// URL path (e.g. `/Patient/{Patient.id}`).
+    /// `{base_url}` is replaced with the server base URL.
+    /// `{ResourceType.id}` is replaced with the created resource's ID.
+    /// `{ResourceType.field.path}` is replaced with extracted field values.
+    pub url: String,
+
+    /// Resource type for auto-generated data (e.g. "Patient").
+    /// When set, the tool generates a resource from the IG profile, creates it,
+    /// and substitutes its values into the URL.
+    #[serde(default)]
+    pub resource_type: String,
+
+    /// Request body. Use `"auto"` to auto-generate from the profile.
+    /// Omit or set to `null` for GET/DELETE requests.
+    #[serde(default)]
+    pub body: Option<serde_json::Value>,
+
+    /// Request headers.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+
+    /// Response assertions.
+    #[serde(default)]
+    pub assert: CustomAssertDef,
+}
+
+/// Response assertions for a custom test.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CustomAssertDef {
+    /// Expected HTTP status code (default: 200).
+    #[serde(default = "default_expected_status")]
+    pub expected_status: u16,
+
+    /// Expected Bundle type (e.g. "searchset", "history").
+    #[serde(default)]
+    pub bundle_type: Option<String>,
+
+    /// Minimum number of Bundle entries.
+    #[serde(default)]
+    pub min_entries: Option<usize>,
+
+    /// Maximum number of Bundle entries.
+    #[serde(default)]
+    pub max_entries: Option<usize>,
+
+    /// Whether the Bundle must have a `total` field.
+    #[serde(default)]
+    pub bundle_total_present: Option<bool>,
+
+    /// Expected summary mode.
+    #[serde(default)]
+    pub summary_mode: Option<String>,
+
+    /// Expected OperationOutcome severity for error tests.
+    #[serde(default)]
+    pub outcome_severity: Option<String>,
+
+    /// Alternative acceptable status codes.
+    #[serde(default)]
+    pub accept_statuses: Vec<u16>,
+
+    /// Shorthand field value assertions.
+    /// Key is a dot-path into the response (e.g. "name_family" → name[0].family).
+    /// Value is the expected string value.
+    #[serde(default)]
+    pub field_values: HashMap<String, String>,
+
+    /// Fields that must be absent from response resources.
+    #[serde(default)]
+    pub absent_fields: Vec<String>,
+
+    /// Fields that must be present in response resources.
+    #[serde(default)]
+    pub required_fields: HashMap<String, Vec<String>>,
+
+    /// Sort assertion.
+    #[serde(default)]
+    pub sort_by: Option<SortAssertionDef>,
+
+    /// Expected resource types in the Bundle.
+    #[serde(default)]
+    pub resource_types: Vec<String>,
+
+    /// Top-level response key that must exist.
+    #[serde(default)]
+    pub response_contains_key: Option<String>,
+
+    /// Allowed response resourceType values.
+    #[serde(default)]
+    pub response_resource_types: Vec<String>,
+}
+
+fn default_expected_status() -> u16 {
+    200
+}
+
+/// Sort assertion for custom tests.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SortAssertionDef {
+    pub field: String,
+    pub direction: String,
+    #[serde(default)]
+    pub additional_fields: Vec<String>,
+}
+
+/// A multi-step sequence test.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CustomSequenceDef {
+    /// Sequence name.
+    pub name: String,
+    /// Ordered list of steps.
+    pub step: Vec<CustomSequenceStep>,
+}
+
+/// A single step in a multi-step sequence.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CustomSequenceStep {
+    /// Action: "create", "read", "update", "delete", "search", "history", "patch".
+    pub action: String,
+
+    /// FHIR resource type (e.g. "Patient", "Practitioner").
+    pub resource: String,
+
+    /// Resource ID (for read/update/delete/history actions).
+    /// Supports `{steps.<name>.id}` and `{steps.<name>.<field>}` templates.
+    #[serde(default)]
+    pub id: String,
+
+    /// Body field overrides for create/update actions.
+    /// Merged into the auto-generated resource body.
+    #[serde(default)]
+    pub body_overrides: Option<serde_json::Value>,
+
+    /// Search query parameters (for search action).
+    #[serde(default)]
+    pub params: HashMap<String, String>,
+
+    /// Name to save the response as (for `{steps.<name>.*}` references).
+    #[serde(default)]
+    pub save_as: String,
+
+    /// Response assertions for this step.
+    #[serde(default)]
+    pub assert: CustomAssertDef,
 }
 
 impl TestConfig {

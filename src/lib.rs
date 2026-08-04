@@ -469,6 +469,7 @@ mod tests {
             mock_port: 0,
             dry_run: false,
             bench: BenchConfig::default(),
+            custom_tests: CustomTestsConfig::default(),
         };
 
         let cs = select_capability_statement(&pkg, &config).unwrap();
@@ -511,6 +512,7 @@ mod tests {
             mock_port: 0,
             dry_run: false,
             bench: BenchConfig::default(),
+            custom_tests: CustomTestsConfig::default(),
         };
 
         let cs = select_capability_statement(&pkg, &config).unwrap();
@@ -550,6 +552,7 @@ mod tests {
             mock_port: 0,
             dry_run: false,
             bench: BenchConfig::default(),
+            custom_tests: CustomTestsConfig::default(),
         };
 
         let cs = select_capability_statement(&pkg, &config).unwrap();
@@ -582,6 +585,7 @@ mod tests {
             mock_port: 0,
             dry_run: false,
             bench: BenchConfig::default(),
+            custom_tests: CustomTestsConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -641,6 +645,7 @@ mod tests {
             mock_port: 0,
             dry_run: false,
             bench: BenchConfig::default(),
+            custom_tests: CustomTestsConfig::default(),
         };
 
         let cs = select_capability_statement(&pkg, &config).unwrap();
@@ -676,6 +681,7 @@ mod tests {
             mock_port: 0,
             dry_run: false,
             bench: BenchConfig::default(),
+            custom_tests: CustomTestsConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -724,6 +730,7 @@ mod tests {
             mock_port: 0,
             dry_run: false,
             bench: BenchConfig::default(),
+            custom_tests: CustomTestsConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -770,6 +777,7 @@ mod tests {
             mock_port: 0,
             dry_run: false,
             bench: BenchConfig::default(),
+            custom_tests: CustomTestsConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -818,6 +826,7 @@ mod tests {
             mock_port: 0,
             dry_run: false,
             bench: BenchConfig::default(),
+            custom_tests: CustomTestsConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
@@ -876,6 +885,7 @@ mod tests {
             mock_port: 0,
             dry_run: false,
             bench: BenchConfig::default(),
+            custom_tests: CustomTestsConfig::default(),
         };
 
         let result = select_capability_statement(&pkg, &config);
