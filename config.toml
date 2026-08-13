@@ -47,8 +47,8 @@ base_url = "http://localhost:8888/api/v1/fhir"
 
 # Optional HTTP headers sent with every request (e.g. auth tokens).
 # Uncomment and set as needed.
-# [server.headers]
-# Authorization = "Bearer your-token-here"
+[server.headers]
+Authorization = "Bearer eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICI0Q09VNmxseGZHSzM5SkxmcFBjTUVmSnRsNF9uRnFUUS1xYW9TWW5JZ25VIn0.eyJleHAiOjE3ODY1OTM0OTIsImlhdCI6MTc4NjU4OTg5MiwianRpIjoib25ydHJvOjA4NDAyYmE1LTNkMjktNDRkZC1iOTFmLTlhYjg4OTlhZjBiYSIsImlzcyI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODE4MC9yZWFsbXMvaGVhbHRoLWNvbm5lY3QiLCJ0eXAiOiJCZWFyZXIiLCJhenAiOiJoZWFsdGgtY29ubmVjdC1hcGkiLCJzaWQiOiJiNmE3NTNiMy1kOTEyLTQwMTYtYTZjOS1iZjNmODRkYjdhZjEiLCJzY29wZSI6InNlYXJjaCByZWFkIGV4cG9ydCJ9.Ys1Vi1CNe6DlOqQUkPpLVhZ7QFX9kRJj5VGPBTanAIBHAnIUplIQDWDGLBvlJXHjZY58W-NIHTIXNY3VnKPDHJ0eLUKnuqwVfe1nadAyrGxY8vL8nz7b-c0gOUIuS57VL8bV4_euDmsEjW_k4SV7o9GS9a1f3jHoulZsFROHU_p94kJddYjGisP3jEN0tNeG2x4j4betuhqE9w5pZ7yMWsojju413I1zO0L02kVjTiIAZ_Rl72rgXyJ4hWdH4mBwxEdsLcO2Gle6HE3UuSenJ-D17Dku0iu02u3xCzGIfNAzvd3gxpZaYbrsFggR48cw125XCtENDLjqbWtyv8hpJQ"
 # X-API-Key = "your-api-key"
 
 # ── Repository (optional) ────────────────────────────────────────────────────
@@ -85,6 +85,12 @@ concurrency = 100
 # package for test planning/conformance checks.
 # capability_statement_file = "./package/metadata.json"
 
+# Fetch the responder CapabilityStatement from the live server's /metadata
+# endpoint instead of the one bundled in the IG package. Uses the [server]
+# base_url, headers, and TLS settings. Ignored when
+# capability_statement_file is set (the file takes precedence).
+capability_statement_from_server = true
+
 # Manual creation order. If set, this replaces the auto-resolved dependency
 # order. Resource types not listed here are appended in their original order.
 # Uncomment to override.
@@ -99,6 +105,16 @@ concurrency = 100
 # Only used when fixtures_dir is set.
 # [overrides.fixture_map]
 # Patient = "my-custom-patient.json"
+
+# Maximum number of search parameters combined in a single combinatorial search
+# test. All combination sizes from 2 up to this value are generated per resource
+# (e.g. 3 produces both pairs and triples). Default: 2 (pairs only).
+#
+# Each combined parameter's value is drawn from the generated setup resources,
+# so the data required for these combinations is created automatically. Higher
+# values grow combinatorially — raise deliberately. Values below 2 disable
+# combinatorial search tests.
+# max_search_combo_params = 2
 
 # ── Data Generation (optional) ──────────────────────────────────────────────
 #
