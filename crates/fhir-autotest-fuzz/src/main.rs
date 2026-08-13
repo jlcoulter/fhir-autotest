@@ -65,6 +65,11 @@ struct Cli {
     /// Overrides [fuzz].delay_ms in config file.
     #[arg(long)]
     delay_ms: Option<u64>,
+
+    /// Generate a test IG package and use it instead of --package or config.
+    /// Useful for CI smoke tests where no real IG package is available.
+    #[arg(long)]
+    generate_test_package: bool,
 }
 
 #[tokio::main]
@@ -89,15 +94,26 @@ async fn main() -> anyhow::Result<()> {
         })
         .unwrap_or_default();
 
-    // Resolve package path: CLI flag wins, then config file
-    let package = cli
-        .package
-        .or_else(|| config.as_ref().and_then(|c| c.package.clone()))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No IG package specified. Set 'package' in config file or use --package."
-            )
-        })?;
+    // Resolve package path: --generate-test-package wins, then --package, then config file
+    let _temp_package_dir;
+    let package = if cli.generate_test_package {
+        let dir = tempfile::tempdir()?;
+        let tgz_path = dir.path().join("test_ig.tgz");
+        let tgz_data = fhir_autotest::test_helpers::create_test_ig_package();
+        std::fs::write(&tgz_path, &tgz_data)?;
+        let path = tgz_path.to_string_lossy().to_string();
+        _temp_package_dir = Some(dir);
+        path
+    } else {
+        _temp_package_dir = None;
+        cli.package
+            .or_else(|| config.as_ref().and_then(|c| c.package.clone()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No IG package specified. Set 'package' in config file, use --package, or use --generate-test-package."
+                )
+            })?
+    };
 
     // Resolve mock mode: CLI --mock wins, then config.mock
     let use_mock = cli.mock || config.as_ref().map(|c| c.mock).unwrap_or(false);
