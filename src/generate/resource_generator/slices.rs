@@ -371,12 +371,16 @@ pub fn populate_extension_slices(
     all_profiles: &[StructureDefinition],
     value_set_systems: &HashMap<String, String>,
 ) {
-    // Collect extension slice elements (sliceName set on ResourceType.extension)
+    // Collect extension slice elements (sliceName set on ResourceType.extension).
+    // Only required slices (min > 0) are generated — optional extensions often
+    // carry fixed-value constraints that a generic placeholder value cannot
+    // satisfy, so populating them would produce invalid resources.
     let extension_slices: Vec<&ElementDefinition> = elements
         .iter()
         .filter(|e| {
             e.slice_name.is_some()
                 && e.path == format!("{}.extension", resource_type)
+                && e.min.unwrap_or(0) > 0
                 && !e.type_.is_empty()
                 && e.type_[0].code == "Extension"
         })
@@ -884,6 +888,7 @@ mod tests {
             id: "Patient.extension:testExt".into(),
             path: "Patient.extension".into(),
             slice_name: Some("testExt".into()),
+            min: Some(1),
             type_: vec![ElementDefinitionType {
                 code: "Extension".into(),
                 profile: vec!["http://example.org/Extension/SimpleExt".into()],
@@ -952,6 +957,7 @@ mod tests {
             id: "Patient.extension:complexExt".into(),
             path: "Patient.extension".into(),
             slice_name: Some("complexExt".into()),
+            min: Some(1),
             type_: vec![ElementDefinitionType {
                 code: "Extension".into(),
                 profile: vec!["http://example.org/Extension/ComplexExt".into()],
@@ -1046,6 +1052,7 @@ mod tests {
             id: "Patient.extension:complexExt".into(),
             path: "Patient.extension".into(),
             slice_name: Some("complexExt".into()),
+            min: Some(1),
             type_: vec![ElementDefinitionType {
                 code: "Extension".into(),
                 profile: vec!["http://example.org/Extension/ComplexExt".into()],
@@ -1562,6 +1569,7 @@ mod tests {
             id: "Patient.extension:complexExt".into(),
             path: "Patient.extension".into(),
             slice_name: Some("complexExt".into()),
+            min: Some(1),
             type_: vec![ElementDefinitionType {
                 code: "Extension".into(),
                 profile: vec!["http://example.org/Extension/ComplexExt".into()],

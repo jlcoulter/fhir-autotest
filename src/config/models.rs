@@ -403,6 +403,14 @@ pub struct OverrideConfig {
     /// instead of selecting one from the IG package.
     #[serde(default)]
     pub capability_statement_file: Option<PathBuf>,
+    /// Fetch the CapabilityStatement from the live server's `/metadata` endpoint.
+    ///
+    /// When true, the responder CapabilityStatement is fetched from
+    /// `{server.base_url}/metadata` (using the configured server headers/TLS)
+    /// instead of the one bundled in the IG package. Ignored when
+    /// `capability_statement_file` is set (the file takes precedence).
+    #[serde(default)]
+    pub capability_statement_from_server: bool,
     /// Path to fixture JSON files directory.
     #[serde(default)]
     pub fixtures_dir: Option<PathBuf>,
