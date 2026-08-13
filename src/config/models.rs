@@ -432,6 +432,7 @@ impl Default for OverrideConfig {
         Self {
             creation_order: Vec::new(),
             capability_statement_file: None,
+            capability_statement_from_server: false,
             fixtures_dir: None,
             fixture_map: HashMap::new(),
             max_search_combo_params: default_max_search_combo_params(),
