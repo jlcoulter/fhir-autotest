@@ -300,8 +300,17 @@ pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()>
 /// override file, or the server `/metadata` endpoint), so the spec reflects
 /// whatever source the config is pointed at.
 pub async fn run_openapi(package_path: &str, config: &TestConfig) -> Result<()> {
-    let ctx = prepare_plan_context(package_path, config).await?;
-    let doc = generate::openapi::generate_openapi(&ctx.cs, &config.server.base_url);
+    // Resolve only the CapabilityStatement — the lightweight spec needs no
+    // profile resolution. When sourced from the server /metadata endpoint the
+    // IG package is not parsed at all, so no registry access is required.
+    let cs = if config.overrides.capability_statement_file.is_some() {
+        select_capability_statement(&parse_package(package_path)?, config)?
+    } else if config.overrides.capability_statement_from_server {
+        fetch_capability_statement_from_server(&config.server).await?
+    } else {
+        select_capability_statement(&parse_package(package_path)?, config)?
+    };
+    let doc = generate::openapi::generate_openapi(&cs, &config.server.base_url);
 
     let output_path = Path::new(&config.output);
     std::fs::create_dir_all(output_path)?;

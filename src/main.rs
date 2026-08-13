@@ -125,6 +125,26 @@ async fn main() -> anyhow::Result<()> {
         config.dry_run = true;
     }
 
+    // OpenAPI mode: emit the spec and exit. The IG package is optional when the
+    // CapabilityStatement is sourced from the server /metadata endpoint.
+    if cli.openapi {
+        let uses_server = config.overrides.capability_statement_from_server
+            && config.overrides.capability_statement_file.is_none();
+        let package = if uses_server {
+            config.package.clone().unwrap_or_default()
+        } else {
+            config.package.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No IG package path specified. Set 'package', use --package, or enable \
+                     capability_statement_from_server to source the CapabilityStatement from \
+                     the server."
+                )
+            })?
+        };
+        fhir_autotest::run_openapi(&package, &config).await?;
+        return Ok(());
+    }
+
     // Resolve the package path (required)
     let package = config.package.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
@@ -132,11 +152,8 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
 
-    // Determine mode: --openapi, --generate, --dry_run, or full run
-    if cli.openapi {
-        // OpenAPI mode: emit the spec and exit.
-        fhir_autotest::run_openapi(package, &config).await?;
-    } else if cli.generate {
+    // Determine mode: --generate, --dry_run, or full run
+    if cli.generate {
         // Generate-only mode: no server needed, just produce test plan + resources
         fhir_autotest::run_generate(package, &config).await?;
     } else if config.dry_run {
