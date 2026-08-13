@@ -244,13 +244,16 @@ pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()>
     }
 
     // Generate test plan (with field values from generated resources)
-    let mut plan = generate_test_plan(
+    let mut plan = generate_test_plan_with_options(
         &ctx.cs,
         &ctx.pkg.search_parameters,
         Some(&ctx.pkg.operation_definitions),
         None,
         &field_values,
         &HashMap::new(), // created_ids not available at generate time
+        &TestGenOptions {
+            max_search_combo_params: config.overrides.max_search_combo_params,
+        },
     );
     plan.creation_order = ctx.creation_order.clone();
 
@@ -390,13 +393,16 @@ pub async fn run_dry_run(package_path: &str, config: &TestConfig) -> Result<()> 
         field_values.insert(resource_type.clone(), values);
     }
 
-    let mut plan = generate_test_plan(
+    let mut plan = generate_test_plan_with_options(
         &ctx.cs,
         &ctx.pkg.search_parameters,
         Some(&ctx.pkg.operation_definitions),
         None,
         &field_values,
         &HashMap::new(), // created_ids not available at dry-run time
+        &TestGenOptions {
+            max_search_combo_params: config.overrides.max_search_combo_params,
+        },
     );
     plan.creation_order = ctx.creation_order.clone();
 

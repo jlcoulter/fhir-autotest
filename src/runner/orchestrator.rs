@@ -368,13 +368,16 @@ impl Orchestrator {
         }
 
         // 5. Generate test plan (with field values from generated resources)
-        let mut plan = generate_test_plan(
+        let mut plan = generate_test_plan_with_options(
             &ctx.cs,
             &ctx.pkg.search_parameters,
             Some(&ctx.pkg.operation_definitions),
             None,
             &resource_field_values,
             &created_ids,
+            &TestGenOptions {
+                max_search_combo_params: self.config.overrides.max_search_combo_params,
+            },
         );
         plan.creation_order = ctx.creation_order.clone();
 
