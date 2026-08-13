@@ -392,7 +392,7 @@ impl TlsConfig {
     }
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct OverrideConfig {
     /// Manual creation order (overrides auto-resolved order).
     #[serde(default)]
@@ -409,6 +409,30 @@ pub struct OverrideConfig {
     /// Map of resource type → fixture filename to use instead of generating.
     #[serde(default)]
     pub fixture_map: HashMap<String, String>,
+    /// Maximum number of search parameters combined in a single combinatorial
+    /// search test. All combination sizes from 2 up to this value are generated
+    /// per resource (e.g. `3` produces pairs and triples). Default `2`.
+    ///
+    /// Higher values increase coverage but grow combinatorially, so raise it
+    /// deliberately. Values below 2 disable combinatorial search tests.
+    #[serde(default = "default_max_search_combo_params")]
+    pub max_search_combo_params: usize,
+}
+
+impl Default for OverrideConfig {
+    fn default() -> Self {
+        Self {
+            creation_order: Vec::new(),
+            capability_statement_file: None,
+            fixtures_dir: None,
+            fixture_map: HashMap::new(),
+            max_search_combo_params: default_max_search_combo_params(),
+        }
+    }
+}
+
+fn default_max_search_combo_params() -> usize {
+    2
 }
 
 /// Bulk data generation settings.

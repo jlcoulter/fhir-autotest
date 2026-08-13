@@ -168,6 +168,45 @@ pub fn generate_test_plan(
     field_values: &HashMap<String, HashMap<String, String>>,
     created_ids: &HashMap<String, String>,
 ) -> TestPlan {
+    generate_test_plan_with_options(
+        cs,
+        search_params,
+        operations,
+        ig_url,
+        field_values,
+        created_ids,
+        &TestGenOptions::default(),
+    )
+}
+
+/// Options controlling the breadth of the auto-generated test suite.
+#[derive(Debug, Clone)]
+pub struct TestGenOptions {
+    /// Maximum number of parameters combined per combinatorial search test.
+    /// Combinations of sizes 2..=this value are generated per resource.
+    /// Values below 2 disable combinatorial search tests.
+    pub max_search_combo_params: usize,
+}
+
+impl Default for TestGenOptions {
+    fn default() -> Self {
+        Self {
+            max_search_combo_params: 2,
+        }
+    }
+}
+
+/// Like [`generate_test_plan`], but with explicit [`TestGenOptions`] controlling
+/// auto-generated test breadth (e.g. combinatorial search size).
+pub fn generate_test_plan_with_options(
+    cs: &CapabilityStatement,
+    search_params: &[SearchParameter],
+    operations: Option<&[OperationDefinition]>,
+    ig_url: Option<&str>,
+    field_values: &HashMap<String, HashMap<String, String>>,
+    created_ids: &HashMap<String, String>,
+    options: &TestGenOptions,
+) -> TestPlan {
     let mut test_groups = Vec::new();
 
     for rest in &cs.rest {
@@ -195,6 +234,7 @@ pub fn generate_test_plan(
                 operations,
                 field_values,
                 created_ids,
+                options,
             );
             test_groups.push(group);
         }
@@ -285,6 +325,28 @@ pub fn generate_test_plan(
     }
 }
 
+/// Generate all k-combinations of the indices `[0, n)` in lexicographic order.
+///
+/// Returns an empty vec when `k == 0` or `k > n`.
+fn k_combinations(n: usize, k: usize) -> Vec<Vec<usize>> {
+    fn rec(start: usize, n: usize, k: usize, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        if cur.len() == k {
+            out.push(cur.clone());
+            return;
+        }
+        for i in start..n {
+            cur.push(i);
+            rec(i + 1, n, k, cur, out);
+            cur.pop();
+        }
+    }
+    let mut out = Vec::new();
+    if k >= 1 && k <= n {
+        rec(0, n, k, &mut Vec::new(), &mut out);
+    }
+    out
+}
+
 fn build_test_group(
     resource: &RestResource,
     profile_url: &Option<String>,
@@ -292,6 +354,7 @@ fn build_test_group(
     operations: Option<&[OperationDefinition]>,
     field_values: &HashMap<String, HashMap<String, String>>,
     created_ids: &HashMap<String, String>,
+    options: &TestGenOptions,
 ) -> TestGroup {
     let mut tests = Vec::new();
     let has_search_type = resource.interaction.iter().any(|i| i.code == "search-type");
@@ -542,21 +605,29 @@ fn build_test_group(
             }
         }
 
-        // --- Combinatorial search tests (2-combinations) ---
-        if inline_params.len() >= 2 {
-            for i in 0..inline_params.len() {
-                for j in (i + 1)..inline_params.len() {
-                    tests.push(build_search_combo_test(
-                        &resource.resource_type,
-                        &[
-                            (&inline_params[i].name, &inline_params[i].param_type),
-                            (&inline_params[j].name, &inline_params[j].param_type),
-                        ],
-                        profile_url,
-                        field_values,
-                        created_ids,
-                    ));
-                }
+        // --- Combinatorial search tests (all sizes 2..=max_search_combo_params) ---
+        // Each combined parameter's value is resolved from the generated
+        // resource's own field values, so the setup data created for the
+        // single-parameter tests automatically satisfies these combinations too.
+        let max_combo = options.max_search_combo_params.min(inline_params.len());
+        for k in 2..=max_combo {
+            for combo in k_combinations(inline_params.len(), k) {
+                let params: Vec<(&str, &str)> = combo
+                    .iter()
+                    .map(|&idx| {
+                        (
+                            inline_params[idx].name.as_str(),
+                            inline_params[idx].param_type.as_str(),
+                        )
+                    })
+                    .collect();
+                tests.push(build_search_combo_test(
+                    &resource.resource_type,
+                    &params,
+                    profile_url,
+                    field_values,
+                    created_ids,
+                ));
             }
         }
 
@@ -1403,6 +1474,60 @@ mod tests {
                 security: None,
             }],
         }
+    }
+
+    fn count_search_combos(cs: &CapabilityStatement, max_combo: usize) -> usize {
+        let empty_fv = HashMap::new();
+        let empty_ids = HashMap::new();
+        let plan = generate_test_plan_with_options(
+            cs,
+            &[],
+            None,
+            None,
+            &empty_fv,
+            &empty_ids,
+            &TestGenOptions {
+                max_search_combo_params: max_combo,
+            },
+        );
+        plan.test_groups
+            .iter()
+            .flat_map(|g| &g.tests)
+            .filter(|t| matches!(t.kind, TestCaseKind::SearchCombo { .. }))
+            .count()
+    }
+
+    #[test]
+    fn combinatorial_search_respects_max_combo_size() {
+        // Patient with three inline search params: name, birthdate, gender.
+        let mut cs = sample_capability_statement();
+        cs.rest[0].resource[0].search_param.push(RestSearchParam {
+            name: "gender".to_string(),
+            param_type: "token".to_string(),
+            definition: None,
+            documentation: None,
+        });
+
+        // max=2 → pairs only: C(3,2) = 3
+        assert_eq!(count_search_combos(&cs, 2), 3);
+        // max=3 → pairs + triples: C(3,2) + C(3,3) = 4
+        assert_eq!(count_search_combos(&cs, 3), 4);
+        // Requesting more than available params is capped at the param count.
+        assert_eq!(count_search_combos(&cs, 5), 4);
+        // Below 2 disables combinatorial search tests.
+        assert_eq!(count_search_combos(&cs, 1), 0);
+        assert_eq!(count_search_combos(&cs, 0), 0);
+    }
+
+    #[test]
+    fn k_combinations_generates_expected_sets() {
+        assert_eq!(
+            k_combinations(3, 2),
+            vec![vec![0, 1], vec![0, 2], vec![1, 2]]
+        );
+        assert_eq!(k_combinations(3, 3), vec![vec![0, 1, 2]]);
+        assert!(k_combinations(2, 3).is_empty());
+        assert!(k_combinations(4, 0).is_empty());
     }
 
     fn sample_search_params() -> Vec<SearchParameter> {
