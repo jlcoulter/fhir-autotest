@@ -293,6 +293,40 @@ pub async fn run_generate(package_path: &str, config: &TestConfig) -> Result<()>
     Ok(())
 }
 
+/// Generate an OpenAPI 3.0 spec from the CapabilityStatement and write it to
+/// `{output}/openapi.json`.
+///
+/// Uses the same CapabilityStatement selection as test generation (package,
+/// override file, or the server `/metadata` endpoint), so the spec reflects
+/// whatever source the config is pointed at.
+pub async fn run_openapi(package_path: &str, config: &TestConfig) -> Result<()> {
+    let ctx = prepare_plan_context(package_path, config).await?;
+    let doc = generate::openapi::generate_openapi(&ctx.cs, &config.server.base_url);
+
+    let output_path = Path::new(&config.output);
+    std::fs::create_dir_all(output_path)?;
+    let spec_path = output_path.join("openapi.json");
+    std::fs::write(&spec_path, serde_json::to_string_pretty(&doc)?)?;
+
+    let path_count = doc
+        .get("paths")
+        .and_then(|p| p.as_object())
+        .map(|o| o.len())
+        .unwrap_or(0);
+    tracing::info!(
+        "Wrote OpenAPI spec with {} paths to {}",
+        path_count,
+        spec_path.display()
+    );
+    println!(
+        "Wrote OpenAPI spec ({} paths) to {}",
+        path_count,
+        spec_path.display()
+    );
+
+    Ok(())
+}
+
 /// Run tests against a FHIR server.
 /// Always writes per-group results and a summary into `{output}/results/`.
 pub async fn run_tests(package_path: &str, config: &TestConfig) -> Result<()> {

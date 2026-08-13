@@ -33,6 +33,11 @@ struct Cli {
     #[arg(long)]
     generate: bool,
 
+    /// Generate an OpenAPI 3.0 spec from the CapabilityStatement to
+    /// {output}/openapi.json, then exit (no resources or tests).
+    #[arg(long)]
+    openapi: bool,
+
     /// Use a built-in mock FHIR server instead of the configured server.
     ///
     /// Starts an in-process mock server and points the config at it.
@@ -127,8 +132,11 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
 
-    // Determine mode: --generate, --dry_run, or full run
-    if cli.generate {
+    // Determine mode: --openapi, --generate, --dry_run, or full run
+    if cli.openapi {
+        // OpenAPI mode: emit the spec and exit.
+        fhir_autotest::run_openapi(package, &config).await?;
+    } else if cli.generate {
         // Generate-only mode: no server needed, just produce test plan + resources
         fhir_autotest::run_generate(package, &config).await?;
     } else if config.dry_run {
@@ -154,6 +162,7 @@ mod tests {
         assert!(cli.output.is_none());
         assert!(!cli.dry_run);
         assert!(!cli.generate);
+        assert!(!cli.openapi);
         assert!(!cli.mock);
         assert_eq!(cli.mock_port, 0);
         assert!(cli.command.is_none());

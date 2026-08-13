@@ -5,6 +5,7 @@ pub mod dependency_resolver;
 pub mod hcpd;
 pub mod locality;
 pub mod model;
+pub mod openapi;
 pub mod planner;
 pub mod resource_generator;
 pub mod test_builders;
