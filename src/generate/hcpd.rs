@@ -61,7 +61,8 @@ pub fn apply_hcpd_bulk_fixes(
                                     }
                                 ]
                             }
-                        }
+                        },
+                        hi_services_status_extension(code_system_codes)
                     ],
                     "value": luhn_with_prefix("800362", 16, rng)
                 }
@@ -107,6 +108,7 @@ pub fn apply_hcpd_bulk_fixes(
                             }
                         ]
                     },
+                    "extension": [hi_services_status_extension(code_system_codes)],
                     "value": luhn_with_prefix("800361", 16, rng)
                 }
             ]);
@@ -220,6 +222,18 @@ pub fn apply_hcpd_bulk_fixes(
                     "value": random_digits(12, rng)
                 },
                 {
+                    "system": "http://digitalhealth.gov.au/fhir/hcpd/id/hcpd-source-identifier",
+                    "type": {
+                        "coding": [
+                            {
+                                "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                                "code": "RI"
+                            }
+                        ]
+                    },
+                    "value": random_digits(12, rng)
+                },
+                {
                     "system": "http://hl7.org.au/id/ahpra-registration-number",
                     "type": {
                         "coding": [
@@ -243,6 +257,31 @@ pub fn apply_hcpd_bulk_fixes(
 
 fn extract_reference_id(reference: &str) -> Option<&str> {
     reference.split_once('/').map(|(_, id)| id)
+}
+
+/// Build the required `hi-services-identifier-status` extension shared by the
+/// HI-services identifier profiles (HPII/HPIO/HSPO), which each require a
+/// `hi-services-identifier-status` slice with min = 1.
+///
+/// The status code is resolved from the hi-services-identifier-status
+/// CodeSystem via `code_system_codes`, defaulting to "A" (Active).
+fn hi_services_status_extension(
+    code_system_codes: &HashMap<String, (String, Option<String>)>,
+) -> serde_json::Value {
+    let system =
+        "http://digitalhealth.gov.au/fhir/hcpd/CodeSystem/hi-services-identifier-status-cs";
+    let (code, display) = code_system_codes
+        .get(system)
+        .map(|(c, d)| (c.clone(), d.clone().unwrap_or_else(|| c.clone())))
+        .unwrap_or_else(|| ("A".to_string(), "Active".to_string()));
+    serde_json::json!({
+        "url": "http://digitalhealth.gov.au/fhir/hcpd/StructureDefinition/hi-services-identifier-status",
+        "valueCoding": {
+            "system": system,
+            "code": code,
+            "display": display
+        }
+    })
 }
 
 /// Fix the `suppressedBy.valueCodeableConcept.coding` in the `suppressed` extension
@@ -720,18 +759,23 @@ mod tests {
         // Should have identifier with AHPRA registration number
         assert!(resource["identifier"].is_array());
         let identifiers = resource["identifier"].as_array().unwrap();
-        assert_eq!(identifiers.len(), 2);
+        assert_eq!(identifiers.len(), 3);
         // First identifier should be local identifier
         assert_eq!(
             identifiers[0]["system"],
             "http://digitalhealth.gov.au/fhir/hcpd/id/hcpd-local-identifier"
         );
-        // Second identifier should be AHPRA registration
+        // Second identifier should be the source identifier
         assert_eq!(
             identifiers[1]["system"],
+            "http://digitalhealth.gov.au/fhir/hcpd/id/hcpd-source-identifier"
+        );
+        // Third identifier should be AHPRA registration
+        assert_eq!(
+            identifiers[2]["system"],
             "http://hl7.org.au/id/ahpra-registration-number"
         );
-        assert_eq!(identifiers[1]["value"], "MED1234567890");
+        assert_eq!(identifiers[2]["value"], "MED1234567890");
     }
 
     #[test]
@@ -755,9 +799,9 @@ mod tests {
         // Should still have identifiers (with random registration number)
         assert!(resource["identifier"].is_array());
         let identifiers = resource["identifier"].as_array().unwrap();
-        assert_eq!(identifiers.len(), 2);
+        assert_eq!(identifiers.len(), 3);
         // Registration number should be random (not from reg map since no practitioner ref)
-        assert!(identifiers[1]["value"].as_str().unwrap().starts_with("MED"));
+        assert!(identifiers[2]["value"].as_str().unwrap().starts_with("MED"));
     }
 
     #[test]

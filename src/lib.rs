@@ -37,7 +37,13 @@ pub async fn prepare_plan_context(package_path: &str, config: &TestConfig) -> Re
     tracing::debug!("Preparing plan context for package: {}", package_path);
     let pkg = parse_package(package_path)?;
     let value_set_systems = build_value_set_system_map(&pkg.raw_resources);
-    let cs = select_capability_statement(&pkg, config)?;
+    let cs = if config.overrides.capability_statement_file.is_some() {
+        select_capability_statement(&pkg, config)?
+    } else if config.overrides.capability_statement_from_server {
+        fetch_capability_statement_from_server(&config.server).await?
+    } else {
+        select_capability_statement(&pkg, config)?
+    };
 
     tracing::debug!(
         "Package parsed: {} CapabilityStatements, {} StructureDefinitions, {} SearchParameters",
@@ -127,6 +133,46 @@ pub(crate) fn select_capability_statement(
         .or(pkg.capability_statements.first())
         .cloned()
         .context("No CapabilityStatement found in IG package")
+}
+
+/// Fetch the responder CapabilityStatement from the live server's `/metadata`
+/// endpoint, applying the configured server headers and TLS settings.
+pub(crate) async fn fetch_capability_statement_from_server(
+    server: &ServerConfig,
+) -> Result<CapabilityStatement> {
+    let url = format!("{}/metadata", server.base_url.trim_end_matches('/'));
+    let client = TlsConfig::from_server(server).build_client()?;
+    let mut req = client.get(&url).header("Accept", "application/fhir+json");
+    for (key, value) in &server.headers {
+        req = req.header(key, value);
+    }
+    let resp = req
+        .send()
+        .await
+        .with_context(|| format!("Failed to fetch CapabilityStatement from {url}"))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .with_context(|| format!("Failed to read CapabilityStatement response from {url}"))?;
+    if !status.is_success() {
+        anyhow::bail!("Server returned HTTP {status} for {url}: {body}");
+    }
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .with_context(|| format!("CapabilityStatement from {url} is not valid JSON"))?;
+    let resource_type = json
+        .get("resourceType")
+        .and_then(|v| v.as_str())
+        .context("CapabilityStatement from server is missing 'resourceType'")?;
+    if resource_type != "CapabilityStatement" {
+        anyhow::bail!(
+            "Server /metadata returned resourceType='{resource_type}', expected 'CapabilityStatement'"
+        );
+    }
+    let cs: CapabilityStatement = serde_json::from_value(json)
+        .with_context(|| format!("Failed to deserialize CapabilityStatement from {url}"))?;
+    tracing::info!("Using CapabilityStatement fetched from {url}");
+    Ok(cs)
 }
 
 /// Generate a test plan and resources from an IG package.

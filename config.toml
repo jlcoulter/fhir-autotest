@@ -85,6 +85,12 @@ concurrency = 100
 # package for test planning/conformance checks.
 # capability_statement_file = "./package/metadata.json"
 
+# Fetch the responder CapabilityStatement from the live server's /metadata
+# endpoint instead of the one bundled in the IG package. Uses the [server]
+# base_url, headers, and TLS settings. Ignored when
+# capability_statement_file is set (the file takes precedence).
+# capability_statement_from_server = true
+
 # Manual creation order. If set, this replaces the auto-resolved dependency
 # order. Resource types not listed here are appended in their original order.
 # Uncomment to override.

@@ -52,7 +52,7 @@ pub fn generate_typed_value(
         // Complex types
         "Identifier" => serde_json::json!({
             "system": "urn:ietf:rfc:3986",
-            "value": uuid::Uuid::new_v4().to_string()
+            "value": format!("urn:uuid:{}", uuid::Uuid::new_v4())
         }),
         "HumanName" => serde_json::json!({
             "family": "Smith",
